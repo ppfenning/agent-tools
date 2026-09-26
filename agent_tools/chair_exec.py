@@ -1,7 +1,7 @@
 """The thin edge of a chair tick: perform planned actions through injected callables.
 
 Pure helpers decide what an action means; `perform` only fences, dispatches and collects results.
-Argv spellings follow `cox runs land --help` and `cox route launch epic|decompose --help`.
+Argv spellings follow `cox runs land --help` and `cox route launch epic|decompose|rescue --help`.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class Deps:
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
 
 
-_LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose")
+_LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 
 
@@ -62,6 +62,8 @@ def argv_for(action: Action, run_id: str = "") -> list[str] | None:
         return ["cox", "runs", "land", run_id, "--task", task, "--repo", repo, "--apply"] if run_id and task and repo else None
     if kind == "launch_decompose":
         return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative or idea] if idea else None
+    if kind == "rescue":
+        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
     if kind in _LAUNCH_KINDS:
         return ["cox", "route", "launch", "epic", "--initiative", initiative, *(["--repo", repo] if repo else [])] if initiative else None
     if kind == "pull":
@@ -110,7 +112,7 @@ def _lease(action: Action, deps: Deps) -> Result:
 def _launch(action: Action, deps: Deps) -> Result:
     argv = argv_for(action)
     if argv is None:
-        return _result(action, "refused", f"{action.get('kind')} names no initiative or intake id")
+        return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
     return _result(action, "done" if code == 0 else "failed", output)
 
