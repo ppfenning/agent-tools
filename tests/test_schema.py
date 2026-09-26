@@ -1,3 +1,6 @@
+import sys
+import types
+
 from agent_tools import schema
 
 
@@ -46,7 +49,8 @@ def test_cartridges_schema_resolves_from_a_skills_root_when_provider_profile_mis
     assert schema.cartridges_schema(tmp_path / "provider.yaml", [skills_root]) == "1.2"
 
 
-def test_cartridges_schema_returns_none_with_no_core_init_under_any_ancestor(tmp_path):
+def test_cartridges_schema_returns_none_with_no_core_init_under_any_ancestor(tmp_path, monkeypatch):
+    monkeypatch.setattr(schema, "_fallback_import", lambda module, name: None)
     provider_profile = tmp_path / "checkout" / "providers" / "x.yaml"
     provider_profile.parent.mkdir(parents=True)
     skills_root = tmp_path / "checkout" / "skills-plugins" / "team"
@@ -62,5 +66,14 @@ def test_graphs_schema_reads_the_constant_from_the_harness_checkout(tmp_path):
     assert schema.graphs_schema(harness_dir) == "1.0"
 
 
-def test_graphs_schema_returns_none_when_the_checkout_is_absent(tmp_path):
+def test_graphs_schema_returns_none_when_the_checkout_is_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(schema, "_fallback_import", lambda module, name: None)
     assert schema.graphs_schema(tmp_path / "harness") is None
+
+
+def test_the_fallback_import_reads_the_constant_from_an_importable_module(monkeypatch):
+    module = types.ModuleType("fake_schema_module")
+    module.SCHEMA_VERSION = "9.9"
+    monkeypatch.setitem(sys.modules, "fake_schema_module", module)
+    assert schema._fallback_import("fake_schema_module", "SCHEMA_VERSION") == "9.9"
+    assert schema._fallback_import("no_such_module_for_schema_test", "SCHEMA_VERSION") is None
