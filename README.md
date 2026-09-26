@@ -112,6 +112,7 @@ cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL]
 cox chair run [--once] [--interval INTERVAL] [--dry-run]   beat, gather, plan, perform and report every tick until interrupted
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
+cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
 cox setup doctor [--profile PROFILE] [--repo REPO] [--json] [--host HOST]   check this machine's profile against what it needs
 cox setup install --root ROOT --team TEAM --workspace WORKSPACE [--provider-profile PROVIDER_PROFILE] [--skills-root SKILLS_ROOT] [--assume a|r] [--plugins] [--hook] [--force-profile] [--dry-run] [--window-ceiling-usd WINDOW_CEILING_USD] [--weekly-ceiling-usd WEEKLY_CEILING_USD]   clone components and write a profile for this machine
 ```
