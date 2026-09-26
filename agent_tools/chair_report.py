@@ -94,10 +94,12 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     stop = " hard stop" if limits["hard_stop"] else ""
     needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
     launched, failed, would = launched_items(results), failed_items(results), would_items(results)
+    drafts = facts.get("drafts", 0)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
         f"lands {lands_this_tick(results)}",
+        *([f"drafts {drafts}"] if drafts > 0 else []),
         f"limits {_five_hour(dict(limits))} weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%}{stop}",
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),

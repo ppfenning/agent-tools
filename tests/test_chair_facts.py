@@ -198,3 +198,11 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
     assert facts["intake"] == ["old", "new"]
+
+
+def test_a_fake_drafts_callable_returning_3_gives_drafts_3():
+    assert gather_facts(replace(_deps(), drafts=lambda: 3), NOW)["drafts"] == 3
+
+
+def test_no_drafts_callable_gives_drafts_0():
+    assert gather_facts(_deps(), NOW)["drafts"] == 0

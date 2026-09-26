@@ -46,6 +46,7 @@ class FactsDeps:
         per quarantine entry, and False when no record can be found.
     live_initiatives: initiatives with a live run, meaning the `runs:<initiative>` store lease is held and
         unexpired, or failing that `runs/<run>.pid` names a live pid.
+    drafts: the number of initiatives waiting for approval. Optional, and absent means 0.
     """
 
     lease: Callable[[], Row]
@@ -66,6 +67,7 @@ class FactsDeps:
     pid: int
     host: str
     dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
+    drafts: Callable[[], int] | None = None
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -233,4 +235,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "intake": list(deps.intake()),
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
+        "drafts": deps.drafts() if deps.drafts is not None else 0,
     }
