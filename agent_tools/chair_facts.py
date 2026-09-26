@@ -82,6 +82,8 @@ def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
         "mine": holder == lease_holder(session, pid, host) and not released and not stale,
         "released": released,
         "stale": stale,
+        "expired": bool(record.get("expired", False)),
+        "until": str(record.get("until") or ""),
     }
 
 

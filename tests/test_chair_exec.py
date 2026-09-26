@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from agent_tools.chair_exec import Deps, argv_for, delete_branches_with, perform, run_argv
@@ -204,3 +206,11 @@ def test_a_launch_with_a_host_ends_with_on_that_host() -> None:
 def test_run_argv_runs_in_the_given_directory(tmp_path) -> None:
     code, output = run_argv(["pwd"], cwd=tmp_path)
     assert (code, output.strip()) == (0, str(tmp_path.resolve()))
+
+
+def test_a_take_lease_over_an_expired_takeover_steals_and_a_plain_one_does_not() -> None:
+    calls: list = []
+    deps = replace(_deps(calls), acquire_lease=lambda holder, host, steal=False: calls.append(("lease", steal)) or "")
+    perform([{"kind": "take_lease", "epoch": 1, "reason": "takeover expired at 2026-09-26T15:00:00+00:00"}], deps, lambda: 1, False)
+    perform([{"kind": "take_lease", "epoch": 1}], deps, lambda: 1, False)
+    assert [c for c in calls if c[0] == "lease"] == [("lease", True), ("lease", False)]

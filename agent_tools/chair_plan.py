@@ -20,7 +20,10 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
         return None
     if lease["released"] or lease["stale"]:
         return [{"kind": "take_lease"}]
-    return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"]}]
+    if lease.get("expired", False):
+        return [{"kind": "take_lease", "reason": f"takeover expired at {lease.get('until', '')}"}]
+    until = lease.get("until", "")
+    return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
 
 
 def _cap_launches(actions: list[Action], cap: int) -> list[Action]:

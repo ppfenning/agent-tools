@@ -1,8 +1,9 @@
-usage: cox route chair [-h] {take,beat,release,status,clear,chat} ...
+usage: cox route chair [-h] {take,extend,beat,release,status,clear,chat} ...
 
 positional arguments:
-  {take,beat,release,status,clear,chat}
+  {take,extend,beat,release,status,clear,chat}
     take                take the chair lock if no live chair holds it
+    extend              move the end of the chair takeover this session holds
     beat                refresh the chair lock's heartbeat
     release             release the chair lock this session holds
     status              the chair lock's holder and computed state

@@ -97,7 +97,8 @@ cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<dat
 cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
-cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal]   take the chair lock if no live chair holds it
+cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS]   take the chair lock if no live chair holds it
+cox route chair extend [--profile PROFILE] [--label LABEL] [--pid PID] [--hours HOURS]   move the end of the chair takeover this session holds
 cox route chair beat [--profile PROFILE] [--label LABEL] [--pid PID] [--run RUN]   refresh the chair lock's heartbeat
 cox route chair release [--profile PROFILE] [--label LABEL] [--pid PID]   release the chair lock this session holds
 cox route chair status [--profile PROFILE] [--json]   the chair lock's holder and computed state

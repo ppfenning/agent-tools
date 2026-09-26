@@ -98,3 +98,9 @@ def test_drafts_0_leaves_the_line_as_it_was():
     line = format_status(dict(_facts(), drafts=0), [], [], NOW)
     assert line == format_status(_facts(), [], [], NOW)
     assert "drafts" not in line
+
+
+def test_standby_line_with_an_until_says_who_holds_the_chair_until_when():
+    actions = [{"kind": "standby", "holder": "chair-7@box-1:42", "host": "box-1", "until": "2026-09-26T15:00:00+00:00"}]
+    line = format_status(_facts(), actions, [_landed("standby", "recorded")], NOW)
+    assert "standby: held by chair-7 until 2026-09-26T15:00:00+00:00" in line

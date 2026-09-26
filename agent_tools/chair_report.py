@@ -38,6 +38,8 @@ def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
     standby = next((a for a in actions if a.get("kind") == "standby"), None)
     if results and all(r["status"] == "dry_run" for r in results):
         return "dry-run"
+    if standby is not None and standby.get("until"):
+        return f"standby: held by {standby.get('holder', '?').partition('@')[0]} until {standby['until']}"
     if standby is not None:
         return f"standby holder={standby.get('holder', '?')} host={standby.get('host', '?')}"
     return "holding"
