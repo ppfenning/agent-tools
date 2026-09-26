@@ -109,6 +109,7 @@ from agent_tools import (
     work_state,
 )
 from agent_tools import runs as runs_module
+from agent_tools.remote_argv import auth_status_argv, ssh_argv
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -3212,13 +3213,25 @@ def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | N
     return host, None
 
 
+def _host_auth_output(argv: list[str]) -> str:
+    """Edge: stdout and stderr of `claude auth status` on the host; an ssh that cannot run gives its error text."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return f"{argv[0]}: {exc}"
+    return done.stdout + done.stderr
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
     launched_at = datetime.datetime.now(datetime.UTC).isoformat()
-    result = remote_launch.launch_on_host(host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo)
+    preflight = remote_doctor.auth_verdict(_host_auth_output(ssh_argv(host.ssh, auth_status_argv())))
+    result = remote_launch.launch_on_host(
+        host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, preflight=preflight
+    )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")
         return 2

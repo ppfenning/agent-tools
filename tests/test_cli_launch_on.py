@@ -16,6 +16,12 @@ def _no_ccusage(monkeypatch):
     monkeypatch.setattr(usage_window, "gather", _unmeasured_window)
 
 
+@pytest.fixture(autouse=True)
+def _logged_in_host(monkeypatch):
+    """The host's `claude auth status`; ssh never runs. A test overrides it to refuse the launch."""
+    monkeypatch.setattr(cli, "_host_auth_output", lambda argv: '{"loggedIn": true}')
+
+
 def _setup(tmp_path):
     """A workspace with one epic, a clean repo, and a profile whose lane host `box` is a local directory."""
     harness_dir = _write_harness(tmp_path)
@@ -118,6 +124,21 @@ def test_on_an_unknown_host_exits_non_zero_and_writes_nothing(tmp_path, monkeypa
     assert "unknown lane host: nowhere" in out and "configured: box" in out
     assert calls == []
     assert list((ws / "runs").iterdir()) == []  # refused before the loop is claimed
+
+
+def test_on_a_host_not_logged_in_refuses_before_copying_and_writes_no_remote_record(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    calls, asked = [], []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    monkeypatch.setattr(cli, "_host_auth_output", lambda a: asked.append(a) or '{"loggedIn": false}')
+    rc = main([*argv, "--on", "box"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "routing: launch on box failed at auth: claude auth: not logged in on the host (run claude auth login there)" in out
+    assert asked == [["ssh", "me@box", "claude auth status"]]
+    assert calls == []
+    assert _run_files(ws) == []
 
 
 @pytest.mark.parametrize("failing", ["rsync", "ssh"])

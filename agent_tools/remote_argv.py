@@ -12,6 +12,10 @@ def doctor_argv() -> list[str]:
     return ["cox", "setup", "doctor"]
 
 
+def auth_status_argv() -> list[str]:
+    return ["claude", "auth", "status"]
+
+
 def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
     return [
         "cox", "route", "launch", "epic",

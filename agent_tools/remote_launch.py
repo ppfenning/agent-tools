@@ -47,7 +47,12 @@ def launch_on_host(
     run: Callable[[list[str]], int],
     locate: Callable[[str], str] | None = None,
     repo: str | None = None,
+    *,
+    preflight: str | None = None,
 ) -> dict | LaunchError:
+    """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on."""
+    if preflight is not None:
+        return LaunchError("auth", preflight)
     rsync_argv, ssh_cmd = launch_plan(host, initiative, run_id, label, locate)
     pushed = run(rsync_argv)
     if pushed != 0:
