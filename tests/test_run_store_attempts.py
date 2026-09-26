@@ -22,6 +22,19 @@ def test_attempt_causes_reads_the_cause_columns_at_schema_5_and_filters_by_ts(tm
     assert run_store.attempt_causes(tmp_path, "2026-09-25") == [late]
 
 
+def test_attempt_causes_for_reads_run_task_seq_and_cause_of_the_named_runs_only(tmp_path):
+    mine = {"run_id": "i-1", "task_id": "t", "seq": 1, "kind": "build", "reason": "r", "ts": "2026-09-25", "cause": "harness"}
+    attempts_table(tmp_path, V5, mine, {**mine, "run_id": "i-2", "cause": "timeout"})
+    assert run_store.attempt_causes_for(tmp_path, ["i-1"]) == [{"run_id": "i-1", "task_id": "t", "seq": 1, "cause": "harness"}]
+
+
+def test_attempt_causes_for_is_empty_with_no_store_and_reads_none_at_schema_4(tmp_path):
+    assert run_store.attempt_causes_for(tmp_path, ["i-1"]) == []
+    attempts_table(tmp_path, V4, {"run_id": "i-1", "task_id": "t", "seq": 1, "kind": "build", "reason": "r", "ts": "x"})
+    assert run_store.attempt_causes_for(tmp_path, ["i-1"]) == [{"run_id": "i-1", "task_id": "t", "seq": 1, "cause": None}]
+    assert run_store.attempt_causes_for(tmp_path, []) == []
+
+
 def test_attempt_causes_reads_none_for_both_cause_fields_at_schema_4(tmp_path):
     attempts_table(tmp_path, V4, {"kind": "build", "reason": "r", "ts": "2026-09-25T04:00:00+00:00"})
     assert run_store.attempt_causes(tmp_path, "") == [

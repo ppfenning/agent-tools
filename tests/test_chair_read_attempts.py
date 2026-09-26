@@ -1,4 +1,4 @@
-from agent_tools.chair_read_attempts import attempt_rows, path_parts, read_attempts
+from agent_tools.chair_read_attempts import attempt_rows, fill_causes, path_parts, read_attempts
 
 PATH = "work/init-a/phase-1/task-x.md"
 
@@ -40,3 +40,15 @@ def test_the_edge_loads_items_from_frontmatter(tmp_path):
     item.write_text("---\nattempts:\n  - run: r1\n    ts: '2026-09-01'\n    cause: flaky\n---\nbody\n")
     (row,) = read_attempts(tmp_path)
     assert (row["run"], row["cause"], row["initiative"], row["path"]) == ("r1", "flaky", "init-a", str(item.relative_to(tmp_path)))
+
+
+def test_a_file_attempt_with_no_cause_takes_the_store_rows_cause():
+    store = [{"run_id": "r1", "task_id": "task-x", "seq": 1, "cause": "harness"}]
+    (row,) = fill_causes([{"run": "r1", "task": "task-x", "cause": None}], store)
+    assert row["cause"] == "harness"
+
+
+def test_a_file_cause_is_kept_and_the_newest_seq_wins():
+    store = [{"run_id": "r1", "task_id": "t", "seq": 2, "cause": "new"}, {"run_id": "r1", "task_id": "t", "seq": 1, "cause": "old"}]
+    rows = fill_causes([{"run": "r1", "task": "t", "cause": None}, {"run": "r1", "task": "t", "cause": "file"}], store)
+    assert [r["cause"] for r in rows] == ["new", "file"]

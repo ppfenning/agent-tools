@@ -29,7 +29,9 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     (ws / "work" / "init" / "initiative.md").write_text("---\nid: init\nrepo: /r/x\n---\nbody\n", encoding="utf-8")
     _item(phase, "done1", "done")
     _item(phase, "appr1", "approved")
-    _item(phase, "quar1", "quarantined")
+    (phase / "quar1.md").write_text(
+        "---\nid: quar1\nstate: ready\nattempts:\n  - run: init-1\n    ts: t\n---\nbody\n", encoding="utf-8"
+    )
     (ws / "intake").mkdir()
     (ws / "intake" / "idea.md").write_text("an idea\n", encoding="utf-8")
     runs_dir = ws / "runs"

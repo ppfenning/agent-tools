@@ -164,6 +164,7 @@ def quarantine_facts(
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
     landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
+    # A stranded task that is also an open quarantine keeps the quarantine's newest cause, so it is not sent to the chair as stranded.
     stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened and k not in landed_now]
     return [
         *(_quarantine(k, newest_cause(attempts, k), attempts, has_patch) for k in opened if k[0] not in live),
