@@ -186,8 +186,13 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
     ]
 
 
-def dispatch_facts(docket: Row) -> DispatchFacts:
-    return {"max_in_flight": int(docket["max_in_flight"]), "live_runs": int(docket["busy_lanes"])}
+def dispatch_facts(docket: Row, lane_hosts: Sequence[str], live_by_host: Mapping[str, int]) -> DispatchFacts:
+    """live_by_host maps a host name to its live lanes; the local machine is under the empty name."""
+    return {
+        "max_in_flight": int(docket["max_in_flight"]),
+        "live_runs": live_by_host.get("", 0),
+        "hosts": [{"name": name, "live_runs": live_by_host.get(name, 0)} for name in lane_hosts],
+    }
 
 
 def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
@@ -210,7 +215,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     weekly = deps.weekly()
     assessment = pacing.assess(deps.window(), policy, now, weekly)
     docket = deps.docket()
-    dispatch = dispatch_facts(docket)
+    # No source reports lanes per host yet: every live lane counts as local until one does.
+    dispatch = dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
     initiatives = initiative_facts(docket, live)
