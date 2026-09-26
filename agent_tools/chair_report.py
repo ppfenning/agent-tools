@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from agent_tools.chair_exec import Result
+from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_types import Action, Facts
 from agent_tools.notify import Notification
 
-__all__ = ["Deps", "format_status", "lands_this_tick", "mode_of", "needs_chair_items", "write_status"]
+__all__ = [
+    "Deps", "failed_items", "format_status", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "write_status",
+]
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -44,6 +46,24 @@ def needs_chair_items(actions: Sequence[Action]) -> list[str]:
     return [f"{a.get('initiative', '?')}:{a.get('cause', '?')}" for a in actions if a.get("kind") == "needs_chair"]
 
 
+def launched_items(results: Sequence[Result]) -> list[str]:
+    """`<kind>:<initiative>` for every launch, relaunch, retry or rescue that ran."""
+    return [
+        f"{r['action'].get('kind')}:{r['action'].get('initiative') or r['action'].get('task_id', '?')}"
+        for r in results
+        if r["status"] == "done" and r["action"].get("kind") in LAUNCH_KINDS
+    ]
+
+
+def failed_items(results: Sequence[Result]) -> list[str]:
+    """`<kind>:<task or initiative>` for every refused, failed or not_landed result."""
+    return [
+        f"{r['action'].get('kind')}:{r['action'].get('task_id') or r['action'].get('initiative', '?')}"
+        for r in results
+        if r["status"] in ("refused", "failed", "not_landed")
+    ]
+
+
 def _five_hour(limits: dict) -> str:
     """LimitsFacts carries no 5-hour field yet; show one when the edge supplies `five_hour_fraction`."""
     fraction = limits.get("five_hour_fraction")
@@ -55,12 +75,15 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
     needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
+    launched, failed = launched_items(results), failed_items(results)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
         f"lands {lands_this_tick(results)}",
         f"limits {_five_hour(dict(limits))} weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%}{stop}",
         mode_of(actions, results),
+        *([f"launched: {', '.join(launched)}"] if launched else []),
+        *([f"failed: {', '.join(failed)}"] if failed else []),
         f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",
     ]
     return " | ".join(parts)

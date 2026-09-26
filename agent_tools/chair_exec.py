@@ -17,7 +17,7 @@ from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
 __all__ = [
-    "Deps", "Result", "argv_for", "branch_pattern", "delete_branches_with", "edge_deps", "escalation", "landed", "perform",
+    "LAUNCH_KINDS", "Deps", "Result", "argv_for", "branch_pattern", "delete_branches_with", "edge_deps", "escalation", "landed", "perform",
 ]
 
 Status = Literal[
@@ -43,7 +43,9 @@ class Deps:
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
 
 
-_LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
+LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
+_UNFENCED = ("standby", "take_lease")  # not writes, so a stale or missing epoch does not stop them
+_REASON_CAP = 200
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 
 
@@ -71,7 +73,7 @@ def argv_for(action: Action) -> list[str] | None:
         return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative or idea] if idea else None
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
-    if kind in _LAUNCH_KINDS:
+    if kind in LAUNCH_KINDS:
         return ["cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", *(["--repo", repo] if repo else [])] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
@@ -80,6 +82,11 @@ def argv_for(action: Action) -> list[str] | None:
 
 def _result(action: Action, status: Status, reason: str = "") -> Result:
     return {"action": action, "status": status, "reason": reason}
+
+
+def _recorded(result: Result) -> Action:
+    """The action with its outcome attached; the reason is cut to 200 characters."""
+    return {**result["action"], "status": result["status"], "reason": result["reason"][:_REASON_CAP]}  # type: ignore[typeddict-item]
 
 
 def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -133,29 +140,35 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if kind == "take_lease":
         return _lease(action, deps)
     if kind in ("standby", "needs_chair"):
-        deps.record(action)
         return _result(action, "recorded")
-    if kind in _LAUNCH_KINDS or kind == "pull":
+    if kind in LAUNCH_KINDS or kind == "pull":
         return _launch(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
 def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool) -> list[Result]:
-    """Edge. One result per action, in order; the epoch is re-read per action and a dry run touches nothing."""
+    """Edge. One result per action, in order; each is recorded after it runs.
+
+    The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
+    """
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task of the uncounted land that blocks its later lands and deletes
     for action in actions:
         if dry_run:
             results.append(_result(action, "dry_run"))
-        elif is_fenced(action, current_epoch()):
-            results.append(_result(action, "fenced", "planned under another lease epoch"))
+            continue
+        if action.get("kind") not in _UNFENCED and is_fenced(action, current_epoch()):
+            result = _result(action, "fenced", "planned under another lease epoch")
         else:
             result = _execute(action, deps, blocked)
-            if action.get("kind") == "land" and result["status"] == "not_landed":
-                blocked[action.get("repo", "")] = action.get("task_id", "")
-            results.append(result)
-            if action.get("kind") == "land" and result["status"] != "landed":
-                results.append(_escalate(action, result, deps))
+        if action.get("kind") == "land" and result["status"] == "not_landed":
+            blocked[action.get("repo", "")] = action.get("task_id", "")
+        deps.record(_recorded(result))
+        results.append(result)
+        if action.get("kind") == "land" and result["status"] not in ("landed", "fenced"):
+            escalated = _escalate(action, result)
+            deps.record(_recorded(escalated))
+            results.append(escalated)
     return results
 
 
@@ -167,10 +180,8 @@ def escalation(land: Action) -> Action:
     }
 
 
-def _escalate(land: Action, result: Result, deps: Deps) -> Result:
-    needs = escalation(land)
-    deps.record(needs)
-    return _result(needs, "escalated", f"land {land.get('task_id', '')} {result['status']}")
+def _escalate(land: Action, result: Result) -> Result:
+    return _result(escalation(land), "escalated", f"land {land.get('task_id', '')} {result['status']}")
 
 
 def run_argv(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
