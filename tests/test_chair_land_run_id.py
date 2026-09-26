@@ -69,7 +69,10 @@ def test_a_land_that_does_not_land_escalates_to_needs_chair():
     land = {"kind": "land", "task_id": "t", "repo": "/r", "run": "x-1", "initiative": "x", "epoch": 1}
     results, recorded = _perform(land, code=1, output="merge: conflict")
     assert [(r["action"]["kind"], r["status"]) for r in results] == [("land", "not_landed"), ("needs_chair", "escalated")]
-    assert recorded == [{"kind": "needs_chair", "initiative": "x", "task_id": "t", "cause": STRANDED_CAUSE, "epoch": 1}]
+    assert [(a["kind"], a["status"]) for a in recorded] == [("land", "not_landed"), ("needs_chair", "escalated")]
+    assert {k: v for k, v in recorded[1].items() if k not in ("status", "reason")} == {
+        "kind": "needs_chair", "initiative": "x", "task_id": "t", "cause": STRANDED_CAUSE, "epoch": 1,
+    }
 
 
 def test_a_refused_land_without_a_run_escalates_to_needs_chair():
@@ -79,7 +82,7 @@ def test_a_refused_land_without_a_run_escalates_to_needs_chair():
 
 def test_a_landed_land_raises_no_needs_chair():
     results, recorded = _perform({"kind": "land", "task_id": "t", "repo": "/r", "run": "x-1", "initiative": "x", "epoch": 1})
-    assert ([r["status"] for r in results], recorded) == (["landed"], [])
+    assert ([r["status"] for r in results], [(a["kind"], a["status"]) for a in recorded]) == (["landed"], [("land", "landed")])
 
 
 def test_the_status_line_names_an_escalated_land():

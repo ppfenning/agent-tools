@@ -45,6 +45,27 @@ def test_dry_run_line_says_dry_run():
     assert " | dry-run | " in line
 
 
+def _result(kind, status, **fields):
+    return {"action": {"kind": kind, **fields}, "status": status, "reason": ""}
+
+
+def test_a_rescue_that_ran_appears_as_launched():
+    results = [_result("rescue", "done", initiative="epic-a", task_id="t1"), _result("retry", "done", initiative="epic-b")]
+    line = format_status(_facts(), [], results, NOW)
+    assert " | launched: rescue:epic-a, retry:epic-b | needs chair: none" in line
+
+
+def test_a_not_landed_land_appears_as_failed():
+    results = [_result("land", "not_landed", task_id="t1", initiative="epic-a"), _result("pull", "refused", initiative="epic-c")]
+    line = format_status(_facts(), [], results, NOW)
+    assert " | failed: land:t1, pull:epic-c | needs chair: none" in line
+
+
+def test_a_quiet_tick_names_no_launch_and_no_failure():
+    line = format_status(_facts(), [], [_landed(), _result("launch_epic", "fenced", initiative="x")], NOW)
+    assert "launched:" not in line and "failed:" not in line
+
+
 def test_a_land_counts_only_when_landed():
     assert lands_this_tick([_landed(), _landed(status="not_landed"), _landed("clear_branches", "done")]) == 1
 

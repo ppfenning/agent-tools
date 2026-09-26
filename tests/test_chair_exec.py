@@ -20,6 +20,11 @@ def _deps(calls: list, output: str = LANDED, code: int = 0, deleted: tuple[str, 
     )
 
 
+def _touched(calls: list) -> list:
+    """The calls that reached cox, git or the lease: everything but the record."""
+    return [c for c in calls if c[0] != "record"]
+
+
 def _land(task: str, repo: str) -> dict:
     return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
 
@@ -32,7 +37,7 @@ def test_a_fenced_action_is_refused_and_touches_nothing() -> None:
     calls: list = []
     results = perform([{"kind": "pull", "epoch": 1}], _deps(calls), lambda: 2, False)
     assert [r["status"] for r in results] == ["fenced"]
-    assert calls == []
+    assert calls == [("record", "pull")]
 
 
 def test_a_land_counts_only_when_both_markers_appear() -> None:
@@ -58,20 +63,20 @@ def test_a_land_missing_its_repo_is_refused_without_running() -> None:
     calls: list = []
     results = perform([{"kind": "land", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["refused", "escalated"]
-    assert calls == [("record", "needs_chair")]
+    assert calls == [("record", "land"), ("record", "needs_chair")]
 
 
 def test_clear_branches_refuses_a_foreign_glob() -> None:
     calls: list = []
     results = perform([_clear("*")], _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["refused"]
-    assert calls == []
+    assert _touched(calls) == []
 
 
 def test_clear_branches_deletes_its_own_glob_in_the_resolved_repo() -> None:
     calls: list = []
     results = perform([{**_clear("alpha"), "repo": "/w/app"}], _deps(calls), lambda: 1, False)
-    assert calls == [("delete", "/w/app", "epic/alpha/*")]
+    assert _touched(calls) == [("delete", "/w/app", "epic/alpha/*")]
     assert results[0]["status"] == "done"
     assert "epic/alpha/t1" in results[0]["reason"]
 
@@ -110,7 +115,7 @@ def test_dry_run_performs_nothing() -> None:
 def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
     calls: list = []
     results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
-    assert calls == [("run", ["cox", "route", "launch", "rescue", "--initiative", "work/a", "--task", "t1"])]
+    assert _touched(calls) == [("run", ["cox", "route", "launch", "rescue", "--initiative", "work/a", "--task", "t1"])]
     assert [r["status"] for r in results] == ["done"]
 
 
@@ -118,7 +123,7 @@ def test_a_rescue_under_a_stale_epoch_is_fenced_and_calls_nothing() -> None:
     calls: list = []
     results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 2, False)
     assert [r["status"] for r in results] == ["fenced"]
-    assert calls == []
+    assert _touched(calls) == []
 
 
 def test_a_dry_run_rescue_performs_nothing() -> None:
@@ -132,7 +137,7 @@ def test_an_unlisted_kind_is_refused() -> None:
     calls: list = []
     results = perform([{"kind": "cut_release", "epoch": 1}], _deps(calls), lambda: 1, False)  # type: ignore[list-item]
     assert [r["status"] for r in results] == ["refused"]
-    assert calls == []
+    assert _touched(calls) == []
 
 
 def test_standby_and_needs_chair_are_recorded_without_running_anything() -> None:
@@ -141,6 +146,43 @@ def test_standby_and_needs_chair_are_recorded_without_running_anything() -> None
     results = perform(actions, _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["recorded", "recorded"]
     assert calls == [("record", "standby"), ("record", "needs_chair")]
+
+
+def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:
+    recorded: list = []
+    deps = Deps(
+        run=lambda argv: (0, ""), delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
+        record=recorded.append, run_id=lambda action: "", repo_for=lambda action: "",
+    )
+    results = perform([{"kind": "standby", "epoch": -1, "holder": "h"}], deps, lambda: 3, False)
+    assert [r["status"] for r in results] == ["recorded"]
+    assert [(a["kind"], a["status"]) for a in recorded] == [("standby", "recorded")]
+
+
+def test_take_lease_is_never_fenced() -> None:
+    calls: list = []
+    results = perform([{"kind": "take_lease", "epoch": -1, "holder": "h", "host": "x"}], _deps(calls), lambda: 3, False)
+    assert [r["status"] for r in results] == ["done"]
+    assert calls == [("lease", "h"), ("record", "take_lease")]
+
+
+def test_every_result_is_recorded_with_its_status_and_a_reason_cut_to_200_chars() -> None:
+    recorded: list = []
+    deps = Deps(
+        run=lambda argv: (1, "x" * 300), delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
+        record=recorded.append, run_id=lambda action: "", repo_for=lambda action: "",
+    )
+    actions = [{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}, {"kind": "pull", "epoch": 9}]
+    perform(actions, deps, lambda: 1, False)
+    assert [(a["kind"], a["status"]) for a in recorded] == [("rescue", "failed"), ("pull", "fenced")]
+    assert recorded[0]["reason"] == "x" * 200
+    assert recorded[0]["initiative"] == "a"
+
+
+def test_a_dry_run_records_nothing() -> None:
+    calls: list = []
+    perform([{"kind": "standby", "epoch": -1}], _deps(calls), lambda: 1, True)
+    assert calls == []
 
 
 @pytest.mark.parametrize("kind", ["relaunch", "retry", "launch_epic"])
