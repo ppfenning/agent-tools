@@ -176,6 +176,24 @@ def test_cli_take_steal_succeeds_against_a_stale_lock(tmp_path, capsys):
     assert chair.read(runs_dir)["session"] == "bob"
 
 
+def _stub_acquire_lease(monkeypatch):
+    seen = []
+    monkeypatch.setattr(chair, "acquire_lease", lambda *args, **kwargs: seen.append(kwargs) or "")
+    return seen
+
+
+def test_cli_take_steal_steals_the_store_lease_too(tmp_path, monkeypatch):
+    seen = _stub_acquire_lease(monkeypatch)
+    assert main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--label", "bob", "--steal"]) == 0
+    assert seen == [{"steal": True}]
+
+
+def test_cli_take_without_steal_leaves_the_store_lease_alone(tmp_path, monkeypatch):
+    seen = _stub_acquire_lease(monkeypatch)
+    assert main(["route", "chair", "take", "--profile", str(_profile(tmp_path)), "--label", "bob"]) == 0
+    assert seen == [{"steal": False}]
+
+
 def test_cli_take_then_beat_prints_the_chair_worded_lines(tmp_path, capsys):
     profile = _profile(tmp_path)
     assert main(["route", "chair", "take", "--profile", str(profile), "--label", "cos1"]) == 0
