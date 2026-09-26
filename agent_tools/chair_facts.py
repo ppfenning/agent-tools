@@ -206,6 +206,7 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
             "phase_done": bool(r["phase_done"]),
             "needs": list(r["needs"]),
             "run": str(r["run"]),
+            "needs_fetch": bool(r["needs_fetch"]),
         }
         for r in rows
     ]

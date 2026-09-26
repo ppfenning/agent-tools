@@ -62,13 +62,15 @@ def branch_pattern(initiative: str) -> str | None:
 
 
 def argv_for(action: Action) -> list[str] | None:
-    """The cox argv for a land, launch or pull action; None for any other kind or a missing required field."""
+    """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field."""
     kind = action.get("kind")
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
     run = action.get("run", "")
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
         return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply"] if run and task and repo else None
+    if kind == "fetch":
+        return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
         return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative or idea] if idea else None
     if kind == "rescue":
@@ -145,7 +147,7 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _lease(action, deps)
     if kind in ("standby", "needs_chair"):
         return _result(action, "recorded")
-    if kind in LAUNCH_KINDS or kind == "pull":
+    if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
