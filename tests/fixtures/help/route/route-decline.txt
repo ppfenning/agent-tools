@@ -1,0 +1,10 @@
+usage: cox route decline [-h] --reason REASON [--by BY] [--profile PROFILE] initiative
+
+positional arguments:
+  initiative
+
+options:
+  -h, --help         show this help message and exit
+  --reason REASON
+  --by BY            who declines; default the OS user
+  --profile PROFILE
