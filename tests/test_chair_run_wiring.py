@@ -21,6 +21,14 @@ def test_the_real_deps_hold_no_unwired_source_for_any_of_the_twelve_names(tmp_pa
     assert [name for name in TWELVE if isinstance(fields[name], cli._ChairUnwired)] == []
 
 
+def test_the_recorder_is_built_with_a_store_runner_and_the_lease_holder(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    monkeypatch.setattr(cli.chair_read_record, "recorder", lambda *args, **kwargs: seen.update(kwargs))
+    cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert seen["holder"] == cli.chair.lease_holder("chair", 1, "h")
+    assert callable(seen["store"])
+
+
 def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: jarvis\n    ssh: jarvis\n    workspace_dir: /w\n", encoding="utf-8")

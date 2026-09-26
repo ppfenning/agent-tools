@@ -103,6 +103,16 @@ def test_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch, tmp_pa
     assert store_cli.lease_release(tmp_path, "chair", "me", 1) == NotAvailable()
 
 
+def test_the_runner_puts_the_store_url_after_the_arguments_and_maps_a_missing_harness_to_code_1(monkeypatch, tmp_path):
+    monkeypatch.setattr(store_cli, "_store_url", lambda runs_dir: "sqlite:///s.db")
+    seen = []
+    monkeypatch.setattr(store_cli, "_run", lambda build: seen.append(build(PY)) or (0, "ok"))
+    assert store_cli.runner(tmp_path)(["record-action", "--holder", "h", "{}"]) == (0, "ok")
+    assert seen == [[*HEAD, "record-action", "--holder", "h", "{}", "--store-url", "sqlite:///s.db"]]
+    monkeypatch.setattr(store_cli, "_run", lambda build: None)
+    assert store_cli.runner(tmp_path)(["x"]) == (1, "harness not available")
+
+
 def test_lease_exit_0_with_null_epoch_and_holder_is_released():
     assert store_cli.parse_lease(0, '{"epoch": null, "holder": null, "ok": true}') == LeaseReleased()
 

@@ -5423,7 +5423,7 @@ def _chair_run_deps(
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
         run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
-        record=chair_read_record.recorder(runs_dir, epoch, now_text),
+        record=chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder),
     )
     return chair_run.RunDeps(
         facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
