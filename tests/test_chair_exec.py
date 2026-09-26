@@ -105,6 +105,27 @@ def test_dry_run_performs_nothing() -> None:
     assert calls == []
 
 
+def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
+    calls: list = []
+    results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert calls == [("run", ["cox", "route", "launch", "rescue", "--initiative", "work/a", "--task", "t1"])]
+    assert [r["status"] for r in results] == ["done"]
+
+
+def test_a_rescue_under_a_stale_epoch_is_fenced_and_calls_nothing() -> None:
+    calls: list = []
+    results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 2, False)
+    assert [r["status"] for r in results] == ["fenced"]
+    assert calls == []
+
+
+def test_a_dry_run_rescue_performs_nothing() -> None:
+    calls: list = []
+    results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, True)
+    assert [r["status"] for r in results] == ["dry_run"]
+    assert calls == []
+
+
 def test_an_unlisted_kind_is_refused() -> None:
     calls: list = []
     results = perform([{"kind": "cut_release", "epoch": 1}], _deps(calls), lambda: 1, False)  # type: ignore[list-item]
