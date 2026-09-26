@@ -7,7 +7,7 @@ from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_types import Action, DispatchFacts, Facts, LeaseFacts, LimitsFacts, stamp
 
-_LAUNCHES = {"relaunch", "retry"}
+_LAUNCHES = {"relaunch", "retry", "rescue"}
 
 
 def _launch_cap(limits: LimitsFacts) -> int:
@@ -24,7 +24,7 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
 
 
 def _cap_launches(actions: list[Action], cap: int) -> list[Action]:
-    """Keep the first cap relaunch and retry actions; a dropped relaunch takes its paired clear_branches with it."""
+    """Keep the first cap relaunch, retry and rescue actions; a dropped relaunch takes its paired clear_branches with it."""
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _LAUNCHES]
     dropped = set(launch_at[cap:])
     dropped_initiatives = {actions[n]["initiative"] for n in dropped if actions[n]["kind"] == "relaunch"}
