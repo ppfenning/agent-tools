@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -71,7 +72,7 @@ def argv_for(action: Action) -> list[str] | None:
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
     if kind in _LAUNCH_KINDS:
-        return ["cox", "route", "launch", "epic", "--initiative", initiative, *(["--repo", repo] if repo else [])] if initiative else None
+        return ["cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", *(["--repo", repo] if repo else [])] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
     return None
@@ -172,10 +173,10 @@ def _escalate(land: Action, result: Result, deps: Deps) -> Result:
     return _result(needs, "escalated", f"land {land.get('task_id', '')} {result['status']}")
 
 
-def run_argv(argv: list[str]) -> tuple[int, str]:
+def run_argv(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
     """Edge. A missing binary is exit 127 with its message, never an exception out of perform."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, check=False)
+        done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)
     except OSError as error:
         return 127, f"{argv[0] if argv else '<empty argv>'}: {error}"
     return done.returncode, done.stdout + done.stderr
@@ -194,16 +195,21 @@ def delete_branches_with(run: Run, repo: str, pattern: str) -> tuple[list[str], 
 
 def edge_deps(
     runs_dir: Path,
+    workspace: Path,
     session: str,
     pid: int,
     run_id: Callable[[Action], str],
     repo_for: Callable[[Action], str],
     record: Callable[[Action], None],
 ) -> Deps:
-    """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease."""
+    """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
+
+    Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
+    """
+    run = partial(run_argv, cwd=workspace)
     return Deps(
-        run=run_argv,
-        delete_branches=lambda repo, pattern: delete_branches_with(run_argv, repo, pattern),
+        run=run,
+        delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
         acquire_lease=lambda holder, host: chair.acquire_lease(runs_dir, session, pid, host),
         record=record,
         run_id=run_id,
