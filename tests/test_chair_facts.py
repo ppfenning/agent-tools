@@ -137,6 +137,12 @@ def test_a_task_with_only_harness_attempts_gives_rescue_failed_false_and_harness
     assert (q["rescue_failed"], q["harness_failures"]) == (False, 1)
 
 
+def test_an_approved_record_with_a_harness_attempt_and_a_kept_patch_plans_rescue():
+    stranded = {**STRANDED, "run": "i-1", "task": "a"}
+    facts = gather_facts(_deps(stranded=(stranded,), has_patch=True), NOW)
+    assert [a["kind"] for a in plan_recover(facts) if a["kind"] in ("rescue", "retry", "needs_chair")] == ["rescue"]
+
+
 def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
     def kinds(attempts: tuple[dict, ...]) -> list[str]:
         facts = gather_facts(replace(_deps(attempts=attempts), stranded=lambda: []), NOW)

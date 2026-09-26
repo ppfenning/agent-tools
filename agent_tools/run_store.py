@@ -36,7 +36,7 @@ except ImportError:
     _DB_ERRORS = (sqlite3.DatabaseError,)
 
 __all__ = [
-    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "build_counts",
+    "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
     "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
@@ -451,6 +451,26 @@ def attempt_causes(runs_dir: Path, since: str) -> list[dict[str, Any]]:
         sql = _sql(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
         keys = ("kind", "cause", "cause_why", "reason", "ts")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, (since,)).fetchall()]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
+
+
+def attempt_causes_for(runs_dir: Path, run_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """Edge. Each attempt's run_id, task_id, seq and cause for the given runs, by run then seq; empty with no store, no runs or an unreadable store.
+
+    A store below schema 5 has no `cause` column: it reads as None."""
+    opened = _open(runs_dir) if run_ids else None
+    if opened is None:
+        return []
+    conn, p = opened
+    try:
+        cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
+        marks = ", ".join(["{p}"] * len(run_ids))
+        sql = _sql(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
+        keys = ("run_id", "task_id", "seq", "cause")
+        return [{k: r[k] for k in keys} for r in conn.execute(sql, tuple(run_ids)).fetchall()]
     except _DB_ERRORS:
         return []
     finally:

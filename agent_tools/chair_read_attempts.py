@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from agent_tools import run_store
 from agent_tools.stats_chair import frontmatter_item
 
 
@@ -35,6 +36,12 @@ def attempt_rows(items: Iterable[tuple[str, Iterable[Mapping] | None]]) -> list[
     return sorted(rows, key=lambda row: str(row.get("ts") or ""))
 
 
+def fill_causes(rows: Iterable[Mapping], store_rows: Iterable[Mapping]) -> list[dict]:
+    """Each row with no `cause` takes the cause on the store's newest-seq attempt for its run and task; a file cause is kept."""
+    newest = {(s["run_id"], s["task_id"]): s["cause"] for s in sorted(store_rows, key=lambda s: s["seq"])}
+    return [{**row, "cause": row.get("cause") or newest.get((row.get("run"), row.get("task")))} for row in rows]
+
+
 def read_attempts(root: Path) -> list[dict]:
     """The edge: load each `work/<initiative>/<phase>/<task>.md` under `root` and hand its attempts to the core."""
     pairs = [
@@ -44,4 +51,6 @@ def read_attempts(root: Path) -> list[dict]:
         )
         for path in sorted((root / "work").glob("*/*/*.md"))
     ]
-    return attempt_rows(pairs)
+    rows = attempt_rows(pairs)
+    runs = sorted({str(r["run"]) for r in rows if r["run"] and not r["cause"]})
+    return fill_causes(rows, run_store.attempt_causes_for(root / "runs", runs))
