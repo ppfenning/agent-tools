@@ -1385,6 +1385,27 @@ def test_intake_groups_splits_queued_decomposed_landed_and_the_legacy_case():
     assert [e["id"] for e in groups["landed"]] == ["l1", "legacy-uncited", "ci"]
 
 
+_INTAKE_NAMED = "---\nid: a\nintake: intake/a.md\n---\nbody\n"
+
+
+def test_intake_groups_calls_an_intake_named_by_an_open_initiative_decomposed():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    groups = route.intake_groups([entry], [{"id": "x", "done": False, "text": _INTAKE_NAMED}])
+    assert groups["decomposed"] == [entry]
+
+
+def test_intake_groups_calls_an_intake_named_by_a_done_initiative_landed():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    groups = route.intake_groups([entry], [{"id": "x", "done": True, "text": _INTAKE_NAMED}])
+    assert groups["landed"] == [entry]
+
+
+def test_intake_groups_keeps_an_intake_named_by_no_initiative_queued():
+    entry = {"id": "a", "title": "A", "initiative": None, "done": False, "path": "intake/a.md"}
+    groups = route.intake_groups([entry], [{"id": "x", "done": False, "text": "---\nintake: intake/b.md\n---\n"}])
+    assert groups["queued"] == [entry]
+
+
 def test_render_status_joins_multiple_rows_with_one_newline_each():
     rows = [
         {"id": "a", "pid": None, "state": "no pidfile", "started": None,
