@@ -54,6 +54,7 @@ from agent_tools import (
     courier,
     doctor,
     draft_apply,
+    draft_list,
     epic,
     forge,
     forge_github,
@@ -2298,7 +2299,11 @@ def _route_status(a: argparse.Namespace) -> int:
             print(json.dumps(doc, indent=2))
         else:
             shown, hidden = (rows, 0) if a.all else route.recent_rows(rows, datetime.datetime.now(datetime.UTC))
-            print(route.render_status(shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden))
+            status = route.render_status(shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden)
+            drafts = route.render_drafts(
+                draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
+            )
+            print("\n".join(part for part in (status, drafts) if part))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
     return 0
@@ -5472,6 +5477,7 @@ def _chair_run_deps(
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
         session=session, pid=pid, host=host, dispatch=dispatch,
+        drafts=lambda: draft_list.count_drafts(draft_list.read_drafts(ws / "work", now_text())),
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,

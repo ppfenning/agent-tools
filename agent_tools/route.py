@@ -8,7 +8,7 @@ import datetime
 import json
 import os
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import NamedTuple
 
 from agent_tools import run_store
@@ -965,6 +965,12 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     lines += [f"problem: {p}" for p in problems or []]
     lines += [f"gate: {gate_level}"] if gate_level is not None else []
     return "\n".join(lines)
+
+
+def render_drafts(rows: Sequence, age: Callable[[int | None], str]) -> str:
+    """The Drafts block of `route status`: a header, then `id  proposer  age` per row (`.id`, `.proposed_by`,
+    `.age_seconds`, as `draft_list.DraftRow`). Empty for no rows, so the caller adds nothing."""
+    return "\n".join(["drafts:", *(f"  {r.id}  {r.proposed_by}  {age(r.age_seconds)}" for r in rows)]) if rows else ""
 
 
 def status_entries(runs: list, summaries: dict) -> list:
