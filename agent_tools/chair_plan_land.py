@@ -55,8 +55,18 @@ def planned_tasks(approved: list[ApprovedTask], initiatives: list[InitiativeFact
 
 
 def plan_lands(facts: Facts) -> list[Action]:
+    """A land per planned task; a task whose run needs a fetch has one fetch of that run planned before its first land."""
     tasks = planned_tasks(facts["approved"], facts["initiatives"])
+    first_of_run = {t["run"]: t["id"] for t in reversed(tasks) if t["needs_fetch"]}
     return [
-        {"kind": "land", "task_id": t["id"], "repo": t["repo"], "run": t["run"], "initiative": t["initiative"], "epoch": None}  # type: ignore[typeddict-item]  # plan_tick stamps it
+        action
         for t in tasks
+        for action in (
+            *(
+                [{"kind": "fetch", "run": t["run"], "repo": t["repo"], "initiative": t["initiative"], "epoch": None}]  # type: ignore[list-item]  # plan_tick stamps it
+                if first_of_run.get(t["run"]) == t["id"]
+                else []
+            ),
+            {"kind": "land", "task_id": t["id"], "repo": t["repo"], "run": t["run"], "initiative": t["initiative"], "epoch": None},  # type: ignore[typeddict-item]  # plan_tick stamps it
+        )
     ]

@@ -35,7 +35,7 @@ def _blocked(id: str) -> dict:
 
 
 def _approved(id: str) -> dict:
-    return {"id": id, "initiative": "x", "repo": "r", "phase_done": True, "needs": [], "run": "x-1"}
+    return {"id": id, "initiative": "x", "repo": "r", "phase_done": True, "needs": [], "run": "x-1", "needs_fetch": False}
 
 
 def _kinds(actions: list[dict]) -> list[str]:

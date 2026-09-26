@@ -2,8 +2,25 @@ from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_types import Facts
 
 
-def _task(id: str, repo: str = "r", needs: tuple[str, ...] = (), done: bool = True) -> dict:
-    return {"id": id, "initiative": "i", "repo": repo, "phase_done": done, "needs": list(needs), "run": f"i-{id}"}
+def _task(
+    id: str, repo: str = "r", needs: tuple[str, ...] = (), done: bool = True, run: str = "", fetch: bool = False
+) -> dict:
+    return {
+        "id": id, "initiative": "i", "repo": repo, "phase_done": done, "needs": list(needs),
+        "run": run or f"i-{id}", "needs_fetch": fetch,
+    }
+
+
+def _kinds(facts: Facts) -> list[str]:
+    return [a["kind"] for a in plan_lands(facts)]
+
+
+def test_two_tasks_on_one_unfetched_remote_run_plan_one_fetch_before_both_lands():
+    assert _kinds(_facts([_task("a", run="i-1", fetch=True), _task("b", run="i-1", fetch=True)])) == ["fetch", "land", "land"]
+
+
+def test_a_local_run_plans_a_land_only():
+    assert _kinds(_facts([_task("a")])) == ["land"]
 
 
 def _facts(approved: list[dict], landed: frozenset[str] = frozenset()) -> Facts:

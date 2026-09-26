@@ -25,6 +25,10 @@ def _touched(calls: list) -> list:
     return [c for c in calls if c[0] != "record"]
 
 
+def test_a_fetch_runs_cox_runs_fetch_on_its_run():
+    assert argv_for({"kind": "fetch", "run": "r-1"}) == ["cox", "runs", "fetch", "r-1"]
+
+
 def _land(task: str, repo: str) -> dict:
     return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
 

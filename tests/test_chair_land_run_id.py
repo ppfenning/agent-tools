@@ -7,7 +7,7 @@ from agent_tools.chair_read_approved import with_runs
 from agent_tools.chair_report import format_status
 
 STRANDED = [{"run": "x-1", "task": "t", "phase": "p", "branch": None, "remedy": None}]
-TASK = {"id": "t", "initiative": "x", "repo": "/r", "phase": "p", "phase_done": True, "needs": [], "run": "x-1"}
+TASK = {"id": "t", "initiative": "x", "repo": "/r", "phase": "p", "phase_done": True, "needs": [], "run": "x-1", "needs_fetch": False}
 
 
 def _causes(approved):

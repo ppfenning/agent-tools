@@ -10,6 +10,7 @@ from typing import Any
 from agent_tools import route, run_store
 from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_types import ApprovedTask
+from agent_tools.remote_lane import fetched_record_path, land_needs_fetch, remote_record_path
 
 Item = Mapping[str, Any]
 
@@ -36,6 +37,7 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
             "phase_done": phase_done(item, items),
             "needs": list(item.get("needs", [])),
             "run": "",
+            "needs_fetch": False,
         }
         for item in items
         if item["state"] == "approved"
@@ -48,13 +50,33 @@ def _run_order(run: str) -> tuple[int, str]:
     return (int(tail) if tail.isdigit() else -1, run)
 
 
-def with_runs(tasks: Sequence[ApprovedTask], stranded: Sequence[Mapping[str, Any]]) -> list[ApprovedTask]:
-    """Each task gets the newest run with a stranded row for it under its initiative and phase, empty when none has."""
+def with_runs(
+    tasks: Sequence[ApprovedTask],
+    stranded: Sequence[Mapping[str, Any]],
+    fetch_facts: Mapping[str, tuple[bool, bool]] = {},
+) -> list[ApprovedTask]:
+    """Each task gets the newest run with a stranded row for it under its initiative and phase, empty when none has.
+
+    `fetch_facts` maps run -> (has_remote_record, fetched); `needs_fetch` is False for a run it does not list.
+    """
     runs = {
         (run_initiative(str(row["run"])), str(row["phase"]), str(row["task"])): str(row["run"])
         for row in sorted(stranded, key=lambda s: _run_order(str(s["run"])))
     }
-    return [{**t, "run": runs.get((t["initiative"], t["phase"], t["id"]), "")} for t in tasks]
+    return [
+        {**t, "run": run, "needs_fetch": bool(run) and land_needs_fetch(*fetch_facts.get(run, (False, False)))}
+        for t in tasks
+        for run in [runs.get((t["initiative"], t["phase"], t["id"]), "")]
+    ]
+
+
+def read_fetch_facts(runs_dir: Path, stranded: Sequence[Mapping[str, Any]]) -> dict[str, tuple[bool, bool]]:
+    """Edge. run -> (has_remote_record, fetched) for every run a stranded row names."""
+    return {
+        run: (remote_record_path(runs_dir, run).exists(), fetched_record_path(runs_dir, run).exists())
+        for run in {str(row["run"]) for row in stranded}
+        if run
+    }
 
 
 def _repo_of(initiative_md: Path) -> str:

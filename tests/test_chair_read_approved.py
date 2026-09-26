@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_tools.chair_read_approved import approved_rows, read_approved
+from agent_tools.chair_read_approved import approved_rows, read_approved, read_fetch_facts, with_runs
 
 
 def _item(id: str, state: str, phase: str = "build", needs: list[str] | None = None) -> dict:
@@ -9,7 +9,7 @@ def _item(id: str, state: str, phase: str = "build", needs: list[str] | None = N
 
 def test_an_approved_item_yields_one_row_with_the_five_keys() -> None:
     assert approved_rows([_item("a", "approved")]) == [
-        {"id": "a", "initiative": "init", "repo": "r", "phase": "build", "phase_done": True, "needs": [], "run": ""}
+        {"id": "a", "initiative": "init", "repo": "r", "phase": "build", "phase_done": True, "needs": [], "run": "", "needs_fetch": False}
     ]
 
 
@@ -41,5 +41,29 @@ def test_the_edge_reads_the_work_store(tmp_path: Path) -> None:
     (init / "build" / "a.md").write_text("---\nid: a\nstate: approved\nneeds: [z]\n---\nbody\n", encoding="utf-8")
     (init / "build" / "b.md").write_text("---\nid: b\nstate: done\n---\nbody\n", encoding="utf-8")
     assert read_approved(tmp_path) == [
-        {"id": "a", "initiative": "init", "repo": "/r/x", "phase": "build", "phase_done": True, "needs": ["z"], "run": ""}
+        {"id": "a", "initiative": "init", "repo": "/r/x", "phase": "build", "phase_done": True, "needs": ["z"], "run": "", "needs_fetch": False}
     ]
+
+
+_TASK = {
+    "id": "t", "initiative": "init", "repo": "r", "phase": "build", "phase_done": True, "needs": [], "run": "",
+    "needs_fetch": False,
+}
+_STRANDED = [{"run": "init-1", "task": "t", "phase": "build"}]
+
+
+def test_a_task_on_an_unfetched_remote_run_needs_a_fetch() -> None:
+    assert with_runs([_TASK], _STRANDED, {"init-1": (True, False)})[0]["needs_fetch"] is True
+
+
+def test_a_task_on_a_fetched_remote_run_needs_none() -> None:
+    assert with_runs([_TASK], _STRANDED, {"init-1": (True, True)})[0]["needs_fetch"] is False
+
+
+def test_a_task_with_no_run_needs_no_fetch() -> None:
+    assert with_runs([_TASK], [], {"init-1": (True, False)})[0]["needs_fetch"] is False
+
+
+def test_the_edge_reads_the_remote_and_fetched_markers(tmp_path: Path) -> None:
+    (tmp_path / "init-1.remote.json").write_text("{}", encoding="utf-8")
+    assert read_fetch_facts(tmp_path, _STRANDED) == {"init-1": (True, False)}

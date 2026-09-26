@@ -54,7 +54,7 @@ def _deps(
         weekly=lambda: _window(weekly_spent, 168),
         policy=lambda: POLICY,
         docket=lambda: docket,
-        approved=lambda: [{"id": "a", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [], "run": "i-1"}],
+        approved=lambda: [{"id": "a", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [], "run": "i-1", "needs_fetch": True}],
         quarantined=lambda: quarantined,
         stranded=lambda: stranded,
         attempts=lambda: attempts,
