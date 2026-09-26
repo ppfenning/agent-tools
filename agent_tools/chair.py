@@ -254,10 +254,10 @@ def _write_lease(runs_dir: Path, holder: str, epoch: int) -> None:
     path.write_text(json.dumps({"holder": holder, "epoch": epoch}), encoding="utf-8")
 
 
-def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
-    """Edge. The refusal line when another holder has a live lease, else "". A missing harness or a lease error warns on stderr and returns "", so the lock file alone governs."""
+def acquire_lease(runs_dir: Path, session: str, pid: int, host: str, ttl: int = DEFAULT_LEASE_TTL_SECONDS, steal: bool = False) -> str:
+    """Edge. The refusal line when another holder has a live lease, else "". A missing harness or a lease error warns on stderr and returns "", so the lock file alone governs. `steal` takes a held lease at a higher epoch."""
     holder = lease_holder(session, pid, host)
-    result = store_cli.lease_acquire(runs_dir, LEASE_NAME, holder, ttl)
+    result = store_cli.lease_acquire(runs_dir, LEASE_NAME, holder, ttl, steal)
     if isinstance(result, store_cli.LeaseGranted):
         _write_lease(runs_dir, holder, result.epoch)
         return ""
