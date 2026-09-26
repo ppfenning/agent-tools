@@ -15,7 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -248,12 +248,28 @@ def weekly_window_from(
     )
 
 
+def weekly_window_from_spend(spent_usd: float, now: datetime, ceiling_usd: float | None) -> Window:
+    """Pure. The rolling 7-day `Window` for a spend already summed; `runs_in_flight` is 0, the store does not count runs."""
+    start = now - timedelta(days=7)
+    elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
+    return Window(
+        start=start, end=now,
+        spent_usd=spent_usd, ceiling_usd=ceiling_usd,
+        burn_usd_per_hour=spent_usd / elapsed_hours, runs_in_flight=0,
+    )
+
+
 def gather_weekly(
     runs_dir: Path | str,
     now: datetime,
     weekly_ceiling_usd: float | None = None,
     usage: list[tuple[datetime, dict[str, Any]]] | None = None,
+    store_spend: Callable[[str], float | None] | None = None,
 ) -> Window:
-    """Impure edge: the same reader as `gather` (or the given `usage`), folded through
-    `weekly_window_from` instead of the five-hour `window_from`."""
+    """Impure edge. The store wins when `store_spend`, given the ISO text of `now - 7 days`, returns a
+    number; otherwise the usage files win, the same reader as `gather` (or the given `usage`),
+    folded through `weekly_window_from`."""
+    spent = None if store_spend is None else store_spend((now - timedelta(days=7)).isoformat())
+    if spent is not None:
+        return weekly_window_from_spend(spent, now, weekly_ceiling_usd)
     return weekly_window_from(read_usage(runs_dir, now) if usage is None else usage, now, weekly_ceiling_usd)

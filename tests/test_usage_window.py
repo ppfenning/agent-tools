@@ -424,3 +424,20 @@ def test_usage_assessment_reads_the_runs_dir_once(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.usage_window, "read_usage", lambda d, now: calls.append(d) or real(d, now))
     cli._usage_assessment(tmp_path)
     assert calls == [tmp_path]
+
+
+def test_gather_weekly_takes_the_store_spend_over_usage_files_that_sum_differently(tmp_path):
+    _aged_usage_file(tmp_path, "r1", 4.0, timedelta(hours=1))
+    window = gather_weekly(tmp_path, _NOW, store_spend=lambda since: 123.0)
+    assert (window.spent_usd, window.runs_in_flight) == (123.0, 0)
+
+
+def test_gather_weekly_falls_back_to_the_usage_files_when_the_store_gives_none(tmp_path):
+    _aged_usage_file(tmp_path, "r1", 4.0, timedelta(hours=1))
+    assert gather_weekly(tmp_path, _NOW, store_spend=lambda since: None).spent_usd == 4.0
+
+
+def test_gather_weekly_asks_the_store_from_seven_days_before_now_as_iso_text(tmp_path):
+    seen = []
+    gather_weekly(tmp_path, _NOW, store_spend=lambda since: seen.append(since) or 1.0)
+    assert seen == ["2026-08-29T12:00:00+00:00"]

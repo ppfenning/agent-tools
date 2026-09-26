@@ -5406,7 +5406,10 @@ def _chair_run_deps(
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
-        weekly=lambda: usage_window.gather_weekly(runs_dir, now(), profile.get("weekly_ceiling_usd")),
+        weekly=lambda: usage_window.gather_weekly(
+            runs_dir, now(), profile.get("weekly_ceiling_usd"),
+            store_spend=lambda since: run_store.cost_since(runs_dir, since),
+        ),
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,
         approved=approved,
