@@ -2402,7 +2402,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         if new_record is None:
             print(reason)
             return 2
-        refusal = chair.acquire_lease(runs_dir, session, pid, host)
+        refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=a.steal)
         if refusal:
             print(refusal)
             return 2

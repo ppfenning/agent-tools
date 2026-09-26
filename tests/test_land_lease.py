@@ -34,7 +34,7 @@ def _run(body):
 
 
 def test_the_fakes_keep_the_real_wrapper_parameter_names():
-    assert list(inspect.signature(store_cli.lease_acquire).parameters) == ["runs_dir", "name", "holder", "ttl"]
+    assert list(inspect.signature(store_cli.lease_acquire).parameters) == ["runs_dir", "name", "holder", "ttl", "steal"]
     assert list(inspect.signature(store_cli.lease_release).parameters) == ["runs_dir", "name", "holder", "epoch"]
 
 

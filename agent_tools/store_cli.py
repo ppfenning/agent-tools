@@ -113,8 +113,8 @@ def land_lease_name(task: str) -> str:
     return f"land:{task}"
 
 
-def lease_acquire_argv(python: str, name: str, holder: str, ttl: int, store_url: str | None = None) -> list[str]:
-    return [python, *_MODULE, "lease", "acquire", name, holder, "--ttl", str(ttl), *_store(store_url)]
+def lease_acquire_argv(python: str, name: str, holder: str, ttl: int, store_url: str | None = None, steal: bool = False) -> list[str]:
+    return [python, *_MODULE, "lease", "acquire", name, holder, "--ttl", str(ttl), *(["--steal"] if steal else []), *_store(store_url)]
 
 
 def lease_renew_argv(python: str, name: str, holder: str, epoch: int, ttl: int, store_url: str | None = None) -> list[str]:
@@ -210,9 +210,9 @@ def mirror_state(runs_dir: Path, initiative: str, task: str, state: str, by: str
     return None
 
 
-def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int) -> LeaseResult:
+def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int, steal: bool = False) -> LeaseResult:
     url = _store_url(Path(runs_dir))
-    ran = _run(lambda python: lease_acquire_argv(python, name, holder, ttl, url))
+    ran = _run(lambda python: lease_acquire_argv(python, name, holder, ttl, url, steal))
     return NotAvailable() if ran is None else parse_lease(*ran)
 
 

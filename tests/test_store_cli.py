@@ -28,6 +28,24 @@ def test_lease_acquire_argv():
     assert store_cli.lease_acquire_argv(PY, "chair", "me", 60) == [*HEAD, "lease", "acquire", "chair", "me", "--ttl", "60"]
 
 
+def test_lease_acquire_argv_with_steal_ends_with_the_flag():
+    assert store_cli.lease_acquire_argv(PY, "chair", "me", 60, steal=True)[-1] == "--steal"
+    assert store_cli.lease_acquire_argv(PY, "chair", "me", 60, steal=True) == [*HEAD, "lease", "acquire", "chair", "me", "--ttl", "60", "--steal"]
+
+
+def test_lease_acquire_forwards_steal_to_the_harness(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "epoch": 8, "holder": "me"}', stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    monkeypatch.setattr(store_cli.subprocess, "run", fake_run)
+    assert store_cli.lease_acquire(tmp_path, "chair", "me", 60, steal=True) == LeaseGranted(8, "me")
+    assert seen[0][:-2] == [*HEAD, "lease", "acquire", "chair", "me", "--ttl", "60", "--steal"]
+
+
 def test_lease_renew_argv():
     assert store_cli.lease_renew_argv(PY, "chair", "me", 4, 60) == [
         *HEAD, "lease", "renew", "chair", "me", "4", "--ttl", "60"]
