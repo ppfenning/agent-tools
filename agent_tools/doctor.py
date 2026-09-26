@@ -301,13 +301,16 @@ _PARQUET_FIXES = {
 }
 
 
-def parquet_line(readable: bool, reason: str) -> str:
+def parquet_line(readable: bool, reason: str, endpoint: str | None = None) -> str:
     """The one informational line for Parquet trace reads. Never a row, so it never affects `exit_code`.
-    The fix is chosen by `reason`; an unknown reason is shown with no fix rather than a wrong one."""
+    The fix is chosen by `reason`; an unknown reason is shown with no fix rather than a wrong one.
+    An `endpoint`, the object_store block's, is named after the state."""
+    via = f" via {endpoint}" if endpoint else ""
     if readable:
-        return "parquet traces: readable"
+        return f"parquet traces: readable{via}"
     fix = _PARQUET_FIXES.get(reason)
-    return f"parquet traces: not readable ({reason}); fix: {fix}" if fix else f"parquet traces: not readable ({reason})"
+    state = f"parquet traces: not readable ({reason}){via}"
+    return f"{state}; fix: {fix}" if fix else state
 
 
 def render(rows: list[dict]) -> str:
