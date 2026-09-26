@@ -1,0 +1,10 @@
+usage: cox route approve [-h] [--task TASK] [--by BY] [--profile PROFILE] initiative
+
+positional arguments:
+  initiative
+
+options:
+  -h, --help         show this help message and exit
+  --task TASK        approve this one task only
+  --by BY            who approves; default the OS user
+  --profile PROFILE

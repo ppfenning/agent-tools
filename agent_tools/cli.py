@@ -52,6 +52,7 @@ from agent_tools import (
     commands,
     courier,
     doctor,
+    draft_apply,
     epic,
     forge,
     forge_github,
@@ -2227,6 +2228,28 @@ def _route_drift(a: argparse.Namespace) -> int:
     found = route_drift.drift(files, rows)
     print(route_drift.format_json(found) if a.json else route_drift.format_text(found))
     return 0
+
+
+def _route_draft(a: argparse.Namespace, act: Callable[[Path, draft_apply.Store], int]) -> int:
+    """Resolve the workspace and the work-state mode, then hand both to `act`."""
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    store = draft_apply.Store(
+        work_state.work_state_mode(_lake_provider(a)[0]),
+        lambda initiative: run_store.work_items(runs_dir, initiative),
+        lambda initiative, task, state, by, expected: store_cli.set_state(runs_dir, initiative, task, state, by, expected),
+    )
+    return act(runs_dir.parent / "work", store)
+
+
+def _route_approve(a: argparse.Namespace) -> int:
+    return _route_draft(a, lambda work, store: draft_apply.approve(work, a.initiative, a.task, a.by, store))
+
+
+def _route_decline(a: argparse.Namespace) -> int:
+    return _route_draft(a, lambda work, store: draft_apply.decline(work, a.initiative, a.reason, a.by, store))
 
 
 def _route_status(a: argparse.Namespace) -> int:
@@ -5089,6 +5112,22 @@ ROUTE_COMMANDS = [
         "drift", "route", "items whose store state and file state differ",
         (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
         _route_drift, False, (),
+    ),
+    commands.Command(
+        "approve", "route", "approve a draft initiative's todo tickets: todo becomes ready",
+        (
+            commands.Arg(("initiative",)), commands.Arg(("--task",), {"help": "approve this one task only"}),
+            commands.Arg(("--by",), {"help": "who approves; default the OS user"}), commands.Arg(("--profile",)),
+        ),
+        _route_approve, False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "decline", "route", "decline a draft initiative: its todo tickets become dropped",
+        (
+            commands.Arg(("initiative",)), commands.Arg(("--reason",), {"required": True}),
+            commands.Arg(("--by",), {"help": "who declines; default the OS user"}), commands.Arg(("--profile",)),
+        ),
+        _route_decline, False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
