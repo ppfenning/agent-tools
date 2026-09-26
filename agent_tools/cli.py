@@ -102,6 +102,7 @@ from agent_tools import (
     stats_system_one,
     stats_tiers_cmd,
     steward,
+    steward_draft,
     store_cli,
     store_dialect,
     store_url,
@@ -778,6 +779,14 @@ def _steward_propose(a: argparse.Namespace) -> int:
     written = [str(targets[rel]) for rel in sorted(mapping)]
     print(json.dumps(written) if a.json else "\n".join(written))
     return 0
+
+
+def _steward_draft(a: argparse.Namespace) -> int:
+    """`cox steward draft` — writes grounded steward proposals as draft initiatives; see steward_draft."""
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    return steward_draft.run_draft(Path(profile["workspace_dir"]).expanduser(), as_json=a.json)
 
 
 def _runs_top(a: argparse.Namespace) -> int:
@@ -5548,7 +5557,7 @@ ROUTER_COMMANDS = [
 STEWARD_GROUP = commands.Group(
     name="steward", help="ceiling-change candidates from stats.db, proposed as intake files",
     description="Ceiling-change candidates from stats.db, proposed as intake files.",
-    epilog="examples:\n  cox steward propose\n  cox steward propose --json",
+    epilog="examples:\n  cox steward propose\n  cox steward propose --json\n  cox steward draft --json",
 )
 STEWARD_COMMANDS = [
     commands.Command(
@@ -5559,6 +5568,14 @@ STEWARD_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _steward_propose, False, (),
+    ),
+    commands.Command(
+        "draft", "steward", "write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded",
+        (
+            commands.Arg(("--profile",), {"help": "the routing profile naming the workspace (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _steward_draft, False, (),
     ),
 ]
 
