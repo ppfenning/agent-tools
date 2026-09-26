@@ -1,8 +1,10 @@
+import copy
 from dataclasses import replace
 from datetime import UTC, datetime
 
 from agent_tools import chair_exec, chair_report
-from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, error_line, run
+from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, run
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 MINE = {"holder": "me", "host": "box", "epoch": 3, "mine": True, "released": False, "stale": False}
@@ -102,6 +104,57 @@ def test_dry_run_passes_through_and_touches_nothing():
     run(True, 60, True, rig.deps())
     assert " | dry-run | " in rig.lines[0]
     assert rig.acquired == [] and rig.commands == []
+
+
+def _dry_run_plan(lease, **over):
+    """The action kinds a dry-run tick plans through the real planner, and the rig that performed none of them."""
+    rig, planned = Rig(lease=lease), []
+    facts = {**_facts(lease), **over}
+
+    def plan(f):
+        planned.extend(plan_tick(f))
+        return planned
+
+    run(True, 60, True, replace(rig.deps(), gather=lambda d, n: facts, plan=plan))
+    return [a["kind"] for a in planned], rig
+
+
+def test_a_dry_run_on_a_released_lease_plans_the_land_the_holder_would():
+    kinds, rig = _dry_run_plan(FREE)
+    assert kinds == ["land"]
+    assert rig.acquired == [] and rig.commands == []
+
+
+def test_a_dry_run_on_a_stale_lease_plans_the_launch_the_holder_would():
+    fresh = {"id": "i", "started": False, "ready_tasks": [{"id": "t", "needs": []}], "landed": set()}
+    kinds, rig = _dry_run_plan({**FREE, "released": False, "stale": True}, approved=[], initiatives=[fresh])
+    assert kinds == ["launch_epic"]
+    assert rig.acquired == [] and rig.commands == []
+
+
+def test_a_dry_run_behind_a_live_foreign_holder_still_plans_standby():
+    kinds, _rig = _dry_run_plan(FOREIGN)
+    assert kinds == ["standby"]
+
+
+def test_a_live_tick_on_a_released_lease_still_plans_take_lease():
+    rig, planned = Rig(lease=FREE), []
+    run(True, 60, False, replace(rig.deps(), plan=lambda f: planned.extend(plan_tick(f)) or planned))
+    assert [a["kind"] for a in planned] == ["take_lease"]
+
+
+def test_as_holder_wins_a_released_or_stale_lease_without_mutating_its_input():
+    for lease in (FREE, {**FREE, "released": False, "stale": True}):
+        facts = _facts(lease)
+        before = copy.deepcopy(facts)
+        assert as_holder(facts)["lease"]["mine"] is True
+        assert facts == before
+
+
+def test_as_holder_leaves_a_live_foreign_or_own_lease_as_it_is():
+    for lease in (FOREIGN, MINE):
+        facts = _facts(lease)
+        assert as_holder(facts) == facts
 
 
 def test_an_exception_in_one_tick_does_not_stop_the_next():

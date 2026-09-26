@@ -55,6 +55,16 @@ def test_a_stale_lease_returns_only_take_lease():
     assert plan_tick(_facts(lease=_lease(stale=True), initiatives=[_initiative("i")])) == [{"kind": "take_lease", "epoch": 7}]
 
 
+def test_a_quarantined_unstarted_initiative_launches_no_epic_and_the_lane_goes_to_another():
+    quarantined = {"id": "q", "started": False, "ready_tasks": [{"id": "q-t", "needs": []}], "landed": set()}
+    other = {**_initiative("o"), "started": False}
+    facts = _facts(
+        initiatives=[quarantined, other],
+        quarantines=[{"task_id": "p", "initiative": "q", "cause": "scope", "harness_failures": 0}],
+    )
+    assert [(a["kind"], a["initiative"]) for a in plan_tick(facts) if a["kind"] == "launch_epic"] == [("launch_epic", "o")]
+
+
 def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
     facts = _facts(
         limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},

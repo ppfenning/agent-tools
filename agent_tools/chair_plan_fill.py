@@ -1,13 +1,15 @@
-"""Plan the free lanes: started work first, then intake decomposes in pairs, then a pull.
+"""Plan the free lanes: started epics, then unstarted ones, then intake decomposes in pairs, then a pull.
 
 Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
 """
 from agent_tools.chair_types import Action, Facts
 
 
-def _epic_launches(facts: Facts, free_lanes: int) -> list[Action]:
-    started = [i for i in facts["initiatives"] if i["started"] and i["ready_tasks"]]
-    return [{"kind": "launch_epic", "initiative": i["id"]} for i in started[:free_lanes]]
+def _epic_launches(facts: Facts, free_lanes: int, withheld: frozenset[str]) -> list[Action]:
+    """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch."""
+    open_ = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld]
+    ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]
+    return [{"kind": "launch_epic", "initiative": i["id"]} for i in ordered[:free_lanes]]
 
 
 def _decompose_launches(facts: Facts, lanes: int) -> list[Action]:
@@ -30,10 +32,10 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
     )
 
 
-def plan_fill(facts: Facts, free_lanes: int) -> list[Action]:
+def plan_fill(facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
     if free_lanes <= 0:
         return []
-    epics = _epic_launches(facts, free_lanes)
+    epics = _epic_launches(facts, free_lanes, withheld)
     decomposes = _decompose_launches(facts, free_lanes - len(epics))
     lanes_left = free_lanes - len(epics) - len(decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []

@@ -43,12 +43,6 @@ def _free_lanes(cap: int, kept: int, dispatch: DispatchFacts) -> int:
     return max(0, min(cap - kept, dispatch["max_in_flight"] - dispatch["live_runs"] - kept))
 
 
-def _fill_facts(facts: Facts, withheld: set[str]) -> Facts:
-    """Withheld initiatives stop being epic candidates; they stay in the list so their ready tasks still block a pull."""
-    initiatives = [{**i, "started": False} if i["id"] in withheld else i for i in facts["initiatives"]]
-    return {**facts, "initiatives": initiatives}
-
-
 def _plan_as_holder(facts: Facts) -> list[Action]:
     lands = plan_lands(facts)
     recovered = plan_recover(facts)
@@ -58,8 +52,9 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
     capped = _cap_launches(recovered, cap)
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
-    withheld = {a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]}
-    return [*lands, *capped, *plan_fill(_fill_facts(facts, withheld), _free_lanes(cap, kept, facts["dispatch"]))]
+    # Withheld initiatives stay in the facts so their ready tasks still block a pull.
+    withheld = frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]})
+    return [*lands, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
 
 
 def plan_tick(facts: Facts) -> list[Action]:

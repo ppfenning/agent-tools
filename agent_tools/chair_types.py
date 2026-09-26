@@ -115,8 +115,8 @@ class PlanRecover(Protocol):
 
 
 class PlanFill(Protocol):
-    def __call__(self, facts: Facts, free_lanes: int) -> list[Action]:
-        """plan_fill(facts, free_lanes) -> list[action]: launch_epic, launch_decompose and pull into free lanes."""
+    def __call__(self, facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
+        """plan_fill(facts, free_lanes, withheld) -> list[action]: launch_epic, launch_decompose and pull; withheld launch no epic."""
         ...
 
 

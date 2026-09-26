@@ -13,7 +13,7 @@ from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_types import Action, Facts, PlanTick
 
-__all__ = ["DEFAULT_INTERVAL", "RunDeps", "error_line", "run", "tick"]
+__all__ = ["DEFAULT_INTERVAL", "RunDeps", "as_holder", "error_line", "run", "tick"]
 
 DEFAULT_INTERVAL = 60.0
 
@@ -46,10 +46,21 @@ def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) ->
     return f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z} | tick error: {type(exc).__name__}: {exc}{tail}"
 
 
+def as_holder(facts: Facts) -> Facts:
+    """The facts as seen once `take_lease` had won a released or stale lease; a live foreign holder is left alone."""
+    lease = facts["lease"]
+    won = lease["released"] or lease["stale"]
+    return {**facts, "lease": {**lease, "mine": True}} if won else facts
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
-    """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed."""
+    """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
+
+    A dry run never takes the lease, so it plans as the holder would to show the actions a live tick would take.
+    """
     deps.beat()
-    facts = deps.gather(deps.facts_deps, now)
+    gathered = deps.gather(deps.facts_deps, now)
+    facts = as_holder(gathered) if dry_run else gathered
     actions = deps.plan(facts)
     results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
     try:

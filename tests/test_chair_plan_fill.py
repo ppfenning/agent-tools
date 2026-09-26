@@ -52,9 +52,28 @@ def test_an_initiative_launches_one_epic_however_many_tasks_are_ready():
     assert plan_fill(facts, 3) == [{"kind": "launch_epic", "initiative": "a"}]
 
 
-def test_unstarted_or_taskless_initiatives_launch_no_epic():
-    facts = _facts(initiatives=[_init("a", ready=()), _init("b", started=False)])
-    assert plan_fill(facts, 3) == []
+def test_a_taskless_initiative_launches_no_epic():
+    assert plan_fill(_facts(initiatives=[_init("a", ready=()), _init("b", started=False, ready=())]), 3) == []
+
+
+def test_an_unstarted_initiative_with_a_ready_task_launches_when_a_lane_is_free():
+    facts = _facts(initiatives=[_init("a", started=False)], work_store_ready=True)
+    assert plan_fill(facts, 1) == [{"kind": "launch_epic", "initiative": "a"}]
+
+
+def test_started_initiatives_launch_before_unstarted_ones_each_in_docket_order():
+    facts = _facts(initiatives=[_init("u1", started=False), _init("s1"), _init("u2", started=False), _init("s2")])
+    assert plan_fill(facts, 1) == [{"kind": "launch_epic", "initiative": "s1"}]
+    assert plan_fill(facts, 3) == [
+        {"kind": "launch_epic", "initiative": "s1"},
+        {"kind": "launch_epic", "initiative": "s2"},
+        {"kind": "launch_epic", "initiative": "u1"},
+    ]
+
+
+def test_a_withheld_initiative_launches_no_epic_but_the_lane_goes_to_the_next():
+    facts = _facts(initiatives=[_init("a", started=False), _init("b", started=False)])
+    assert plan_fill(facts, 1, frozenset({"a"})) == [{"kind": "launch_epic", "initiative": "b"}]
 
 
 def test_epics_take_lanes_first_and_decomposes_get_the_remainder_oldest_first():
