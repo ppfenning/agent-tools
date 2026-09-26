@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import socket
 import subprocess
 import types
@@ -12,6 +13,7 @@ import types
 import pytest
 
 from agent_tools import chair, store_cli
+from agent_tools.cli import main
 
 
 class _FakeClock:
@@ -287,3 +289,38 @@ def test_release_with_a_refused_lease_warns_and_still_removes_the_sidecar(tmp_pa
 
     assert "held by other@h:9" in capsys.readouterr().err
     assert not (tmp_path / chair.LEASE_FILENAME).exists()
+
+
+def _take_over_live_record(tmp_path, monkeypatch, record_session: str, *flags: str):
+    """Run `chair take --label bob` against a fresh live record; return (rc, acquire_lease kwargs, runs_dir)."""
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    runs_dir = tmp_path / "runs"
+    fresh = datetime.datetime.now(datetime.UTC).isoformat()
+    chair.write(runs_dir, {"session": record_session, "pid": os.getpid(), "host": socket.gethostname(), "taken_at": fresh, "heartbeat_at": fresh, "runs": ["run-1"], "claude_session": None})
+    seen: list[dict] = []
+    monkeypatch.setattr(chair, "acquire_lease", lambda *args, **kwargs: seen.append(kwargs) or "")
+    rc = main(["route", "chair", "take", "--profile", str(profile), "--label", "bob", "--pid", str(os.getpid()), *flags])
+    return rc, seen, runs_dir
+
+
+def test_take_steal_on_own_live_record_retakes_the_lease(tmp_path, monkeypatch, capsys):
+    rc, seen, runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob", "--steal")
+    assert rc == 0
+    assert capsys.readouterr().out.startswith("chair lease retaken: bob (pid ")
+    assert seen == [{"steal": True}]
+    assert chair.read(runs_dir)["runs"] == ["run-1"]
+
+
+def test_take_without_steal_on_own_live_record_is_refused_and_leaves_the_lease(tmp_path, monkeypatch, capsys):
+    rc, seen, _runs_dir = _take_over_live_record(tmp_path, monkeypatch, "bob")
+    assert rc == 2
+    assert capsys.readouterr().out.startswith("chair: held by bob")
+    assert seen == []
+
+
+def test_take_steal_on_another_sessions_live_record_is_refused(tmp_path, monkeypatch, capsys):
+    rc, seen, _runs_dir = _take_over_live_record(tmp_path, monkeypatch, "alice", "--steal")
+    assert rc == 2
+    assert capsys.readouterr().out.startswith("chair: held by alice")
+    assert seen == []

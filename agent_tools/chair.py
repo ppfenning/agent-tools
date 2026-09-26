@@ -101,6 +101,11 @@ def take(
     return new_record, ""
 
 
+def same_holder(record: dict[str, Any] | None, session: str, pid: int, host: str) -> bool:
+    """Pure: the record names this session, pid and host. No record names no one."""
+    return record is not None and _is_holder(record, session, pid, host)
+
+
 def claude_session_from_env(environ: Mapping[str, str]) -> str | None:
     """Edge helper. The chair's Claude session id from CLAUDE_CODE_SESSION_ID, else CLAUDE_SESSION_ID, else None; absence never fails."""
     return environ.get("CLAUDE_CODE_SESSION_ID") or environ.get("CLAUDE_SESSION_ID") or None
