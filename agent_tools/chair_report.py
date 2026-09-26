@@ -47,10 +47,18 @@ def needs_chair_items(actions: Sequence[Action]) -> list[str]:
     return [f"{a.get('initiative', '?')}:{a.get('cause', '?')}" for a in actions if a.get("kind") == "needs_chair"]
 
 
+def _launched_item(action: Action) -> str:
+    target = action.get("initiative") or action.get("task_id", "?")
+    host = action.get("host")
+    if host and action.get("kind") in ("relaunch", "retry", "launch_epic"):  # the kinds `argv_for` sends `--on` for
+        return f"epic:{target}@{host}"
+    return f"{action.get('kind')}:{target}"
+
+
 def launched_items(results: Sequence[Result]) -> list[str]:
-    """`<kind>:<initiative>` for every launch, relaunch, retry or rescue that ran."""
+    """`<kind>:<initiative>` for every launch, relaunch, retry or rescue that ran; an epic launch on a lane host is `epic:<initiative>@<host>`."""
     return [
-        f"{r['action'].get('kind')}:{r['action'].get('initiative') or r['action'].get('task_id', '?')}"
+        _launched_item(r["action"])
         for r in results
         if r["status"] == "done" and r["action"].get("kind") in LAUNCH_KINDS
     ]

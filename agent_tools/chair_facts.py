@@ -65,6 +65,7 @@ class FactsDeps:
     session: str
     pid: int
     host: str
+    dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -215,8 +216,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     weekly = deps.weekly()
     assessment = pacing.assess(deps.window(), policy, now, weekly)
     docket = deps.docket()
-    # No source reports lanes per host yet: every live lane counts as local until one does.
-    dispatch = dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
+    dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
     initiatives = initiative_facts(docket, live)

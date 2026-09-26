@@ -5325,6 +5325,18 @@ def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]
     return task_records, items
 
 
+def _live_by_host(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:
+    """Live lanes per host name; a lane with no host, or on `local`, counts under the empty name."""
+    names = [("" if lane.host in (None, local) else lane.host) for lane in lanes]
+    return {name: names.count(name) for name in dict.fromkeys(names)}
+
+
+def _dispatch_counts(lanes: Sequence[run_store.Lane], local: str, listed: Sequence[str], pidfile_live: int) -> dict[str, int]:
+    """`lanes` are the store lanes no local pidfile names. Live pidfile runs and lanes on a host the profile does not list count as local, so the total is what `busy_lanes` counted."""
+    by_host = _live_by_host(lanes, local)
+    return {"": pidfile_live + sum(n for name, n in by_host.items() if name not in listed), **{name: by_host.get(name, 0) for name in listed}}
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -5375,6 +5387,17 @@ def _chair_run_deps(
             return ""
         return route.parse_frontmatter(text)[0].get("repo") or ""
 
+    parsed_hosts = _profile_lane_hosts(_read_text_or_none(profile_path) or "")  # the `profile` dict never carries lane_hosts
+    if isinstance(parsed_hosts, lane_hosts.LaneHostError):
+        echo(f"chair run: lane_hosts ignored: {parsed_hosts.message}")
+    host_names = [] if isinstance(parsed_hosts, lane_hosts.LaneHostError) else [h.name for h in parsed_hosts]
+
+    def dispatch(row: dict) -> chair_facts.DispatchFacts:
+        stamp = now_text()
+        pidfile_live, pidfiled = chair_read_docket.local_runs(runs_dir, stamp)
+        lanes = run_store.remote_lanes(run_store.live_lanes(runs_dir, stamp), pidfiled)
+        return chair_facts.dispatch_facts(row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live))
+
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
@@ -5392,7 +5415,7 @@ def _chair_run_deps(
         intake=lambda: chair_read_intake.read_intake(ws),
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
-        session=session, pid=pid, host=host,
+        session=session, pid=pid, host=host, dispatch=dispatch,
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,

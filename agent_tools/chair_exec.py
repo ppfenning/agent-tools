@@ -74,7 +74,11 @@ def argv_for(action: Action) -> list[str] | None:
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
     if kind in LAUNCH_KINDS:
-        return ["cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", *(["--repo", repo] if repo else [])] if initiative else None
+        host = action.get("host", "")
+        return [
+            "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}",
+            *(["--repo", repo] if repo else []), *(["--on", host] if host else []),
+        ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
     return None

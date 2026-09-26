@@ -55,6 +55,12 @@ def test_a_rescue_that_ran_appears_as_launched():
     assert " | launched: rescue:epic-a, retry:epic-b | needs chair: none" in line
 
 
+def test_a_launch_on_a_lane_host_names_the_host():
+    line = format_status(_facts(), [], [_result("launch_epic", "done", initiative="x", host="jarvis")], NOW)
+    assert "launched: epic:x@jarvis" in line
+    assert "launch_epic" not in line
+
+
 def test_a_not_landed_land_appears_as_failed():
     results = [_result("land", "not_landed", task_id="t1", initiative="epic-a"), _result("pull", "refused", initiative="epic-c")]
     line = format_status(_facts(), [], results, NOW)
