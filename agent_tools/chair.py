@@ -28,7 +28,10 @@ __all__ = [
     "chair_path",
     "claude_session_from_env",
     "clear",
+    "expired",
+    "extend",
     "guard",
+    "hours_left",
     "leader_path",
     "lease_holder",
     "lease_verdict",
@@ -75,8 +78,35 @@ def liveness(record: dict[str, Any] | None, pid_alive_: bool, now: datetime.date
     return "live"
 
 
+def _until(record: dict[str, Any] | None) -> datetime.datetime | None:
+    """The record's `until` as an aware datetime; a missing, malformed or naive one reads as None."""
+    try:
+        parsed = datetime.datetime.fromisoformat(record["until"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def expired(record: dict[str, Any] | None, now: datetime.datetime) -> bool:
+    """Pure: the record carries an `until` before `now`. No `until` never expires."""
+    until = _until(record)
+    return until is not None and until < now
+
+
+def hours_left(record: dict[str, Any] | None, now: datetime.datetime) -> float | None:
+    """Pure: hours from `now` to the record's `until`, negative once past; None with no usable `until`."""
+    until = _until(record)
+    return None if until is None else (until - now).total_seconds() / 3600
+
+
+def extend(record: dict[str, Any], now: datetime.datetime, hours: float) -> dict[str, Any]:
+    """Pure: a copy of `record` whose `until` is `hours` after `now`."""
+    return {**record, "until": (now + datetime.timedelta(hours=hours)).isoformat()}
+
+
 def _held_by_line(record: dict[str, Any]) -> str:
-    return f"held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}"
+    until = f" until {record['until']}" if "until" in record else ""
+    return f"held by {record.get('session', '?')} (pid {record.get('pid', '?')}) on {record.get('host', '?')}{until}"
 
 
 def take(
@@ -89,16 +119,19 @@ def take(
     pid_alive_: bool,
     steal: bool = False,
     claude_session: str | None = None,
+    hours: float | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Pure."""
+    """Pure. A live record past its `until` is taken like a stale one. `hours` stamps the new record's `until`."""
     state = liveness(record, pid_alive_, now, host, heartbeat_minutes)
-    if state == "live":
+    lapsed = state == "live" and expired(record, now)
+    if state == "live" and not lapsed:
         return None, f"chair: {_held_by_line(record)}"
-    if state in ("stale", "crashed") and not steal:
-        return None, f"chair: {_held_by_line(record)} ({state}; pass --steal to take over)"
+    if (lapsed or state in ("stale", "crashed")) and not steal:
+        why = f"takeover expired at {record['until']}" if lapsed else state
+        return None, f"chair: {_held_by_line(record)} ({why}; pass --steal to take over)"
     taken_at = now.isoformat()
     new_record = {"session": session, "pid": pid, "host": host, "taken_at": taken_at, "heartbeat_at": taken_at, "runs": [], "claude_session": claude_session}
-    return new_record, ""
+    return (new_record if hours is None else extend(new_record, now, hours)), ""
 
 
 def same_holder(record: dict[str, Any] | None, session: str, pid: int, host: str) -> bool:

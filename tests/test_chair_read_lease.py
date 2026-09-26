@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import UTC, datetime
 
+from agent_tools import chair
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import lease_facts
 from agent_tools.chair_plan import _lease_gate
@@ -55,3 +56,17 @@ def test_the_edge_reads_absent_with_no_store_or_no_chair_row(tmp_path):
     assert read_lease(tmp_path, NOW) == ABSENT
     _store(tmp_path, ("runs:x", "x-1", 1, "2026-09-26T13:00:00Z"))
     assert read_lease(tmp_path, NOW) == ABSENT
+
+
+def test_the_edge_adds_until_and_expired_from_the_holders_chair_record(tmp_path):
+    _store(tmp_path, ("chair", HOLDER, 4, "2026-09-26T12:05:00Z"))
+    chair.write(tmp_path, {"session": "s", "pid": 7, "host": "h", "until": "2026-09-26T11:00:00+00:00"})
+    lease = read_lease(tmp_path, NOW)
+    assert (lease["until"], lease["expired"]) == ("2026-09-26T11:00:00+00:00", True)
+    assert lease_facts(lease, "other", 1, "h")["expired"] is True
+
+
+def test_the_edge_ignores_the_until_of_another_holders_chair_record(tmp_path):
+    _store(tmp_path, ("chair", HOLDER, 4, "2026-09-26T12:05:00Z"))
+    chair.write(tmp_path, {"session": "zed", "pid": 7, "host": "h", "until": "2026-09-26T11:00:00+00:00"})
+    assert "expired" not in read_lease(tmp_path, NOW)

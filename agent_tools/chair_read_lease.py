@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from agent_tools import run_store
+from agent_tools import chair, run_store
 from agent_tools.chair import LEASE_NAME
 
 Row = dict[str, Any]
@@ -61,4 +61,17 @@ def read_lease(runs_dir: Path, now: datetime) -> Row:
         return dict(ABSENT)
     finally:
         conn.close()
-    return lease_record(None if row is None else dict(row), now)
+    return _with_takeover(lease_record(None if row is None else dict(row), now), runs_dir, now)
+
+
+def _with_takeover(lease: Row, runs_dir: Path, now: datetime) -> Row:
+    """Edge. Adds `until` and `expired` from chair.json when it is this lease holder's record and carries an `until`."""
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, ValueError):
+        return lease
+    if record is None or "until" not in record:
+        return lease
+    if chair.lease_holder(str(record.get("session")), record.get("pid"), str(record.get("host"))) != lease["holder"]:
+        return lease
+    return {**lease, "until": str(record["until"]), "expired": chair.expired(record, now)}

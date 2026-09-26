@@ -2338,6 +2338,18 @@ def _leader_heartbeat_minutes() -> int:
     return chair.DEFAULT_HEARTBEAT_MINUTES
 
 
+def _leader_takeover_hours() -> float:
+    """`policy.leader.takeover_hours`, default 3; answers the default for the same reason `_leader_heartbeat_minutes` does."""
+    return 3.0
+
+
+def _leader_refuse_hours(hours: float | None) -> int | None:
+    if hours is None or hours > 0:
+        return None
+    print(f"chair: --hours must be positive, got {hours}")
+    return 2
+
+
 def _leader_read_or_refuse(runs_dir: Path):
     """A file present but unreadable or not valid JSON is a refusal, not a free lock
     (charter A6: `chair.read` raises at the edge; here is where that becomes a value).
@@ -2428,6 +2440,10 @@ def _route_chair_take(a: argparse.Namespace) -> int:
     refuse_rc = _leader_refuse_dead_pid(a.pid)
     if refuse_rc is not None:
         return refuse_rc
+    hours = getattr(a, "hours", None)  # the bare launcher's namespace has none: its record carries no `until`
+    refuse_rc = _leader_refuse_hours(hours)
+    if refuse_rc is not None:
+        return refuse_rc
     heartbeat_minutes = _leader_heartbeat_minutes()
     with chair.locked(runs_dir):
         record, read_rc = _leader_read_or_refuse(runs_dir)
@@ -2437,7 +2453,7 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         alive = _leader_pid_alive(record)
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
-        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ))
+        new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ), hours=hours)
         if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
             refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=True)
             if refusal:
@@ -2455,6 +2471,28 @@ def _route_chair_take(a: argparse.Namespace) -> int:
             return 2
         chair.write(runs_dir, new_record)
     print(f"chair taken: {new_record['session']} (pid {new_record['pid']}) on {new_record['host']}")
+    return 0
+
+
+def _route_chair_extend(a: argparse.Namespace) -> int:
+    _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    session = a.label or "chair"
+    pid, host = _leader_identity(a.pid)
+    refuse_rc = _leader_refuse_dead_pid(a.pid) or _leader_refuse_hours(a.hours)
+    if refuse_rc is not None:
+        return refuse_rc
+    with chair.locked(runs_dir):
+        record, read_rc = _leader_read_or_refuse(runs_dir)
+        if read_rc is not None:
+            return read_rc
+        if not chair.same_holder(record, session, pid, host):
+            print(f"chair: not held by {session} (pid {pid}) on {host}")
+            return 2
+        new_record = chair.extend(record, datetime.datetime.now(datetime.UTC), a.hours)
+        chair.write(runs_dir, new_record)
+    print(f"chair extended until {new_record['until']}")
     return 0
 
 
@@ -2524,7 +2562,9 @@ def _route_chair_status(a: argparse.Namespace) -> int:
     elif record is None:
         print("chair: none")
     else:
-        print(f"chair: {record['session']} (pid {record['pid']}) on {record['host']} — {state}")
+        left = chair.hours_left(record, now)
+        window = "" if left is None else f" until {record['until']} ({'expired' if chair.expired(record, now) else f'{left:.1f}h left'})"
+        print(f"chair: {record['session']} (pid {record['pid']}) on {record['host']} — {state}{window}")
     return 0
 
 
@@ -5153,8 +5193,17 @@ ROUTE_COMMANDS = [
                 (
                     commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
                     commands.Arg(("--steal",), {"action": "store_true"}),
+                    commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "how long the takeover lasts before the loop may steal it (default: policy.leader.takeover_hours)"}),
                 ),
                 _route_chair_take, False, (),
+            ),
+            commands.Command(
+                "extend", "route", "move the end of the chair takeover this session holds",
+                (
+                    commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
+                    commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "hours from now (default: policy.leader.takeover_hours)"}),
+                ),
+                _route_chair_extend, False, (),
             ),
             commands.Command(
                 "beat", "route", "refresh the chair lock's heartbeat",

@@ -324,3 +324,92 @@ def test_take_steal_on_another_sessions_live_record_is_refused(tmp_path, monkeyp
     assert rc == 2
     assert capsys.readouterr().out.startswith("chair: held by alice")
     assert seen == []
+
+
+_T0 = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+_UNTIL = (_T0 + datetime.timedelta(hours=3)).isoformat()
+_HELD = {"session": "alice", "pid": 4242, "host": "h1", "taken_at": _T0.isoformat(), "heartbeat_at": _T0.isoformat(), "runs": [], "until": _UNTIL}
+
+
+def test_take_with_hours_stamps_until_three_hours_after_now():
+    record, reason = chair.take(None, "bob", 7, "h1", _T0, 10, True, hours=3)
+    assert (record["until"], reason) == ("2026-09-26T15:00:00+00:00", "")
+
+
+def test_take_without_hours_stamps_no_until():
+    record, _ = chair.take(None, "bob", 7, "h1", _T0, 10, True)
+    assert "until" not in record
+
+
+def test_expired_is_true_a_minute_after_until_and_false_a_minute_before():
+    assert chair.expired(_HELD, datetime.datetime.fromisoformat(_UNTIL) + datetime.timedelta(minutes=1)) is True
+    assert chair.expired(_HELD, datetime.datetime.fromisoformat(_UNTIL) - datetime.timedelta(minutes=1)) is False
+
+
+def test_a_record_without_until_never_expires():
+    assert chair.expired({**_HELD, "until": None}, _T0 + datetime.timedelta(days=9)) is False
+
+
+def test_take_steals_an_expired_live_record():
+    late = datetime.datetime.fromisoformat(_UNTIL) + datetime.timedelta(minutes=1)
+    held = {**_HELD, "heartbeat_at": late.isoformat()}
+    record, reason = chair.take(held, "bob", 7, "h2", late, 10, True, steal=True)
+    assert (record["session"], reason) == ("bob", "")
+
+
+def test_take_without_steal_refuses_an_expired_live_record_naming_the_expiry():
+    late = datetime.datetime.fromisoformat(_UNTIL) + datetime.timedelta(minutes=1)
+    held = {**_HELD, "heartbeat_at": late.isoformat()}
+    record, reason = chair.take(held, "bob", 7, "h2", late, 10, True)
+    assert record is None
+    assert reason == f"chair: held by alice (pid 4242) on h1 until {_UNTIL} (takeover expired at {_UNTIL}; pass --steal to take over)"
+
+
+def test_take_refuses_an_unexpired_live_record_with_its_until():
+    record, reason = chair.take(_HELD, "bob", 7, "h2", _T0, 10, True, steal=True)
+    assert (record, reason) == (None, f"chair: held by alice (pid 4242) on h1 until {_UNTIL}")
+
+
+def test_extend_moves_until_and_leaves_the_record_alone():
+    moved = chair.extend(_HELD, _T0, 5)
+    assert moved == {**_HELD, "until": "2026-09-26T17:00:00+00:00"}
+    assert _HELD["until"] == _UNTIL
+
+
+def test_cli_status_prints_until_and_the_hours_left(tmp_path, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    now = datetime.datetime.now(datetime.UTC)
+    held = {**_HELD, "host": "elsewhere", "heartbeat_at": now.isoformat(), "until": (now + datetime.timedelta(hours=3, minutes=1)).isoformat()}
+    chair.write(tmp_path / "runs", held)
+    assert main(["route", "chair", "status", "--profile", str(profile)]) == 0
+    assert f"— live until {held['until']} (3.0h left)" in capsys.readouterr().out
+
+
+def test_cli_status_says_expired_past_until(tmp_path, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    now = datetime.datetime.now(datetime.UTC)
+    chair.write(tmp_path / "runs", {**_HELD, "host": "elsewhere", "heartbeat_at": now.isoformat(), "until": (now - datetime.timedelta(hours=1)).isoformat()})
+    assert main(["route", "chair", "status", "--profile", str(profile)]) == 0
+    assert "(expired)" in capsys.readouterr().out
+
+
+def test_cli_take_hours_stamps_until_and_extend_moves_it(tmp_path, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    argv = ["--profile", str(profile), "--label", "carol", "--pid", str(os.getpid())]
+    assert main(["route", "chair", "take", *argv, "--hours", "2"]) == 0
+    first = chair.read(tmp_path / "runs")["until"]
+    assert main(["route", "chair", "extend", *argv, "--hours", "5"]) == 0
+    assert capsys.readouterr().out.strip().endswith(f"chair extended until {chair.read(tmp_path / 'runs')['until']}")
+    assert chair.read(tmp_path / "runs")["until"] > first
+
+
+def test_cli_extend_refuses_a_session_that_does_not_hold_the_chair(tmp_path, capsys):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path}\n")
+    chair.write(tmp_path / "runs", _HELD)
+    argv = ["--profile", str(profile), "--label", "carol", "--pid", str(os.getpid())]
+    assert main(["route", "chair", "extend", *argv, "--hours", "1"]) == 2
+    assert chair.read(tmp_path / "runs")["until"] == _UNTIL

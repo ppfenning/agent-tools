@@ -13,6 +13,8 @@ class LeaseFacts(TypedDict):
     mine: bool
     released: bool
     stale: bool
+    expired: bool  # another holder's takeover window has passed
+    until: str  # that window's end, ISO; empty when the holder set none
 
 
 class LimitsFacts(TypedDict):
@@ -111,6 +113,8 @@ class Action(TypedDict, total=False):
     intake_ids: list[str]
     holder: str
     host: str
+    until: str  # a standby names when the holder's takeover window ends
+    reason: str  # a take_lease over an expired takeover says so
 
 
 class PlanLands(Protocol):

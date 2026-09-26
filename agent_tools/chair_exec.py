@@ -37,7 +37,7 @@ class Result(TypedDict):
 class Deps:
     run: Run  # (exit code, output); the only door to cox
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
-    acquire_lease: Callable[[str, str], str]  # (holder, host) -> refusal line or ""
+    acquire_lease: Callable[..., str]  # (holder, host), or (holder, host, steal=True) over an expired takeover -> refusal line or ""
     record: Callable[[Action], None]
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
@@ -125,7 +125,9 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
 
 
 def _lease(action: Action, deps: Deps) -> Result:
-    line = deps.acquire_lease(action.get("holder", ""), action.get("host", ""))
+    holder, host = action.get("holder", ""), action.get("host", "")
+    over_expired = action.get("reason", "").startswith("takeover expired")
+    line = deps.acquire_lease(holder, host, steal=True) if over_expired else deps.acquire_lease(holder, host)
     return _result(action, "refused", line) if line else _result(action, "done")
 
 
@@ -227,7 +229,7 @@ def edge_deps(
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
-        acquire_lease=lambda holder, host: chair.acquire_lease(runs_dir, session, pid, host),
+        acquire_lease=lambda holder, host, steal=False: chair.acquire_lease(runs_dir, session, pid, host, steal=steal),
         record=record,
         run_id=run_id,
         repo_for=repo_for,

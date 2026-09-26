@@ -270,3 +270,13 @@ def test_plan_tick_leaves_the_facts_alone():
     before = copy.deepcopy(facts)
     plan_tick(facts)
     assert facts == before
+
+
+def test_another_holder_with_an_expired_takeover_plans_take_lease_with_the_reason():
+    facts = _facts(lease=_lease(expired=True, until="2026-09-26T15:00:00+00:00"), approved=[_approved("t1")])
+    assert plan_tick(facts) == [{"kind": "take_lease", "reason": "takeover expired at 2026-09-26T15:00:00+00:00", "epoch": 7}]
+
+
+def test_another_holder_inside_its_takeover_plans_standby_naming_until():
+    facts = _facts(lease=_lease(expired=False, until="2026-09-26T15:00:00+00:00"))
+    assert plan_tick(facts) == [{"kind": "standby", "holder": "other", "host": "elsewhere", "until": "2026-09-26T15:00:00+00:00", "epoch": 7}]
