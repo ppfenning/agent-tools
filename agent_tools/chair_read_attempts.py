@@ -6,6 +6,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from agent_tools import run_store
+from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, Key, run_initiative
+from agent_tools.chair_read_quarantined import attempts_on_current_body, item_body
 from agent_tools.stats_chair import frontmatter_item
 
 
@@ -42,15 +44,54 @@ def fill_causes(rows: Iterable[Mapping], store_rows: Iterable[Mapping]) -> list[
     return [{**row, "cause": row.get("cause") or newest.get((row.get("run"), row.get("task")))} for row in rows]
 
 
-def read_attempts(root: Path) -> list[dict]:
-    """The edge: load each `work/<initiative>/<phase>/<task>.md` under `root` and hand its attempts to the core."""
-    pairs = [
-        (
-            str(path.relative_to(root)),
-            frontmatter_item(path.read_text(encoding="utf-8"), path.stem).get("attempts"),
-        )
-        for path in sorted((root / "work").glob("*/*/*.md"))
+def current_body_starts(items: Iterable[tuple[str, str, Iterable[Mapping] | None]]) -> dict[Key, str]:
+    """(initiative, phase, task) to the `ts` of the task's first attempt on its current body, from (path, body, attempts) items.
+
+    An attempt with another `body_sha` was made on an earlier body. A task with no timed attempt on the current body has no key."""
+    starts = {}
+    for path, body, attempts in items:
+        initiative, phase, task = path_parts(path)
+        on_body = attempts_on_current_body([a for a in attempts or [] if isinstance(a, Mapping)], body)
+        stamps = [str(a["ts"]) for a in on_body if a.get("ts")]
+        if stamps and task is not None:
+            starts[(str(initiative), str(phase), task)] = min(stamps)
+    return starts
+
+
+def with_stored_rescues(rows: Iterable[Mapping], store_rows: Iterable[Mapping], starts: Mapping[Key, str]) -> list[dict]:
+    """The rows plus one rescue_failed row per store row at or after its task's first attempt on the current body, sorted by `ts`.
+
+    A store row from before that attempt belongs to an earlier body, so a re-grounded ticket gets a fresh rescue."""
+    rescues = [
+        {
+            "run": s["run_id"],
+            "task": s["task_id"],
+            "phase": s["phase_id"],
+            "initiative": run_initiative(str(s["run_id"])),
+            "ts": s["ts"],
+            "kind": "rescue_failed",
+            "cause": RESCUE_FAILED_CAUSE,
+        }
+        for s in store_rows
     ]
+    kept = [r for r in rescues if _rescue_key(r) in starts and str(r["ts"] or "") >= starts[_rescue_key(r)]]
+    return sorted([*rows, *kept], key=lambda row: str(row.get("ts") or ""))
+
+
+def _rescue_key(row: Mapping) -> Key:
+    return str(row["initiative"]), str(row["phase"]), str(row["task"])
+
+
+def read_attempts(root: Path) -> list[dict]:
+    """The edge: load each `work/<initiative>/<phase>/<task>.md` under `root` and hand its attempts to the core.
+
+    The store's rescue_failed rows are added, since a failed rescue leaves no attempt in any file."""
+    texts = {path: path.read_text(encoding="utf-8") for path in sorted((root / "work").glob("*/*/*.md"))}
+    pairs = [(str(p.relative_to(root)), frontmatter_item(t, p.stem).get("attempts")) for p, t in texts.items()]
+    starts = current_body_starts(
+        (rel, item_body(text), attempts) for (rel, attempts), text in zip(pairs, texts.values(), strict=True)
+    )
     rows = attempt_rows(pairs)
     runs = sorted({str(r["run"]) for r in rows if r["run"] and not r["cause"]})
-    return fill_causes(rows, run_store.attempt_causes_for(root / "runs", runs))
+    filled = fill_causes(rows, run_store.attempt_causes_for(root / "runs", runs))
+    return with_stored_rescues(filled, run_store.rescue_failures(root / "runs"), starts)

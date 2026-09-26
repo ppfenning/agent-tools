@@ -477,6 +477,25 @@ def attempt_causes_for(runs_dir: Path, run_ids: Sequence[str]) -> list[dict[str,
         conn.close()
 
 
+def rescue_failures(runs_dir: Path) -> list[dict[str, Any]]:
+    """Edge. Each attempts row of kind rescue_failed as run_id, task_id, phase_id, ts and cause, oldest first; empty with no store or an unreadable one.
+
+    A store below schema 5 has no `cause` column: it reads as None."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return []
+    conn, p = opened
+    try:
+        cols = "cause" if "cause" in _attempts_columns(conn, p) else "NULL AS cause"
+        sql = _sql(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
+        keys = ("run_id", "task_id", "phase_id", "ts", "cause")
+        return [{k: r[k] for k in keys} for r in conn.execute(sql, ("rescue_failed",)).fetchall()]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
+
+
 def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
     """Edge. (run_id, launched_at, ended_at) of runs still open or ended at or after `since`, by launch time; empty with no store or an unreadable one.
 

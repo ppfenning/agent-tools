@@ -35,6 +35,20 @@ def test_attempt_causes_for_is_empty_with_no_store_and_reads_none_at_schema_4(tm
     assert run_store.attempt_causes_for(tmp_path, []) == []
 
 
+def test_rescue_failures_reads_only_rescue_failed_rows_with_their_task_phase_and_cause(tmp_path):
+    rescue = {"run_id": "i-1", "task_id": "t", "phase_id": "p1", "kind": "rescue_failed", "ts": "2026-09-25T04:00:00+00:00", "cause": "code"}
+    other = {**rescue, "kind": "review", "cause": "harness"}
+    attempts_table(tmp_path, V5, rescue, other)
+    keys = ("run_id", "task_id", "phase_id", "ts", "cause")
+    assert run_store.rescue_failures(tmp_path) == [{k: rescue[k] for k in keys}]
+
+
+def test_rescue_failures_is_empty_with_no_store_and_reads_no_cause_at_schema_4(tmp_path):
+    assert run_store.rescue_failures(tmp_path) == []
+    attempts_table(tmp_path, V4, {"run_id": "i-1", "task_id": "t", "phase_id": "p1", "kind": "rescue_failed", "ts": "x"})
+    assert run_store.rescue_failures(tmp_path) == [{"run_id": "i-1", "task_id": "t", "phase_id": "p1", "ts": "x", "cause": None}]
+
+
 def test_attempt_causes_reads_none_for_both_cause_fields_at_schema_4(tmp_path):
     attempts_table(tmp_path, V4, {"kind": "build", "reason": "r", "ts": "2026-09-25T04:00:00+00:00"})
     assert run_store.attempt_causes(tmp_path, "") == [

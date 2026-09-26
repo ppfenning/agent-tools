@@ -5,6 +5,7 @@ from agent_tools import pacing
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import FactsDeps, gather_facts, harness_failures, lease_facts, limits_facts
 from agent_tools.chair_plan_recover import plan_recover
+from agent_tools.chair_read_attempts import with_stored_rescues
 from agent_tools.chair_types import Facts
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
@@ -141,6 +142,21 @@ def test_an_approved_record_with_a_harness_attempt_and_a_kept_patch_plans_rescue
     stranded = {**STRANDED, "run": "i-1", "task": "a"}
     facts = gather_facts(_deps(stranded=(stranded,), has_patch=True), NOW)
     assert [a["kind"] for a in plan_recover(facts) if a["kind"] in ("rescue", "retry", "needs_chair")] == ["rescue"]
+
+
+def _kinds_with_stored_rescue(rescue_ts: str) -> list[str]:
+    store = [{"run_id": "i-1", "task_id": "a", "phase_id": "p1", "ts": rescue_ts, "cause": "code"}]
+    attempts = with_stored_rescues([{**HARNESS, "ts": "2026-09-10"}], store, {("i", "p1", "a"): "2026-09-10"})
+    facts = gather_facts(_deps(attempts=tuple(attempts), stranded=(), has_patch=True), NOW)
+    return [a["kind"] for a in plan_recover(facts) if a["kind"] in ("rescue", "retry", "needs_chair")]
+
+
+def test_a_store_rescue_failed_row_on_the_current_body_sends_the_task_to_the_chair_not_rescue():
+    assert _kinds_with_stored_rescue("2026-09-11") == ["needs_chair"]
+
+
+def test_a_store_rescue_failed_row_older_than_the_current_bodys_first_attempt_still_plans_rescue():
+    assert _kinds_with_stored_rescue("2026-09-09") == ["rescue"]
 
 
 def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
