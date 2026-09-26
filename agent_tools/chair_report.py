@@ -54,7 +54,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
-    needs = needs_chair_items(actions)
+    needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",

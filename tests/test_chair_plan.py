@@ -35,7 +35,7 @@ def _blocked(id: str) -> dict:
 
 
 def _approved(id: str) -> dict:
-    return {"id": id, "initiative": "x", "repo": "r", "phase_done": True, "needs": []}
+    return {"id": id, "initiative": "x", "repo": "r", "phase_done": True, "needs": [], "run": "x-1"}
 
 
 def _kinds(actions: list[dict]) -> list[str]:
@@ -67,7 +67,7 @@ def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
         intake=["n1", "n2"],
     )
     assert plan_tick(facts) == [
-        {"kind": "land", "task_id": "t1", "repo": "r", "initiative": "x", "epoch": 7},
+        {"kind": "land", "task_id": "t1", "repo": "r", "run": "x-1", "initiative": "x", "epoch": 7},
         {"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7},
     ]
 

@@ -139,6 +139,7 @@ def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(mon
     runs_dir, profile_path = tmp_path / "runs", tmp_path / "p.yaml"
     reader = cli.chair_read_approved, cli.chair_read_quarantined, cli.chair_read_attempts, cli.chair_read_intake
     monkeypatch.setattr(reader[0], "read_approved", lambda ws, mode: ("approved", ws, mode))
+    monkeypatch.setattr(reader[0], "with_runs", lambda tasks, stranded: tasks)
     monkeypatch.setattr(reader[1], "read_quarantined", lambda ws, mode: ("quarantined", ws, mode))
     monkeypatch.setattr(reader[2], "read_attempts", lambda ws: ("attempts", ws))
     monkeypatch.setattr(reader[3], "read_intake", lambda ws: ("intake", ws))

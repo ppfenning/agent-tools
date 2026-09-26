@@ -15,7 +15,7 @@ def _facts(lease):
         "lease": lease,
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 4, "live_runs": 0},
-        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": True, "needs": []}],
+        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": True, "needs": [], "run": "x-1"}],
         "initiatives": [],
         "quarantines": [],
         "intake": [],
@@ -123,7 +123,7 @@ def test_an_exception_in_one_tick_does_not_stop_the_next():
 
 def test_a_failure_after_perform_names_what_was_performed():
     rig = Rig()
-    land = {"kind": "land", "task_id": "t1", "repo": "r", "epoch": 3}
+    land = {"kind": "land", "task_id": "t1", "repo": "r", "run": "x-1", "epoch": 3}
     no_dispatch = {k: v for k, v in _facts(MINE).items() if k != "dispatch"}
     run(True, 60, False, replace(rig.deps(), gather=lambda d, n: no_dispatch, plan=lambda f: [land]))
     assert len(rig.commands) == 1

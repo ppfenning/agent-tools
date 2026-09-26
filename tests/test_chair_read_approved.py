@@ -9,7 +9,7 @@ def _item(id: str, state: str, phase: str = "build", needs: list[str] | None = N
 
 def test_an_approved_item_yields_one_row_with_the_five_keys() -> None:
     assert approved_rows([_item("a", "approved")]) == [
-        {"id": "a", "initiative": "init", "repo": "r", "phase_done": True, "needs": []}
+        {"id": "a", "initiative": "init", "repo": "r", "phase": "build", "phase_done": True, "needs": [], "run": ""}
     ]
 
 
@@ -41,5 +41,5 @@ def test_the_edge_reads_the_work_store(tmp_path: Path) -> None:
     (init / "build" / "a.md").write_text("---\nid: a\nstate: approved\nneeds: [z]\n---\nbody\n", encoding="utf-8")
     (init / "build" / "b.md").write_text("---\nid: b\nstate: done\n---\nbody\n", encoding="utf-8")
     assert read_approved(tmp_path) == [
-        {"id": "a", "initiative": "init", "repo": "/r/x", "phase_done": True, "needs": ["z"]}
+        {"id": "a", "initiative": "init", "repo": "/r/x", "phase": "build", "phase_done": True, "needs": ["z"], "run": ""}
     ]

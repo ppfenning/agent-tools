@@ -35,8 +35,10 @@ class ApprovedTask(TypedDict):
     id: str
     initiative: str
     repo: str
+    phase: str
     phase_done: bool
     needs: list[str]
+    run: str  # the newest run whose task record is approved and unlanded; empty when none is
 
 
 class ReadyTask(TypedDict):
@@ -92,6 +94,7 @@ class Action(TypedDict, total=False):
     epoch: int
     task_id: str
     repo: str
+    run: str  # a land names the run that holds the approved record
     initiative: str  # retry and rescue carry initiative and task_id
     cause: str
     intake_ids: list[str]
