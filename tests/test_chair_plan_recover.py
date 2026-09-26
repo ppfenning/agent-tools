@@ -13,8 +13,22 @@ def _initiative(started: bool = True, ready: list[dict] | None = None, landed: s
     }
 
 
-def _quarantine(cause: str = "harness", failures: int = 1, initiative: str = "i", task_id: str = "q1") -> QuarantineFacts:
-    return {"task_id": task_id, "initiative": initiative, "cause": cause, "harness_failures": failures}
+def _quarantine(
+    cause: str = "harness",
+    failures: int = 1,
+    initiative: str = "i",
+    task_id: str = "q1",
+    has_patch: bool = False,
+    rescue_failed: bool = False,
+) -> QuarantineFacts:
+    return {
+        "task_id": task_id,
+        "initiative": initiative,
+        "cause": cause,
+        "harness_failures": failures,
+        "has_patch": has_patch,
+        "rescue_failed": rescue_failed,
+    }
 
 
 def _facts(initiatives: list[InitiativeFacts], quarantines: list[QuarantineFacts]) -> Facts:
@@ -40,6 +54,32 @@ def test_a_started_initiative_with_all_needs_landed_is_cleared_then_relaunched()
 
 def test_a_harness_quarantine_with_one_failure_gets_one_retry():
     assert plan_recover(_facts([], [_quarantine()])) == [{"kind": "retry", "task_id": "q1", "initiative": "i"}]
+
+
+def test_a_harness_quarantine_with_a_patch_gets_one_rescue():
+    assert plan_recover(_facts([], [_quarantine(has_patch=True)])) == [
+        {"kind": "rescue", "initiative": "i", "task_id": "q1"}
+    ]
+
+
+def test_a_failed_rescue_needs_the_chair_and_gets_no_rescue_or_retry():
+    facts = _facts([], [_quarantine(has_patch=True, rescue_failed=True)])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "harness"}]
+
+
+def test_two_harness_failures_with_a_patch_are_not_rescued():
+    facts = _facts([], [_quarantine(failures=2, has_patch=True)])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "harness"}]
+
+
+def test_a_non_harness_cause_with_a_patch_is_not_rescued():
+    facts = _facts([], [_quarantine(cause="verify", has_patch=True)])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "verify"}]
+
+
+def test_a_rescued_initiative_is_not_relaunched_this_tick():
+    facts = _facts([_initiative()], [_quarantine(has_patch=True)])
+    assert plan_recover(facts) == [{"kind": "rescue", "initiative": "i", "task_id": "q1"}]
 
 
 def test_a_non_harness_cause_needs_the_chair_and_blocks_relaunch():

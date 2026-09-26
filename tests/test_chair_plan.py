@@ -61,7 +61,7 @@ def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
         approved=[_approved("t1")],
         initiatives=[_initiative("i"), _initiative("j")],
         quarantines=[
-            {"task_id": "q", "initiative": "k", "cause": "harness", "harness_failures": 1},
+            {"task_id": "q", "initiative": "k", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False},
             {"task_id": "p", "initiative": "m", "cause": "scope", "harness_failures": 0},
         ],
         intake=["n1", "n2"],
@@ -100,8 +100,8 @@ def test_a_harness_retry_counts_against_the_launch_cap():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
         quarantines=[
-            {"task_id": "q1", "initiative": "a", "cause": "harness", "harness_failures": 1},
-            {"task_id": "q2", "initiative": "b", "cause": "harness", "harness_failures": 1},
+            {"task_id": "q1", "initiative": "a", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False},
+            {"task_id": "q2", "initiative": "b", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False},
         ],
     )
     assert plan_tick(facts) == [{"kind": "retry", "task_id": "q1", "initiative": "a", "epoch": 7}]
@@ -207,7 +207,7 @@ def test_a_quarantined_initiative_with_a_needs_chair_is_not_also_launched_as_an_
 
 
 def test_a_retried_initiative_is_not_also_launched_as_an_epic():
-    retry = {"task_id": "q1", "initiative": "a", "cause": "harness", "harness_failures": 1}
+    retry = {"task_id": "q1", "initiative": "a", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False}
     facts = _facts(initiatives=[_blocked("a"), _blocked("b")], quarantines=[retry])
     assert plan_tick(facts) == [
         {"kind": "retry", "task_id": "q1", "initiative": "a", "epoch": 7},
