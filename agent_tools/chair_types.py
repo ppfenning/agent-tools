@@ -81,6 +81,7 @@ class Facts(TypedDict):
     intake: list[str]  # oldest first
     work_store_ready: bool
     sources_configured: bool
+    drafts: int  # initiatives waiting for approval
 
 
 ActionKind = Literal[

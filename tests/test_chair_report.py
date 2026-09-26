@@ -87,3 +87,14 @@ def test_write_status_notifies_only_when_given():
     write_status("line", Deps(echo=printed.append, notify=sent.append))
     assert printed == ["line", "line"]
     assert sent == [Notification("chair tick", "line", "low")]
+
+
+def test_drafts_3_prints_drafts_3_after_lands():
+    line = format_status(dict(_facts(), drafts=3), [], [], NOW)
+    assert " | lands 0 | drafts 3 | limits " in line
+
+
+def test_drafts_0_leaves_the_line_as_it_was():
+    line = format_status(dict(_facts(), drafts=0), [], [], NOW)
+    assert line == format_status(_facts(), [], [], NOW)
+    assert "drafts" not in line
