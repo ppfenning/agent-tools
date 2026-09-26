@@ -2399,6 +2399,14 @@ def _route_chair_take(a: argparse.Namespace) -> int:
         prior_state = chair.liveness(record, alive, now, host, heartbeat_minutes)
         _print_if_stale(record, prior_state)
         new_record, reason = chair.take(record, session, pid, host, now, heartbeat_minutes, alive, steal=a.steal, claude_session=chair.claude_session_from_env(os.environ))
+        if new_record is None and a.steal and prior_state == "live" and chair.same_holder(record, session, pid, host):
+            refusal = chair.acquire_lease(runs_dir, session, pid, host, steal=True)
+            if refusal:
+                print(refusal)
+                return 2
+            chair.write(runs_dir, {**record, "heartbeat_at": now.isoformat()})
+            print(f"chair lease retaken: {session} (pid {pid}) on {host}")
+            return 0
         if new_record is None:
             print(reason)
             return 2
