@@ -41,6 +41,7 @@ from agent_tools import (
     chair_read_intake,
     chair_read_lease,
     chair_read_live,
+    chair_read_patch,
     chair_read_quarantined,
     chair_read_record,
     chair_read_run_id,
@@ -5335,6 +5336,11 @@ def _chair_run_deps(
         lease = chair._read_lease(runs_dir, holder)
         return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
 
+    def has_patch(initiative: str, task: str) -> bool:
+        """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
+        runs = [a["run"] for a in chair_read_attempts.read_attempts(ws) if a.get("initiative") == initiative and a.get("task") == task and a.get("run")]
+        return bool(runs) and chair_read_patch.read_has_patch(runs_dir, runs[-1], task)
+
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
@@ -5345,6 +5351,7 @@ def _chair_run_deps(
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode),
         stranded=lambda: chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode)),
         attempts=lambda: chair_read_attempts.read_attempts(ws),
+        has_patch=has_patch,
         live_initiatives=live_initiatives,
         intake=lambda: chair_read_intake.read_intake(ws),
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
