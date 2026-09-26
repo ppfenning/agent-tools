@@ -16,7 +16,7 @@ def _facts(lease):
     return {
         "lease": lease,
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
-        "dispatch": {"max_in_flight": 4, "live_runs": 0},
+        "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": []},
         "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": True, "needs": [], "run": "x-1"}],
         "initiatives": [],
         "quarantines": [],

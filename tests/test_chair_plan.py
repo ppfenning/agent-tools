@@ -10,7 +10,7 @@ def _facts(**overrides) -> Facts:
     base = {
         "lease": {"holder": "a", "host": "h", "epoch": 7, "mine": True, "released": False, "stale": False},
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
-        "dispatch": {"max_in_flight": 5, "live_runs": 0},
+        "dispatch": {"max_in_flight": 5, "live_runs": 0, "hosts": []},
         "approved": [],
         "initiatives": [],
         "quarantines": [],
@@ -147,7 +147,7 @@ def test_a_kept_rescue_is_stamped_with_the_lease_epoch(monkeypatch):
 def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 3, "go_degraded": False},
-        dispatch={"max_in_flight": 9, "live_runs": 0},
+        dispatch={"max_in_flight": 9, "live_runs": 0, "hosts": []},
         initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
     )
     assert plan_tick(facts) == [
@@ -171,7 +171,7 @@ def test_a_relaunched_initiative_is_not_also_launched_as_an_epic():
 
 def test_free_lanes_is_max_in_flight_minus_live_minus_kept_when_dispatch_binds():
     facts = _facts(
-        dispatch={"max_in_flight": 3, "live_runs": 1},
+        dispatch={"max_in_flight": 3, "live_runs": 1, "hosts": []},
         initiatives=[_blocked("a"), _blocked("b"), _blocked("c")],
     )
     assert _kinds(plan_tick(facts)) == ["launch_epic", "launch_epic"]
@@ -180,7 +180,7 @@ def test_free_lanes_is_max_in_flight_minus_live_minus_kept_when_dispatch_binds()
 def test_dispatch_lanes_are_counted_after_the_kept_launches():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
-        dispatch={"max_in_flight": 3, "live_runs": 0},
+        dispatch={"max_in_flight": 3, "live_runs": 0, "hosts": []},
         initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
     )
     assert plan_tick(facts) == [

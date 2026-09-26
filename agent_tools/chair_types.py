@@ -26,9 +26,17 @@ class LimitsFacts(TypedDict):
     five_hour_fraction: float | None
 
 
+class HostLanes(TypedDict):
+    name: str
+    live_runs: int
+
+
 class DispatchFacts(TypedDict):
+    """live_runs counts the local machine's live lanes; hosts holds each profile lane host in profile order."""
+
     max_in_flight: int
     live_runs: int
+    hosts: list[HostLanes]
 
 
 class ApprovedTask(TypedDict):

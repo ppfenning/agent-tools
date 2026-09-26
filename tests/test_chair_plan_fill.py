@@ -21,7 +21,7 @@ def _facts(**over) -> Facts:
             "launch_cap": 4,
             "go_degraded": False,
         },
-        "dispatch": {"max_in_flight": 4, "live_runs": 0},
+        "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": []},
         "approved": [],
         "initiatives": [],
         "quarantines": [],
@@ -111,3 +111,26 @@ def test_no_pull_when_ready_work_is_placed():
 def test_no_pull_when_intake_exists_even_if_it_launches_nothing():
     facts = _facts(intake=["i1"], sources_configured=True)
     assert plan_fill(facts, 2) == []
+
+
+def _hosted(free: int, **over) -> Facts:
+    return _facts(dispatch={"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 4 - free}]}, **over)
+
+
+def test_epics_past_the_local_lanes_fill_a_host_after_the_local_ones():
+    facts = _hosted(2, initiatives=[_init("a"), _init("b"), _init("c")])
+    assert plan_fill(facts, 1) == [
+        {"kind": "launch_epic", "initiative": "a"},
+        {"kind": "launch_epic", "initiative": "b", "host": "jarvis"},
+        {"kind": "launch_epic", "initiative": "c", "host": "jarvis"},
+    ]
+
+
+def test_a_host_with_a_free_lane_launches_an_epic_when_no_local_lane_is_free():
+    assert plan_fill(_hosted(1, initiatives=[_init("a")]), 0) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"}
+    ]
+
+
+def test_intake_stays_local_when_only_a_host_has_free_lanes():
+    assert plan_fill(_hosted(4, intake=["i1", "i2"]), 0) == []

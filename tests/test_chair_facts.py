@@ -3,7 +3,14 @@ from datetime import UTC, datetime, timedelta
 
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
-from agent_tools.chair_facts import FactsDeps, gather_facts, harness_failures, lease_facts, limits_facts
+from agent_tools.chair_facts import (
+    FactsDeps,
+    dispatch_facts,
+    gather_facts,
+    harness_failures,
+    lease_facts,
+    limits_facts,
+)
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_attempts import with_stored_rescues
 from agent_tools.chair_types import Facts
@@ -168,6 +175,12 @@ def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
     assert kinds((HARNESS, {**HARNESS, "run": "i-2"})) == ["needs_chair"]
 
 
+def test_dispatch_facts_split_the_local_lanes_from_each_lane_hosts():
+    facts = dispatch_facts({"max_in_flight": 4}, ["jarvis"], {"": 3, "jarvis": 1})
+    assert facts["live_runs"] == 3
+    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 1}]
+
+
 def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
     def mine(**record: object) -> bool:
         return lease_facts({"epoch": 4, **record}, "s", 7, "h")["mine"]
@@ -181,7 +194,7 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     assert set(facts) == set(Facts.__annotations__)
-    assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1}
+    assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
     assert facts["intake"] == ["old", "new"]
