@@ -107,6 +107,33 @@ def test_a_harness_retry_counts_against_the_launch_cap():
     assert plan_tick(facts) == [{"kind": "retry", "task_id": "q1", "initiative": "a", "epoch": 7}]
 
 
+_RESCUE = {"kind": "rescue", "task_id": "r1", "initiative": "a"}
+_RETRY = {"kind": "retry", "task_id": "q1", "initiative": "b"}
+_NEEDS_CHAIR_BARE = {"kind": "needs_chair", "initiative": "m", "cause": "scope"}
+
+
+def _recovering(monkeypatch, actions: list[dict]) -> None:
+    monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts: actions)
+
+
+def test_a_rescue_counts_against_the_launch_cap(monkeypatch):
+    _recovering(monkeypatch, [_RESCUE, _RETRY])
+    facts = _facts(limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
+    assert plan_tick(facts) == [{**_RESCUE, "epoch": 7}]
+
+
+def test_a_rescue_is_dropped_at_the_hard_stop_while_needs_chair_passes(monkeypatch):
+    _recovering(monkeypatch, [_RESCUE, _NEEDS_CHAIR_BARE])
+    facts = _facts(limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False})
+    assert plan_tick(facts) == [{**_NEEDS_CHAIR_BARE, "epoch": 7}]
+
+
+def test_a_kept_rescue_is_stamped_with_the_lease_epoch(monkeypatch):
+    _recovering(monkeypatch, [_RESCUE])
+    facts = _facts(lease={"holder": "a", "host": "h", "epoch": 42, "mine": True, "released": False, "stale": False})
+    assert plan_tick(facts) == [{**_RESCUE, "epoch": 42}]
+
+
 def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 3, "go_degraded": False},
