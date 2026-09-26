@@ -1,0 +1,18 @@
+usage: cox chair service [-h] [--install] [--status] [--label LABEL] [--interval INTERVAL]
+                         [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]
+
+--install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.
+It does not run systemctl.
+
+options:
+  -h, --help            show this help message and exit
+  --install             write the unit file and print the systemctl lines to run; runs nothing
+                        itself
+  --status              print the unit file, or say there is none
+  --label LABEL         the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)
+  --interval INTERVAL   seconds between ticks (default: 60)
+  --environment-file ENVIRONMENT_FILE
+                        env file the unit loads (default: ~/.config/agent-tools/garage.env when it
+                        exists)
+  --profile PROFILE     the routing profile naming workspace_dir, pinned in the unit's ExecStart
+                        (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)

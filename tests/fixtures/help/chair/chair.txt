@@ -1,14 +1,16 @@
-usage: cox chair [-h] {run} ...
+usage: cox chair [-h] {run,service} ...
 
 The chair loop that runs the landing and launch ticks itself.
 
 positional arguments:
-  {run}
-    run       beat, gather, plan, perform and report every tick until interrupted
+  {run,service}
+    run          beat, gather, plan, perform and report every tick until interrupted
+    service      write or show the systemd user unit that keeps `cox chair run` alive
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help     show this help message and exit
 
 examples:
   cox chair run --once --dry-run
   cox chair run --interval 30
+  cox chair service --install

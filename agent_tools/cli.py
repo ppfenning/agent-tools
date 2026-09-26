@@ -48,6 +48,7 @@ from agent_tools import (
     chair_read_stranded,
     chair_report,
     chair_run,
+    chair_service,
     cleanup,
     commands,
     courier,
@@ -5514,10 +5515,72 @@ def _chair_run(a: argparse.Namespace) -> int:
     return _chair_once_exit(last[0]) if a.once else 0
 
 
+def _chair_service_environment_file(a: argparse.Namespace) -> str | None:
+    if a.environment_file:
+        return os.path.abspath(Path(a.environment_file).expanduser())
+    garage = Path("~/.config/agent-tools/garage.env").expanduser()
+    return str(garage) if garage.is_file() else None
+
+
+def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
+    """Refuses before any write when systemd would read a value differently from the shell that ran the install."""
+    cox = shutil.which("cox")
+    if cox is None:
+        print("chair service: cox is not on PATH")
+        return 2
+    profile, _runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+    if refuse_rc is not None:
+        return refuse_rc
+    env_file = _chair_service_environment_file(a)
+    # systemd does not expand `~/` in WorkingDirectory=, and the unit does not inherit this shell's
+    # $AGENT_TOOLS_PROFILE, so every path is absolute and the profile is pinned in ExecStart.
+    values = {
+        "cox": os.path.abspath(cox),
+        "workspace_dir": os.path.abspath(Path(profile["workspace_dir"]).expanduser()),
+        "--label": _holder_label(a),
+        "--profile": os.path.abspath(_profile_path(a)),
+        **({"--environment-file": env_file} if env_file is not None else {}),
+    }
+    unsafe = chair_service.unsafe_values(values)
+    if unsafe:
+        print(f"chair service: systemd would split or expand {', '.join(unsafe)}; use only letters, digits and . _ @ + : , / = -")
+        return 2
+    exports = chair_service.export_lines(_read_text_or_none(Path(env_file)) or "") if env_file is not None else []
+    if exports:
+        numbers = ", ".join(str(n) for n in exports)
+        print(f"chair service: {env_file} has export lines ({numbers}) that EnvironmentFile= may skip; pass --environment-file with NAME=value lines")
+        return 2
+    text = chair_service.unit_text(
+        values["cox"], values["workspace_dir"], values["--label"], a.interval, env_file, values["--profile"],
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    print(path)
+    print("\n".join(chair_service.systemctl_lines()))
+    return 0
+
+
+def _chair_service(a: argparse.Namespace) -> int:
+    """Edge for the unit text in `chair_service`. Never runs systemctl; `--install` wins when both flags are given."""
+    path = chair_service.unit_path(Path.home())
+    if a.install:
+        return _chair_service_install(a, path)
+    if a.status:
+        text = _read_text_or_none(path)
+        if text is None:
+            print(f"no unit at {path}")
+        else:
+            print(text, end="")
+        return 0
+    with contextlib.suppress(SystemExit):
+        build_parser().parse_args(["chair", "service", "--help"])
+    return 0
+
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
-    epilog="examples:\n  cox chair run --once --dry-run\n  cox chair run --interval 30",
+    epilog="examples:\n  cox chair run --once --dry-run\n  cox chair run --interval 30\n  cox chair service --install",
 )
 CHAIR_COMMANDS = [
     commands.Command(
@@ -5526,6 +5589,8 @@ CHAIR_COMMANDS = [
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
             commands.Arg(("--interval",), {"type": float, "default": chair_run.DEFAULT_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
+            commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
+            commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),
         _chair_run, False, (),
         defaults={"profile": None},
@@ -5533,6 +5598,22 @@ CHAIR_COMMANDS = [
             "Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.\n"
             "It yields to `cox route chair take --steal`: actions planned under a lost lease are fenced.\n"
             "It hard-stops at the profile's weekly_hard_stop_fraction of the weekly ceiling."
+        ),
+    ),
+    commands.Command(
+        "service", "chair", "write or show the systemd user unit that keeps `cox chair run` alive",
+        (
+            commands.Arg(("--install",), {"action": "store_true", "help": "write the unit file and print the systemctl lines to run; runs nothing itself"}),
+            commands.Arg(("--status",), {"action": "store_true", "help": "print the unit file, or say there is none"}),
+            commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
+            commands.Arg(("--interval",), {"type": int, "default": 60, "help": "seconds between ticks (default: 60)"}),
+            commands.Arg(("--environment-file",), {"help": "env file the unit loads (default: ~/.config/agent-tools/garage.env when it exists)"}),
+            commands.Arg(("--profile",), {"help": "the routing profile naming workspace_dir, pinned in the unit's ExecStart (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+        ),
+        _chair_service, False, (),
+        description=(
+            "--install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.\n"
+            "It does not run systemctl."
         ),
     ),
 ]
