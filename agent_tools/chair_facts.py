@@ -22,6 +22,7 @@ from agent_tools.chair_types import (
 )
 
 HARNESS_CAUSE = "harness"
+RESCUE_FAILED_CAUSE = "rescue_failed"
 STRANDED_CAUSE = "stranded"
 LAUNCHING_VERDICTS = frozenset({"go", "go_degraded"})
 
@@ -40,6 +41,8 @@ class FactsDeps:
     attempts: every attempt over all runs, oldest first, keys run, phase, task, cause, and initiative when known.
         A work item's frontmatter `attempts` entries carry run and cause, as `stats_chair` reads them; the item's
         path adds phase and task. The store's `attempts` table has no task column (`run_store.attempt_causes`).
+    has_patch: (initiative, task id) to whether the task's stored record holds a non-blank build.patch. Called once
+        per quarantine entry, and False when no record can be found.
     live_initiatives: initiatives with a live run, meaning the `runs:<initiative>` store lease is held and
         unexpired, or failing that `runs/<run>.pid` names a live pid.
     """
@@ -53,6 +56,7 @@ class FactsDeps:
     quarantined: Callable[[], Sequence[Row]]
     stranded: Callable[[], Sequence[Row]]
     attempts: Callable[[], Sequence[Row]]
+    has_patch: Callable[[str, str], bool]
     live_initiatives: Callable[[], Collection[str]]
     intake: Callable[[], Sequence[str]]
     work_store_ready: Callable[[], bool]
@@ -120,17 +124,35 @@ def harness_failures(attempts: Sequence[Row], key: Key) -> int:
     return sum(1 for a in attempts if _key(a) == key and a.get("cause") == HARNESS_CAUSE)
 
 
+def rescue_failed(attempts: Sequence[Row], key: Key) -> bool:
+    """Whether the task has a rescue_failed attempt, over the same attempts and key `harness_failures` counts."""
+    return any(_key(a) == key and a.get("cause") == RESCUE_FAILED_CAUSE for a in attempts)
+
+
 def newest_cause(attempts: Sequence[Row], key: Key) -> str:
     """The cause on the task's newest attempt, from the list `harness_failures` counts. Empty with no attempt."""
     return next((str(a.get("cause") or "") for a in reversed(attempts) if _key(a) == key), "")
 
 
-def _quarantine(key: Key, cause: str, attempts: Sequence[Row]) -> QuarantineFacts:
-    return {"task_id": key[2], "initiative": key[0], "cause": cause, "harness_failures": harness_failures(attempts, key)}
+def _quarantine(
+    key: Key, cause: str, attempts: Sequence[Row], has_patch: Callable[[str, str], bool]
+) -> QuarantineFacts:
+    return {
+        "task_id": key[2],
+        "initiative": key[0],
+        "cause": cause,
+        "harness_failures": harness_failures(attempts, key),
+        "has_patch": has_patch(key[0], key[2]),
+        "rescue_failed": rescue_failed(attempts, key),
+    }
 
 
 def quarantine_facts(
-    quarantined: Sequence[Row], stranded: Sequence[Row], attempts: Sequence[Row], live: Collection[str]
+    quarantined: Sequence[Row],
+    stranded: Sequence[Row],
+    attempts: Sequence[Row],
+    live: Collection[str],
+    has_patch: Callable[[str, str], bool],
 ) -> list[QuarantineFacts]:
     """One entry per open quarantine with its newest cause, then the stranded rows those did not name.
 
@@ -138,8 +160,8 @@ def quarantine_facts(
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
     stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened]
     return [
-        *(_quarantine(k, newest_cause(attempts, k), attempts) for k in opened if k[0] not in live),
-        *(_quarantine(k, STRANDED_CAUSE, attempts) for k in stuck if k[0] not in live),
+        *(_quarantine(k, newest_cause(attempts, k), attempts, has_patch) for k in opened if k[0] not in live),
+        *(_quarantine(k, STRANDED_CAUSE, attempts, has_patch) for k in stuck if k[0] not in live),
     ]
 
 
@@ -187,7 +209,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "dispatch": dispatch,
         "approved": approved_facts(deps.approved()),
         "initiatives": initiative_facts(docket, live),
-        "quarantines": quarantine_facts(deps.quarantined(), deps.stranded(), deps.attempts(), live),
+        "quarantines": quarantine_facts(deps.quarantined(), deps.stranded(), deps.attempts(), live, deps.has_patch),
         "intake": list(deps.intake()),
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),

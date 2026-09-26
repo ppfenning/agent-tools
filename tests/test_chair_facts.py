@@ -20,6 +20,7 @@ HARNESS = {"run": "i-1", "phase": "p1", "task": "a", "cause": "harness"}
 QUARANTINED = {"initiative": "i", "phase": "p1", "task": "a"}
 # The keys `runs_stranded._row` emits, and no others: a real stranded row carries no initiative.
 STRANDED = {"run": "i-3", "task": "s", "phase": "p1", "branch": "i/s", "remedy": None}
+BARE = {"task_id": "a", "initiative": "i", "has_patch": False, "rescue_failed": False}
 
 
 def _window(spent: float, hours: int) -> pacing.Window:
@@ -32,6 +33,7 @@ def _deps(
     live: tuple[str, ...] = (),
     quarantined: tuple[dict, ...] = (QUARANTINED,),
     stranded: tuple[dict, ...] = (STRANDED,),
+    has_patch: bool = False,
 ) -> FactsDeps:
     docket = {
         "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": []}], "landed": ["z"]}],
@@ -48,6 +50,7 @@ def _deps(
         quarantined=lambda: quarantined,
         stranded=lambda: stranded,
         attempts=lambda: attempts,
+        has_patch=lambda initiative, task: has_patch,
         live_initiatives=lambda: live,
         intake=lambda: ["old", "new"],
         work_store_ready=lambda: True,
@@ -91,12 +94,12 @@ def test_a_task_id_repeated_in_another_phase_is_counted_apart():
 
 def test_the_cause_and_the_count_come_from_the_same_attempts():
     (q,) = gather_facts(_deps(attempts=({**HARNESS, "cause": "code"}, HARNESS), stranded=()), NOW)["quarantines"]
-    assert q == {"task_id": "a", "initiative": "i", "cause": "harness", "harness_failures": 1}
+    assert q == {**BARE, "cause": "harness", "harness_failures": 1}
 
 
 def test_a_quarantined_task_with_no_live_run_gives_a_quarantine_and_an_initiative():
     facts = gather_facts(_deps(stranded=()), NOW)
-    assert facts["quarantines"] == [{"task_id": "a", "initiative": "i", "cause": "harness", "harness_failures": 1}]
+    assert facts["quarantines"] == [{**BARE, "cause": "harness", "harness_failures": 1}]
     assert [i["id"] for i in facts["initiatives"]] == ["i"]
 
 
@@ -110,8 +113,28 @@ def test_a_stranded_row_takes_its_initiative_from_its_run_and_a_live_run_drops_i
     def stranded(live: tuple[str, ...]) -> list:
         return gather_facts(_deps(quarantined=(), live=live), NOW)["quarantines"]
 
-    assert stranded(()) == [{"task_id": "s", "initiative": "i", "cause": "stranded", "harness_failures": 0}]
+    assert stranded(()) == [{**BARE, "task_id": "s", "cause": "stranded", "harness_failures": 0}]
     assert stranded(("i",)) == []
+
+
+def test_a_fake_has_patch_that_returns_true_gives_has_patch_true():
+    (q,) = gather_facts(_deps(has_patch=True, stranded=()), NOW)["quarantines"]
+    assert q["has_patch"] is True
+
+
+def test_a_fake_has_patch_that_returns_false_gives_has_patch_false():
+    (q,) = gather_facts(_deps(has_patch=False, stranded=()), NOW)["quarantines"]
+    assert q["has_patch"] is False
+
+
+def test_a_rescue_failed_attempt_gives_rescue_failed_true_and_leaves_harness_failures_alone():
+    (q,) = gather_facts(_deps(attempts=(HARNESS, {**HARNESS, "cause": "rescue_failed"}), stranded=()), NOW)["quarantines"]
+    assert (q["rescue_failed"], q["harness_failures"]) == (True, 1)
+
+
+def test_a_task_with_only_harness_attempts_gives_rescue_failed_false_and_harness_failures_of_one():
+    (q,) = gather_facts(_deps(attempts=(HARNESS,), stranded=()), NOW)["quarantines"]
+    assert (q["rescue_failed"], q["harness_failures"]) == (False, 1)
 
 
 def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
