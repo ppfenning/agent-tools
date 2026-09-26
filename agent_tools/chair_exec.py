@@ -12,11 +12,16 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from agent_tools import chair
+from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
-__all__ = ["Deps", "Result", "argv_for", "branch_pattern", "delete_branches_with", "edge_deps", "landed", "perform"]
+__all__ = [
+    "Deps", "Result", "argv_for", "branch_pattern", "delete_branches_with", "edge_deps", "escalation", "landed", "perform",
+]
 
-Status = Literal["fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed"]
+Status = Literal[
+    "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated",
+]
 
 Run = Callable[[list[str]], tuple[int, str]]
 
@@ -53,13 +58,14 @@ def branch_pattern(initiative: str) -> str | None:
     return f"epic/{initiative}/*"
 
 
-def argv_for(action: Action, run_id: str = "") -> list[str] | None:
+def argv_for(action: Action) -> list[str] | None:
     """The cox argv for a land, launch or pull action; None for any other kind or a missing required field."""
     kind = action.get("kind")
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
+    run = action.get("run", "")
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
-        return ["cox", "runs", "land", run_id, "--task", task, "--repo", repo, "--apply"] if run_id and task and repo else None
+        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply"] if run and task and repo else None
     if kind == "launch_decompose":
         return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative or idea] if idea else None
     if kind == "rescue":
@@ -77,7 +83,7 @@ def _result(action: Action, status: Status, reason: str = "") -> Result:
 
 def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     repo = action.get("repo", "")
-    argv = argv_for(action, deps.run_id(action))
+    argv = argv_for(action)
     if argv is None:
         return _result(action, "refused", "land needs a run id, a task_id and a repo")
     if repo in blocked:
@@ -147,7 +153,23 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             if action.get("kind") == "land" and result["status"] == "not_landed":
                 blocked[action.get("repo", "")] = action.get("task_id", "")
             results.append(result)
+            if action.get("kind") == "land" and result["status"] != "landed":
+                results.append(_escalate(action, result, deps))
     return results
+
+
+def escalation(land: Action) -> Action:
+    """The needs_chair a land that did not land raises: the facts dropped its stranded row, so this reports it instead."""
+    return {
+        "kind": "needs_chair", "initiative": land.get("initiative", ""), "task_id": land.get("task_id", ""),
+        "cause": STRANDED_CAUSE, "epoch": land.get("epoch", 0),
+    }
+
+
+def _escalate(land: Action, result: Result, deps: Deps) -> Result:
+    needs = escalation(land)
+    deps.record(needs)
+    return _result(needs, "escalated", f"land {land.get('task_id', '')} {result['status']}")
 
 
 def run_argv(argv: list[str]) -> tuple[int, str]:

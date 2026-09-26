@@ -1,7 +1,7 @@
 """Plan lands for approved tasks whose phase is done: dependency order, one repository at a time."""
 import heapq
 
-from agent_tools.chair_types import Action, ApprovedTask, Facts
+from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
 
 
 def _first_of_each_id(tasks: list[ApprovedTask]) -> list[ApprovedTask]:
@@ -48,10 +48,15 @@ def _schedule(tasks: list[ApprovedTask], landed: set[str]) -> list[ApprovedTask]
                 heapq.heappush(ready.setdefault(repo_of[d], []), rank[d])
 
 
+def planned_tasks(approved: list[ApprovedTask], initiatives: list[InitiativeFacts]) -> list[ApprovedTask]:
+    """The approved tasks this tick lands, in landing order; a task `_schedule` defers is not among them."""
+    landed = set().union(*(i["landed"] for i in initiatives))
+    return _schedule(_first_of_each_id([t for t in approved if t["phase_done"]]), landed)
+
+
 def plan_lands(facts: Facts) -> list[Action]:
-    landed = set().union(*(i["landed"] for i in facts["initiatives"]))
-    tasks = _schedule(_first_of_each_id([t for t in facts["approved"] if t["phase_done"]]), landed)
+    tasks = planned_tasks(facts["approved"], facts["initiatives"])
     return [
-        {"kind": "land", "task_id": t["id"], "repo": t["repo"], "initiative": t["initiative"], "epoch": None}  # type: ignore[typeddict-item]  # plan_tick stamps it
+        {"kind": "land", "task_id": t["id"], "repo": t["repo"], "run": t["run"], "initiative": t["initiative"], "epoch": None}  # type: ignore[typeddict-item]  # plan_tick stamps it
         for t in tasks
     ]

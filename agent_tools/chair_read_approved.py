@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import route, run_store
+from agent_tools.chair_facts import run_initiative
 from agent_tools.chair_types import ApprovedTask
 
 Item = Mapping[str, Any]
@@ -31,12 +32,29 @@ def approved_rows(items: Sequence[Item]) -> list[ApprovedTask]:
             "id": item["id"],
             "initiative": item["initiative"],
             "repo": item.get("repo", ""),
+            "phase": item["phase"],
             "phase_done": phase_done(item, items),
             "needs": list(item.get("needs", [])),
+            "run": "",
         }
         for item in items
         if item["state"] == "approved"
     ]
+
+
+def _run_order(run: str) -> tuple[int, str]:
+    """`x-10` sorts after `x-2`: by the numeric suffix, then the name."""
+    tail = run.rsplit("-", 1)[-1]
+    return (int(tail) if tail.isdigit() else -1, run)
+
+
+def with_runs(tasks: Sequence[ApprovedTask], stranded: Sequence[Mapping[str, Any]]) -> list[ApprovedTask]:
+    """Each task gets the newest run with a stranded row for it under its initiative and phase, empty when none has."""
+    runs = {
+        (run_initiative(str(row["run"])), str(row["phase"]), str(row["task"])): str(row["run"])
+        for row in sorted(stranded, key=lambda s: _run_order(str(s["run"])))
+    }
+    return [{**t, "run": runs.get((t["initiative"], t["phase"], t["id"]), "")} for t in tasks]
 
 
 def _repo_of(initiative_md: Path) -> str:

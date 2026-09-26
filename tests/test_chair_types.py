@@ -33,7 +33,7 @@ def test_a_full_facts_literal_has_the_keys_the_planners_read():
             "go_degraded": False,
         },
         "dispatch": {"max_in_flight": 3, "live_runs": 1},
-        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": False, "needs": []}],
+        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": False, "needs": [], "run": ""}],
         "initiatives": [{"id": "i", "started": True, "ready_tasks": [{"id": "t2", "needs": ["t1"]}], "landed": {"t0"}}],
         "quarantines": [
             {

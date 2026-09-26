@@ -19,7 +19,7 @@ def _deps(calls: list, output: str = LANDED, code: int = 0, deleted: tuple[str, 
 
 
 def _land(task: str, repo: str) -> dict:
-    return {"kind": "land", "task_id": task, "repo": repo, "epoch": 1}
+    return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
 
 
 def _clear(initiative: str) -> dict:
@@ -40,23 +40,23 @@ def test_a_land_counts_only_when_both_markers_appear() -> None:
 
 def test_a_land_with_both_markers_but_a_nonzero_exit_is_not_counted() -> None:
     results = perform([_land("t1", "r")], _deps([], code=1), lambda: 1, False)
-    assert [r["status"] for r in results] == ["not_landed"]
+    assert [r["status"] for r in results] == ["not_landed", "escalated"]
 
 
 def test_a_land_with_only_merge_is_not_counted_and_skips_its_repo_siblings() -> None:
     calls: list = []
     actions = [_land("t1", "r"), _land("t2", "r"), _clear("alpha"), _land("t3", "other")]
     results = perform(actions, _deps(calls, "merge: ok\n"), lambda: 1, False)
-    assert [r["status"] for r in results] == ["not_landed", "skipped", "skipped", "not_landed"]
-    assert "t1" in results[1]["reason"]
-    assert [c[1][5] for c in calls] == ["t1", "t3"]
+    assert [r["status"] for r in results if r["status"] != "escalated"] == ["not_landed", "skipped", "skipped", "not_landed"]
+    assert "t1" in results[2]["reason"]
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["t1", "t3"]
 
 
 def test_a_land_missing_its_repo_is_refused_without_running() -> None:
     calls: list = []
     results = perform([{"kind": "land", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
-    assert [r["status"] for r in results] == ["refused"]
-    assert calls == []
+    assert [r["status"] for r in results] == ["refused", "escalated"]
+    assert calls == [("record", "needs_chair")]
 
 
 def test_clear_branches_refuses_a_foreign_glob() -> None:

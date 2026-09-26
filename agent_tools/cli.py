@@ -5347,7 +5347,9 @@ def _chair_run_deps(
         weekly=lambda: usage_window.gather_weekly(runs_dir, now(), profile.get("weekly_ceiling_usd")),
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,
-        approved=lambda: chair_read_approved.read_approved(ws, mode),
+        approved=lambda: chair_read_approved.with_runs(
+            chair_read_approved.read_approved(ws, mode), chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode))
+        ),
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode),
         stranded=lambda: chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode)),
         attempts=lambda: chair_read_attempts.read_attempts(ws),

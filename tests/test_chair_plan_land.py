@@ -3,7 +3,7 @@ from agent_tools.chair_types import Facts
 
 
 def _task(id: str, repo: str = "r", needs: tuple[str, ...] = (), done: bool = True) -> dict:
-    return {"id": id, "initiative": "i", "repo": repo, "phase_done": done, "needs": list(needs)}
+    return {"id": id, "initiative": "i", "repo": repo, "phase_done": done, "needs": list(needs), "run": f"i-{id}"}
 
 
 def _facts(approved: list[dict], landed: frozenset[str] = frozenset()) -> Facts:
@@ -94,5 +94,5 @@ def test_a_repeated_id_keeps_its_first_occurrence_position_and_fields():
 
 def test_every_action_is_a_land_with_no_epoch_yet():
     assert plan_lands(_facts([_task("a", "R")])) == [
-        {"kind": "land", "task_id": "a", "repo": "R", "initiative": "i", "epoch": None}
+        {"kind": "land", "task_id": "a", "repo": "R", "run": "i-a", "initiative": "i", "epoch": None}
     ]

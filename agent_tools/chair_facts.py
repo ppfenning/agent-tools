@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
+from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_types import (
     ApprovedTask,
     DispatchFacts,
@@ -35,7 +36,7 @@ class FactsDeps:
 
     lease: the store lease record, keys holder, host, epoch, released, stale.
     docket: the `route context` docket, keys initiatives (id, started, ready_tasks, landed), busy_lanes, max_in_flight.
-    approved: approved tasks, keys id, initiative, repo, phase_done, needs.
+    approved: approved tasks, keys id, initiative, repo, phase, phase_done, needs, run (empty when no record is stranded).
     quarantined: open quarantined work items, keys initiative, phase, task, from each item's work-store path.
     stranded: `runs_stranded.stranded` rows as they land, keys run, task, phase, branch, remedy. No initiative.
     attempts: every attempt over all runs, oldest first, keys run, phase, task, cause, and initiative when known.
@@ -153,12 +154,17 @@ def quarantine_facts(
     attempts: Sequence[Row],
     live: Collection[str],
     has_patch: Callable[[str, str], bool],
+    landing: Sequence[ApprovedTask] = (),
 ) -> list[QuarantineFacts]:
     """One entry per open quarantine with its newest cause, then the stranded rows those did not name.
 
+    `landing` is what `chair_plan_land.planned_tasks` plans this tick. A stranded row for one of those tasks
+    that carries a run is left out, since its land handles it; a land that then fails raises its own needs_chair.
+
     An initiative with a live run contributes nothing: a retry in flight is never planned again."""
     opened = list(dict.fromkeys(_key(q) for q in quarantined))
-    stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened]
+    landed_now = {(t["initiative"], t["phase"], t["id"]) for t in landing if t["run"]}
+    stuck = [k for k in dict.fromkeys(_key(s) for s in stranded) if k not in opened and k not in landed_now]
     return [
         *(_quarantine(k, newest_cause(attempts, k), attempts, has_patch) for k in opened if k[0] not in live),
         *(_quarantine(k, STRANDED_CAUSE, attempts, has_patch) for k in stuck if k[0] not in live),
@@ -189,8 +195,10 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
             "id": r["id"],
             "initiative": r["initiative"],
             "repo": r["repo"],
+            "phase": str(r["phase"]),
             "phase_done": bool(r["phase_done"]),
             "needs": list(r["needs"]),
+            "run": str(r["run"]),
         }
         for r in rows
     ]
@@ -203,13 +211,17 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     docket = deps.docket()
     dispatch = dispatch_facts(docket)
     live = set(deps.live_initiatives())
+    approved = approved_facts(deps.approved())
+    initiatives = initiative_facts(docket, live)
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(assessment, policy, weekly, dispatch["max_in_flight"]),
         "dispatch": dispatch,
-        "approved": approved_facts(deps.approved()),
-        "initiatives": initiative_facts(docket, live),
-        "quarantines": quarantine_facts(deps.quarantined(), deps.stranded(), deps.attempts(), live, deps.has_patch),
+        "approved": approved,
+        "initiatives": initiatives,
+        "quarantines": quarantine_facts(
+            deps.quarantined(), deps.stranded(), deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
+        ),
         "intake": list(deps.intake()),
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
