@@ -65,11 +65,17 @@ def _work_items(ws: Path, mode: str) -> list[dict]:
     return route.with_store_states(items, run_store.work_items(ws / "runs") if mode == "store" else [], mode)
 
 
-def _busy_lanes(runs_dir: Path, now: str) -> int:
-    """Runs with a live local pidfile, plus live store leases no local pidfile names."""
+def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:
+    """Edge. How many local pidfile runs are live, and every run a local pidfile names."""
     local = {p.stem: route.parse_pid(t) for p in sorted(runs_dir.glob("*.pid")) if (t := _text(p)) is not None}
     live = [rid for rid, pid in local.items() if epic.run_live(pid, runs_dir / f"{rid}.pid", now=now)]
-    return len(live) + len(run_store.remote_lanes(run_store.live_lanes(runs_dir, now), set(local)))
+    return len(live), set(local)
+
+
+def _busy_lanes(runs_dir: Path, now: str) -> int:
+    """Runs with a live local pidfile, plus live store leases no local pidfile names."""
+    live, named = local_runs(runs_dir, now)
+    return live + len(run_store.remote_lanes(run_store.live_lanes(runs_dir, now), named))
 
 
 def read_docket(ws: Path, mode: str, max_in_flight: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> dict[str, Any]:

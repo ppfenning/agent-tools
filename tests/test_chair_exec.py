@@ -192,6 +192,11 @@ def test_an_epic_launch_names_the_initiative_by_its_work_path(kind: str) -> None
     assert with_repo[-4:] == ["--initiative", "work/x", "--repo", "/r"]  # type: ignore[index]
 
 
+def test_a_launch_with_a_host_ends_with_on_that_host() -> None:
+    assert argv_for({"kind": "launch_epic", "initiative": "x", "host": "jarvis"})[-2:] == ["--on", "jarvis"]  # type: ignore[index]
+    assert argv_for({"kind": "launch_epic", "initiative": "x"}) == ["cox", "route", "launch", "epic", "--initiative", "work/x"]
+
+
 def test_run_argv_runs_in_the_given_directory(tmp_path) -> None:
     code, output = run_argv(["pwd"], cwd=tmp_path)
     assert (code, output.strip()) == (0, str(tmp_path.resolve()))
