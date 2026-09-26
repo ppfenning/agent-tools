@@ -1,4 +1,5 @@
-usage: cox chair run [-h] [--once] [--interval INTERVAL] [--dry-run]
+usage: cox chair run [-h] [--once] [--interval INTERVAL] [--dry-run] [--label LABEL]
+                     [--profile PROFILE]
 
 Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.
 It yields to `cox route chair take --steal`: actions planned under a lost lease are fenced.
@@ -9,3 +10,6 @@ options:
   --once               run one tick, release the lease, exit 1 if the tick errored
   --interval INTERVAL  seconds between ticks (default: 60)
   --dry-run            plan and report each tick without taking the lease or performing any action
+  --label LABEL        the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)
+  --profile PROFILE    the routing profile (default: ~/.config/agent-tools/profile.yaml or
+                       $AGENT_TOOLS_PROFILE)

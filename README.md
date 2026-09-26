@@ -109,7 +109,8 @@ cox route launch decompose [--profile PROFILE] --idea IDEA --initiative-id INITI
 cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK [--repo REPO] [--dry-run] [--run-id RUN_ID] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the rescue graph against a task
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
-cox chair run [--once] [--interval INTERVAL] [--dry-run]   beat, gather, plan, perform and report every tick until interrupted
+cox chair run [--once] [--interval INTERVAL] [--dry-run] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
+cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit that keeps `cox chair run` alive
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded
