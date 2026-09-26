@@ -28,10 +28,12 @@ def profile_store_url(profile: Mapping[str, Any], runs_dir: str | Path) -> str:
 
 @dataclass(frozen=True)
 class TracesRoot:
-    """Where traces live: `url` as configured, `remote` True for object storage (s3://)."""
+    """Where traces live: `url` as configured, `remote` True for object storage (s3://).
+    `object_store` is the provider profile's block naming the endpoint and credential env vars for an s3:// `url`."""
 
     url: str
     remote: bool
+    object_store: Mapping[str, Any] | None = None
 
 
 def default_traces_root(runs_dir: str | Path) -> str:
@@ -39,17 +41,19 @@ def default_traces_root(runs_dir: str | Path) -> str:
     return str(Path(runs_dir) / "traces")
 
 
-def traces_root(value: object, runs_dir: str | Path) -> TracesRoot:
-    """Like storage_url, a non-empty string is kept verbatim (no env, `~` or cwd resolution); anything else gives the local default."""
+def traces_root(value: object, runs_dir: str | Path, object_store: object = None) -> TracesRoot:
+    """Like storage_url, a non-empty string is kept verbatim (no env, `~` or cwd resolution); anything else gives the local default.
+    A mapping `object_store` rides along on a remote root only."""
     if isinstance(value, str) and value:
         match = _SCHEME.match(value)
-        return TracesRoot(value, match is not None and match.group(0).lower() == "s3")
+        remote = match is not None and match.group(0).lower() == "s3"
+        return TracesRoot(value, remote, object_store if remote and isinstance(object_store, Mapping) else None)
     return TracesRoot(default_traces_root(runs_dir), False)
 
 
 def profile_traces_root(profile: Mapping[str, Any], runs_dir: str | Path) -> TracesRoot:
-    """The profile's `traces_url` key through traces_root."""
-    return traces_root(profile.get("traces_url"), runs_dir)
+    """The profile's `traces_url` and `object_store` keys through traces_root."""
+    return traces_root(profile.get("traces_url"), runs_dir, profile.get("object_store"))
 
 
 def describe_store(url: str) -> str:

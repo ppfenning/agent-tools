@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import epic
+from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
 
@@ -938,8 +939,47 @@ def _import_pyarrow() -> tuple[Any, Any]:
     return pyarrow.fs, pyarrow.parquet
 
 
+class ObjectStoreMisconfigured(TracesUnavailable):
+    """The provider profile's object_store block cannot build a filesystem: a literal secret, or an env var that is not set."""
+
+
+def s3_options(block: Mapping[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+    """`S3FileSystem` keyword arguments for the profile's `object_store` block, credentials read from `env`.
+
+    `FileSystem.from_uri` knows nothing of the block, so a private endpoint is unreachable without this.
+    A literal secret is refused. An endpoint with no scheme is https; path_style defaults to true."""
+    literal = sorted(_LITERAL_SECRETS.intersection(block))
+    if literal:
+        raise ValueError(
+            f"object_store holds a literal secret ({', '.join(literal)}); name an env var in access_key_env or secret_key_env"
+        )
+    endpoint = str(block.get("endpoint") or "")
+    scheme, _, host = endpoint.partition("://") if "://" in endpoint else ("https", "", endpoint)
+    optional = {
+        **({"endpoint_override": host} if host else {}),
+        **({"region": str(block["region"])} if block.get("region") else {}),
+        **({"access_key": _from_env(block["access_key_env"], env)} if block.get("access_key_env") else {}),
+        **({"secret_key": _from_env(block["secret_key_env"], env)} if block.get("secret_key_env") else {}),
+    }
+    return {"scheme": scheme.lower(), **optional, "force_virtual_addressing": not block.get("path_style", True)}
+
+
+def _block_options(root: TracesRoot) -> dict[str, Any] | None:
+    """Edge: `s3_options` for an s3:// root with an object_store block, else None. A bad block raises ObjectStoreMisconfigured."""
+    if not (root.remote and root.object_store and root.url.lower().startswith("s3://")):
+        return None
+    try:
+        return s3_options(root.object_store, os.environ)
+    except ValueError as exc:
+        raise ObjectStoreMisconfigured(str(exc)) from exc
+
+
 def _filesystem(pafs: Any, root: TracesRoot) -> tuple[Any, str]:
-    """pyarrow's own resolution for a remote URL; a plain local path (possibly relative) gets the local filesystem."""
+    """pyarrow's own resolution for a remote URL, or an S3FileSystem from the `object_store` block for an s3:// URL that has one;
+    a plain local path (possibly relative) gets the local filesystem."""
+    options = _block_options(root)
+    if options is not None:
+        return pafs.S3FileSystem(**options), root.url[len("s3://"):].strip("/")
     if root.remote:
         return pafs.FileSystem.from_uri(root.url)
     return pafs.LocalFileSystem(), str(Path(root.url).absolute())
@@ -1026,9 +1066,10 @@ def _parquet_rows(root: TracesRoot, run_id: str) -> list[dict] | None:
 
 
 @functools.lru_cache(maxsize=8)
-def _found_parquet_rows(url: str, remote: bool, run_id: str) -> tuple[dict, ...]:
-    """Raises LookupError on a miss, which lru_cache does not store: a live run's file can appear later."""
-    rows = _parquet_rows(TracesRoot(url, remote), run_id)
+def _found_parquet_rows(url: str, remote: bool, block: str, run_id: str) -> tuple[dict, ...]:
+    """Raises LookupError on a miss, which lru_cache does not store: a live run's file can appear later.
+    `block` is the object_store block as sorted JSON, since a mapping is not hashable; "" for none."""
+    rows = _parquet_rows(TracesRoot(url, remote, json.loads(block) if block else None), run_id)
     if not rows:
         raise LookupError(run_id)
     return tuple(rows)
@@ -1037,7 +1078,8 @@ def _found_parquet_rows(url: str, remote: bool, run_id: str) -> tuple[dict, ...]
 def _parquet_rows_once(root: TracesRoot, run_id: str) -> tuple[dict, ...] | None:
     """Edge: `_parquet_rows` read once per process for a run whose file exists; a run with none is asked again."""
     try:
-        return _found_parquet_rows(root.url, root.remote, run_id)
+        block = json.dumps(root.object_store, sort_keys=True, default=str) if root.object_store else ""
+        return _found_parquet_rows(root.url, root.remote, block, run_id)
     except LookupError:
         return None
 
@@ -1077,7 +1119,7 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
     call_id = str(call.get("id"))
     trace = call.get("trace")
     synthetic = synthetic_call_id(run_id, trace)
-    rows = _parquet_rows_once(_traces_root(Path(runs_dir)), run_id)
+    rows, fault = _parquet_rows_or_fault(_traces_root(Path(runs_dir)), run_id)
     if rows and (
         found := _parquet_call_events(rows, call_id)
         or (isinstance(trace, str) and trace and _parquet_call_events(rows, _store_ids_by_trace(str(runs_dir), run_id).get(trace, "")))
@@ -1091,12 +1133,23 @@ def call_events(runs_dir: Path, run_id: str, call: Mapping[str, Any]) -> list[di
     loose = call.get("trace")
     if isinstance(loose, str) and loose and Path(loose).is_file():
         return _loose_events(Path(loose))
+    if fault is not None:
+        raise fault
     return stored
+
+
+def _parquet_rows_or_fault(root: TracesRoot, run_id: str) -> tuple[tuple[dict, ...] | None, ObjectStoreMisconfigured | None]:
+    """Edge: `_parquet_rows_once`, with a bad object_store block returned rather than raised, so local sources are still tried."""
+    try:
+        return _parquet_rows_once(root, run_id), None
+    except ObjectStoreMisconfigured as fault:
+        return None, fault
 
 
 @dataclass(frozen=True)
 class ParquetCheck:
-    """`readable` with the `reason`: `ok`, `through the harness`, `pyarrow missing` or `root unreachable`."""
+    """`readable` with the `reason`: `ok`, `through the harness`, `pyarrow missing`, `root unreachable`, or the
+    object_store error text, which names the literal secret or the unset env var."""
 
     readable: bool
     reason: str
@@ -1105,7 +1158,12 @@ class ParquetCheck:
 def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCheck:
     """Edge: whether Parquet traces under `traces_root` can be read, for the doctor. Opens no trace file.
 
-    `harness` is the diagnosed profile's harness python; without pyarrow it counts only when it imports what a dump needs."""
+    `harness` is the diagnosed profile's harness python; without pyarrow it counts only when it imports what a dump needs.
+    A bad object_store block is reported first, by its own message, since no filesystem can be built from it."""
+    try:
+        _block_options(traces_root)
+    except ObjectStoreMisconfigured as exc:
+        return ParquetCheck(False, str(exc))
     try:
         pafs, _ = _import_pyarrow()
     except TracesUnavailable:
