@@ -55,3 +55,13 @@ def test_lanes_on_an_unlisted_host_and_live_pidfiles_all_count_as_local() -> Non
 def test_live_lanes_count_per_host_with_the_local_machine_under_the_empty_name() -> None:
     lanes = [cli.run_store.Lane("r1", host, "t", "t") for host in (None, "omarchy", "jarvis")]
     assert cli._live_by_host(lanes, "omarchy") == {"": 2, "jarvis": 1}
+
+
+def test_the_deps_weekly_reader_passes_a_store_spend_that_reads_the_store_from_since(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *args, **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(cli.run_store, "cost_since", lambda runs_dir, since: (runs_dir, since))
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    deps.facts_deps.weekly()
+    assert seen["store_spend"]("2026-08-29") == (runs, "2026-08-29")
