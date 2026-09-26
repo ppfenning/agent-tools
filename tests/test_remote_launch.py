@@ -88,3 +88,11 @@ def test_launch_on_host_runs_the_planned_argvs_in_order():
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0)
     assert calls == launch_plan(host, "init-x", "init-x-1", "l")
     assert result == remote_record("box2", "t")
+
+
+def test_a_preflight_refusal_returns_the_auth_error_before_anything_runs():
+    host, calls = LaneHost("box2", "me@box2", "/ws"), []
+    line = "claude auth: not logged in on the host (run claude auth login there)"
+    result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, preflight=line)
+    assert result == LaunchError("auth", line)
+    assert calls == []

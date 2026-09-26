@@ -25,6 +25,8 @@ def _fake_run(monkeypatch, code=0, output="ok  profile\nok  git\n"):
 
     def run(argv):
         calls.append(argv)
+        if argv[2] == "claude auth status":
+            return 0, '{"loggedIn": true}'
         return code, output
 
     monkeypatch.setattr(cli, "_run_ssh", run)
@@ -35,15 +37,18 @@ def test_a_known_host_prints_its_rows_under_a_header_and_exits_zero(tmp_path, mo
     calls = _fake_run(monkeypatch)
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "box"])
     assert rc == 0
-    assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\n"
-    assert calls == [["ssh", "me@box.example", "cox setup doctor"]]
+    assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\nclaude auth      ok\n"
+    assert calls == [
+        ["ssh", "me@box.example", "cox setup doctor"],
+        ["ssh", "me@box.example", "claude auth status"],
+    ]
 
 
 def test_a_failing_remote_doctor_prints_its_rows_and_exits_non_zero(tmp_path, monkeypatch, capsys):
     _fake_run(monkeypatch, code=1, output="FAIL  git\n")
     rc = main(["setup", "doctor", "--profile", _profile(tmp_path), "--host", "gpu"])
     assert rc == 1
-    assert capsys.readouterr().out == "doctor on gpu (me@gpu.example)\nFAIL  git\n"
+    assert capsys.readouterr().out == "doctor on gpu (me@gpu.example)\nFAIL  git\nclaude auth      ok\n"
 
 
 def test_an_unknown_host_names_the_configured_ones_and_runs_nothing(tmp_path, monkeypatch, capsys):
@@ -92,4 +97,6 @@ def test_doctor_on_host_returns_the_code_and_the_split_rows(output, rows):
     from agent_tools.remote_doctor import doctor_on_host
 
     host = LaneHost("box", "me@box", "/srv")
-    assert doctor_on_host(host, lambda argv: (3, output)) == (3, rows)
+    auth = '{"loggedIn": true}'
+    run = lambda argv: (0, auth) if argv[2] == "claude auth status" else (3, output)  # noqa: E731
+    assert doctor_on_host(host, run) == (3, [*rows, "claude auth      ok"])
