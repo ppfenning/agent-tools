@@ -1,4 +1,6 @@
-from agent_tools.chair_exec import Deps, delete_branches_with, perform, run_argv
+import pytest
+
+from agent_tools.chair_exec import Deps, argv_for, delete_branches_with, perform, run_argv
 
 LANDED = "merge: ok\nmark_done: ok\n"
 
@@ -139,3 +141,15 @@ def test_standby_and_needs_chair_are_recorded_without_running_anything() -> None
     results = perform(actions, _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["recorded", "recorded"]
     assert calls == [("record", "standby"), ("record", "needs_chair")]
+
+
+@pytest.mark.parametrize("kind", ["relaunch", "retry", "launch_epic"])
+def test_an_epic_launch_names_the_initiative_by_its_work_path(kind: str) -> None:
+    assert argv_for({"kind": kind, "initiative": "x"})[-2:] == ["--initiative", "work/x"]  # type: ignore[typeddict-item,index]
+    with_repo = argv_for({"kind": kind, "initiative": "x", "repo": "/r"})  # type: ignore[typeddict-item]
+    assert with_repo[-4:] == ["--initiative", "work/x", "--repo", "/r"]  # type: ignore[index]
+
+
+def test_run_argv_runs_in_the_given_directory(tmp_path) -> None:
+    code, output = run_argv(["pwd"], cwd=tmp_path)
+    assert (code, output.strip()) == (0, str(tmp_path.resolve()))

@@ -5341,6 +5341,19 @@ def _chair_run_deps(
         runs = [a["run"] for a in chair_read_attempts.read_attempts(ws) if a.get("initiative") == initiative and a.get("task") == task and a.get("run")]
         return bool(runs) and chair_read_patch.read_has_patch(runs_dir, runs[-1], task)
 
+    def repo_for(action: dict) -> str:
+        """The action's own repo, else `repo:` from the initiative's `initiative.md`; "" when either is missing."""
+        if action.get("repo"):
+            return action["repo"]
+        initiative = action.get("initiative", "")
+        if not initiative:
+            return ""
+        try:
+            text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        return route.parse_frontmatter(text)[0].get("repo") or ""
+
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
@@ -5361,8 +5374,8 @@ def _chair_run_deps(
         session=session, pid=pid, host=host,
     )
     exec_deps = chair_exec.edge_deps(
-        runs_dir, session, pid,
-        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=lambda action: action.get("repo", ""),
+        runs_dir, ws, session, pid,
+        run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
         record=chair_read_record.recorder(runs_dir, epoch, now_text),
     )
     return chair_run.RunDeps(

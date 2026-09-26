@@ -171,6 +171,38 @@ def test_the_recorder_appends_the_action_under_the_fenced_epoch(tmp_path) -> Non
     assert (row["kind"], row["epoch"]) == ("noop", -1)
 
 
+def _workspace_deps(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    return cli._chair_run_deps(runs_dir, {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files").exec_deps
+
+
+def _initiative(tmp_path, name: str, text: str) -> None:
+    folder = tmp_path / "work" / name
+    folder.mkdir(parents=True)
+    (folder / "initiative.md").write_text(text, encoding="utf-8")
+
+
+def test_repo_for_reads_the_initiatives_repo_when_the_action_has_none(tmp_path) -> None:
+    _initiative(tmp_path, "x", "---\nrepo: /w/app\n---\nbody\n")
+    exec_deps = _workspace_deps(tmp_path)
+    assert exec_deps.repo_for({"kind": "clear_branches", "initiative": "x"}) == "/w/app"
+    assert exec_deps.repo_for({"kind": "clear_branches", "initiative": "x", "repo": "/other"}) == "/other"
+
+
+def test_repo_for_is_empty_when_the_file_or_the_key_is_missing(tmp_path) -> None:
+    _initiative(tmp_path, "nokey", "---\ntitle: t\n---\nbody\n")
+    exec_deps = _workspace_deps(tmp_path)
+    assert exec_deps.repo_for({"kind": "clear_branches", "initiative": "nokey"}) == ""
+    assert exec_deps.repo_for({"kind": "clear_branches", "initiative": "absent"}) == ""
+    assert exec_deps.repo_for({"kind": "clear_branches"}) == ""
+
+
+def test_the_real_bundle_runs_cox_from_the_workspace(tmp_path) -> None:
+    code, output = _workspace_deps(tmp_path).run(["pwd"])
+    assert (code, output.strip()) == (0, str(tmp_path.resolve()))
+
+
 def test_an_unusable_provider_profile_refuses_before_any_lease(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda _a: ({}, tmp_path / "runs", None))
     monkeypatch.setattr(cli, "_lake_provider", lambda _a: ({}, "provider profile not readable: /x"))
