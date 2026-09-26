@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,16 @@ def _run(build: Any) -> tuple[int, str] | None:
     except OSError as exc:
         return -1, str(exc)
     return done.returncode, done.stdout or done.stderr
+
+
+def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
+    """Edge. A function that runs `store_cli <args>` against the store for `runs_dir`; a missing harness is code 1."""
+    url = _store_url(Path(runs_dir))
+
+    def run(args: list[str]) -> tuple[int, str]:
+        return _run(lambda python: [python, *_MODULE, *args, *_store(url)]) or (1, "harness not available")
+
+    return run
 
 
 def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at: str) -> MarkLandedResult:
