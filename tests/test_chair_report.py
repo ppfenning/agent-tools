@@ -66,6 +66,11 @@ def test_a_quiet_tick_names_no_launch_and_no_failure():
     assert "launched:" not in line and "failed:" not in line
 
 
+def test_a_dry_run_line_names_what_it_would_do():
+    line = format_status(_facts(), [], [_result("launch_epic", "dry_run", initiative="x")], NOW)
+    assert "dry-run | would: launch_epic:x" in line
+
+
 def test_a_land_counts_only_when_landed():
     assert lands_this_tick([_landed(), _landed(status="not_landed"), _landed("clear_branches", "done")]) == 1
 
