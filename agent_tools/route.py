@@ -9,9 +9,10 @@ import json
 import os
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import run_store
+from agent_tools import chair, run_store
 from agent_tools.pacing import Assessment
 
 __all__ = [
@@ -19,6 +20,8 @@ __all__ = [
     "ProfileError",
     "child_env",
     "context_document",
+    "context_from_rows",
+    "context_rows",
     "harness_argv",
     "initiative_files",
     "initiative_summaries",
@@ -26,6 +29,8 @@ __all__ = [
     "intake_file",
     "latest_groups_file",
     "launch_blockers",
+    "launch_claim",
+    "launch_claim_gate",
     "launch_gate",
     "lint_items",
     "next_run_id",
@@ -38,6 +43,7 @@ __all__ = [
     "render_status",
     "review_argv",
     "run_entries",
+    "run_under_claim",
     "slugify",
     "state_problems",
     "status_entries",
@@ -871,6 +877,136 @@ def context_document(profile_or_none, intake, runs, initiatives, problems: list 
     doc["initiatives"] = initiatives
     doc["problems"] = problems or []
     return doc
+
+
+def _task_items(rows: Sequence[Mapping]) -> list[dict]:
+    """Task rows from the store's queue, in the item shape `initiative_summaries` takes. Mirrors `chair_read_docket._item_of`."""
+    return [
+        {"id": r["task_id"], "initiative": r["initiative"], "phase": r["phase"], "state": r["state"], "needs": list(r["needs"])}
+        for r in rows
+        if r["kind"] == "task"
+    ]
+
+
+def _intake_entry_from_row(row: Mapping) -> dict:
+    """One queue row (kind `intake`) in the entry shape `intake_groups`/`intake_entries` already accept. `path`
+    names the file's stem the same way for a queued or a done row — `_intake_entry` never puts `done/` in it."""
+    body_lines = [line.strip() for line in (row.get("body") or "").split("\n") if line.strip()]
+    entry_id = row["extra"].get("id", row["task_id"])
+    return {
+        "id": entry_id,
+        "title": row["title"] or (body_lines[0] if body_lines else entry_id),
+        "initiative": row["extra"].get("initiative"),
+        "done": row["state"] == "done",
+        "path": f"intake/{row['task_id']}.md",
+    }
+
+
+def _phase_of(own_items_by_id: Mapping[str, dict], ready_tasks: Sequence[Mapping]) -> str | None:
+    return next((own_items_by_id[t["id"]]["phase"] for t in ready_tasks if t["id"] in own_items_by_id), None)
+
+
+def _initiative_from_docket(entry: Mapping, items: list) -> dict | None:
+    """One `initiative_summaries`-shaped row from one `chair_read_docket.docket_from_rows` entry: `ready` and
+    `phase` come from `entry["ready_tasks"]`, already less any task a live claim holds, so a claimed task is not
+    offered again. `None` when the initiative has nothing to report, matching `_initiative_summary`."""
+    own = [i for i in items if i["initiative"] == entry["id"]]
+    awaiting_merge = sum(1 for item in own if item["state"] == "approved")
+    ready = len(entry["ready_tasks"])
+    if not ready and not awaiting_merge:
+        return None
+    summary = {
+        "id": entry["id"],
+        "phase": _phase_of({i["id"]: i for i in own}, entry["ready_tasks"]) if ready else None,
+        "ready": ready,
+    }
+    if awaiting_merge:
+        summary["awaiting_merge"] = awaiting_merge
+    return summary
+
+
+def context_from_rows(rows: Sequence[Mapping], now: str) -> tuple[dict, list[dict]]:
+    """`(intake, initiatives)` in exactly the shapes `context_document`/`render_context` already accept, built from
+    `run_store.read_queue` rows instead of the workspace's files. `initiatives` goes through
+    `chair_read_docket.docket_from_rows` so a task a live claim holds does not count as ready; `intake`'s `queued`
+    group comes from `chair_read_intake.intake_from_rows`, the same rows the chair itself would pick up next.
+
+    unknown: an intake entry that predates the `initiative:` field, matched only by an initiative.md body citing its
+    path (`_intake_group`'s `naming` fallback), cannot be reconstructed here — rows carry no initiative.md text.
+    """
+    # Deferred: chair_read_docket reads route.TERMINAL at import time, so a top-level import here would cycle.
+    from agent_tools import chair_read_docket, chair_read_intake
+
+    items = _task_items(rows)
+    initiatives = [
+        summary
+        for summary in (_initiative_from_docket(entry, items) for entry in chair_read_docket.docket_from_rows(rows, now))
+        if summary is not None
+    ]
+    entries = _intake_entries_from_rows(rows)
+    ids = sorted({item["initiative"] for item in items})
+    initiative_rows = [{"id": iid, "done": done} for iid, done in initiative_states(ids, items).items()]
+    groups = intake_groups(entries, initiative_rows)
+    groups["queued"] = [_intake_entry_from_row(r) for r in chair_read_intake.intake_from_rows(rows)]
+    return groups, initiatives
+
+
+def _intake_entries_from_rows(rows: Sequence[Mapping]) -> list[dict]:
+    return [_intake_entry_from_row(r) for r in rows if r["kind"] == "intake"]
+
+
+def context_rows(runs_dir: Path, now: str) -> tuple[dict, list[dict]] | None:
+    """`context_from_rows` over the store's queue rows; `None` when `read_queue` comes back empty because the
+    harness, table or store is unavailable, so the caller falls back to reading the workspace's files as today."""
+    rows = run_store.read_queue(runs_dir)
+    return context_from_rows(rows, now) if rows else None
+
+
+def launch_claim(
+    runs_dir: Path, initiative: str, task_id: str, holder: str, now: str, ttl_s: float = chair.DEFAULT_LEASE_TTL_SECONDS,
+) -> tuple[dict | None, str | None]:
+    """The claim taken on `(initiative, task_id)`, or `(None, <holder>)` naming who already holds it, or
+    `(None, run_store.UNAVAILABLE)` when the store cannot say. `ttl_s` defaults to the chair's own lease TTL, so a
+    launch claim outlives one heartbeat the same way the chair's lease does."""
+    claim, reason = run_store.claim_outcome(runs_dir, initiative, task_id, holder, ttl_s, now)
+    if claim is not None or reason != run_store.HELD:
+        return claim, reason
+    held = next(
+        (r["holder"] for r in run_store.read_queue(runs_dir, initiative, kind="task") if r["task_id"] == task_id and r["holder"]),
+        None,
+    )
+    return None, held or "another holder"
+
+
+def launch_claim_gate(claim: dict | None, blocker: str | None) -> tuple[int | None, list[str]]:
+    """Pure: what `route launch` does with one `launch_claim` outcome, mirroring `launch_gate`'s shape. A claim
+    taken is silent; the store being unavailable is one warning and launch proceeds; anything else is `blocker`
+    naming the holder already running it, refused with the same exit code `launch_gate` uses for a stop."""
+    if claim is not None:
+        return None, []
+    if blocker == run_store.UNAVAILABLE:
+        return None, ["routing: warning, the work-item store is unavailable; launching without a claim"]
+    return 2, [f"routing: launch refused, {blocker} already holds this task"]
+
+
+def run_under_claim[T](
+    runs_dir: Path, initiative: str, task_id: str, holder: str, now: str, body: Callable[[], T],
+    ttl_s: float = chair.DEFAULT_LEASE_TTL_SECONDS,
+) -> tuple[int | None, list[str], T | None]:
+    """`launch_claim` then `launch_claim_gate`; a refusal or an unavailable store runs no body. `body` failing
+    before it returns releases the claim this call took, then re-raises unchanged — a release never masks the
+    body's own exception. `now` is the caller's clock reading, passed in from the edge, never read here."""
+    claim, blocker = launch_claim(runs_dir, initiative, task_id, holder, now, ttl_s)
+    code, lines = launch_claim_gate(claim, blocker)
+    if code is not None:
+        return code, lines, None
+    try:
+        value = body()
+    except BaseException:
+        if claim is not None:
+            run_store.release_row(runs_dir, initiative, task_id, holder)
+        raise
+    return None, lines, value
 
 
 def status_rows(entries) -> list:
