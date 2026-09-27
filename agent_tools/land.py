@@ -542,3 +542,77 @@ def close_to_done(
         return new_text, message
     stop = set_state_stop(set_state("approved"))
     return (None, stop) if stop is not None else (new_text, message)
+
+
+_Hunk = tuple[list[str], list[str], list[str]]
+
+
+def _parse_conflict_hunks(text: str) -> list[str | _Hunk] | None:
+    """`text` split into a list of plain-text segments and `(ours, base, theirs)` line-list hunks, in order.
+    None when a `<<<<<<<`/`|||||||`/`=======`/`>>>>>>>` marker is missing or out of order."""
+    lines = text.splitlines(keepends=True)
+    segments: list[str | _Hunk] = []
+    plain: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if line.startswith("||||||| ") or line.startswith(">>>>>>> ") or line.rstrip("\n") == "=======":
+            return None
+        if not line.startswith("<<<<<<< "):
+            plain.append(line)
+            i += 1
+            continue
+        if plain:
+            segments.append("".join(plain))
+            plain = []
+        ours: list[str] = []
+        i += 1
+        while i < n and not lines[i].startswith("||||||| "):
+            if lines[i].startswith("<<<<<<< ") or lines[i].startswith(">>>>>>> ") or lines[i].rstrip("\n") == "=======":
+                return None
+            ours.append(lines[i])
+            i += 1
+        if i >= n:
+            return None
+        base: list[str] = []
+        i += 1
+        while i < n and lines[i].rstrip("\n") != "=======":
+            if lines[i].startswith("<<<<<<< ") or lines[i].startswith("||||||| ") or lines[i].startswith(">>>>>>> "):
+                return None
+            base.append(lines[i])
+            i += 1
+        if i >= n:
+            return None
+        theirs: list[str] = []
+        i += 1
+        while i < n and not lines[i].startswith(">>>>>>> "):
+            if lines[i].startswith("<<<<<<< ") or lines[i].startswith("||||||| ") or lines[i].rstrip("\n") == "=======":
+                return None
+            theirs.append(lines[i])
+            i += 1
+        if i >= n:
+            return None
+        segments.append((ours, base, theirs))
+        i += 1
+    if plain:
+        segments.append("".join(plain))
+    return segments
+
+
+def resolve_add_add_conflicts(text: str) -> str | None:
+    """`text`, a worktree file left by `git -c merge.conflictStyle=diff3 cherry-pick` after an add/add conflict,
+    resolved to ours-then-theirs (ours alone when ours and theirs match line-for-line). None when any hunk's
+    base holds a non-empty line, or the markers do not parse into well-formed hunks."""
+    segments = _parse_conflict_hunks(text)
+    if segments is None:
+        return None
+    resolved: list[str] = []
+    for segment in segments:
+        if isinstance(segment, str):
+            resolved.append(segment)
+            continue
+        ours, base, theirs = segment
+        if "".join(base).strip() != "":
+            return None
+        resolved.append("".join(ours if ours == theirs else ours + theirs))
+    return "".join(resolved)

@@ -1705,3 +1705,30 @@ def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_
     ok, detail = cli._execute_land_step(repo, {"kind": "checks", "checks": [("tests", [".venv/bin/check"])], "worktree_of": "pr/seams-task"})
     assert ok, detail
     assert (tmp_path / "ran-in").read_text().strip() == str(cli._land_worktree(repo, "pr/seams-task"))
+
+
+# --- resolve_add_add_conflicts: pure diff3 add/add hunk resolver ---
+
+
+def test_resolve_add_add_conflicts_resolves_empty_base_to_ours_then_theirs():
+    text = "<<<<<<< HEAD\nours line\n||||||| base\n=======\ntheirs line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) == "ours line\ntheirs line\n"
+
+
+def test_resolve_add_add_conflicts_refuses_a_non_empty_base():
+    text = "<<<<<<< HEAD\nours line\n||||||| base\nbase line\n=======\ntheirs line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) is None
+
+
+def test_resolve_add_add_conflicts_keeps_identical_ours_and_theirs_once():
+    text = "<<<<<<< HEAD\nsame line\n||||||| base\n=======\nsame line\n>>>>>>> theirs\n"
+    assert land.resolve_add_add_conflicts(text) == "same line\n"
+
+
+def test_resolve_add_add_conflicts_refuses_the_whole_file_when_one_hunk_has_a_base():
+    text = (
+        "<<<<<<< HEAD\nours one\n||||||| base\n=======\ntheirs one\n>>>>>>> theirs\n"
+        "middle\n"
+        "<<<<<<< HEAD\nours two\n||||||| base\nbase two\n=======\ntheirs two\n>>>>>>> theirs\n"
+    )
+    assert land.resolve_add_add_conflicts(text) is None
