@@ -37,7 +37,7 @@ def _tick(ws: Path) -> tuple[str, list[str]]:
     lines: list[str] = []
     kinds: list[str] = []
 
-    def plan(facts):
+    def plan(facts, _now):
         planned = plan_tick(facts)
         kinds.extend(a["kind"] for a in planned)
         return planned

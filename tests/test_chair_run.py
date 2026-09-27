@@ -23,6 +23,8 @@ def _facts(lease):
         "intake": [],
         "work_store_ready": False,
         "sources_configured": False,
+        "last_housekeeping_at": NOW.isoformat(),
+        "housekeeping_hours": 24,
     }
 
 
@@ -111,7 +113,7 @@ def _dry_run_plan(lease, **over):
     rig, planned = Rig(lease=lease), []
     facts = {**_facts(lease), **over}
 
-    def plan(f):
+    def plan(f, n):
         planned.extend(plan_tick(f))
         return planned
 
@@ -139,7 +141,7 @@ def test_a_dry_run_behind_a_live_foreign_holder_still_plans_standby():
 
 def test_a_live_tick_on_a_released_lease_still_plans_take_lease():
     rig, planned = Rig(lease=FREE), []
-    run(True, 60, False, replace(rig.deps(), plan=lambda f: planned.extend(plan_tick(f)) or planned))
+    run(True, 60, False, replace(rig.deps(), plan=lambda f, n: planned.extend(plan_tick(f)) or planned))
     assert [a["kind"] for a in planned] == ["take_lease"]
 
 
@@ -178,7 +180,7 @@ def test_a_failure_after_perform_names_what_was_performed():
     rig = Rig()
     land = {"kind": "land", "task_id": "t1", "repo": "r", "run": "x-1", "epoch": 3}
     no_dispatch = {k: v for k, v in _facts(MINE).items() if k != "dispatch"}
-    run(True, 60, False, replace(rig.deps(), gather=lambda d, n: no_dispatch, plan=lambda f: [land]))
+    run(True, 60, False, replace(rig.deps(), gather=lambda d, n: no_dispatch, plan=lambda f, n: [land]))
     assert len(rig.commands) == 1
     assert rig.lines == ["chair 09-26 14:05 EDT | tick error: KeyError: 'dispatch' | performed: land:landed"]
 
