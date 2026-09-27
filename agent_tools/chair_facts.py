@@ -74,6 +74,7 @@ class FactsDeps:
     drafts: Callable[[], int] | None = None
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
+    run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -259,4 +260,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             deps.missing_repos() if deps.missing_repos is not None else [],
             deps.reported_repos() if deps.reported_repos is not None else set(),
         ),
+        "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
     }
