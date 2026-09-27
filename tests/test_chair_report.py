@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from agent_tools.chair_report import Deps, format_status, lands_this_tick, write_status
+from agent_tools.chair_report import Deps, echo_line, format_status, lands_this_tick, write_status
 from agent_tools.notify import Notification
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
@@ -104,3 +104,21 @@ def test_standby_line_with_an_until_says_who_holds_the_chair_until_when():
     actions = [{"kind": "standby", "holder": "chair-7@box-1:42", "host": "box-1", "until": "2026-09-26T15:00:00+00:00"}]
     line = format_status(_facts(), actions, [_landed("standby", "recorded")], NOW)
     assert "standby: held by chair-7 until 2026-09-26T15:00:00+00:00" in line
+
+
+def test_echo_line_flushes_stdout_after_the_line(monkeypatch):
+    class Stub:
+        def __init__(self):
+            self.calls = []
+
+        def write(self, text):
+            self.calls.append(("write", text))
+
+        def flush(self):
+            self.calls.append(("flush", ""))
+
+    stub = Stub()
+    monkeypatch.setattr("sys.stdout", stub)
+    write_status("chair tick", Deps(echo=echo_line))
+    assert stub.calls[-1] == ("flush", "")
+    assert ("write", "chair tick") in stub.calls

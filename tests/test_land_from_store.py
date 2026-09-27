@@ -198,6 +198,7 @@ def test_exit_3_at_mark_done_stops_with_the_landed_elsewhere_reason(repo, tmp_pa
         harness.append(argv)
         return sp.CompletedProcess(argv, 3, stdout='{"state": "done"}', stderr="")
 
+    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)  # `--by` falls back to the ambient label, so pin it to "unlabeled"
     monkeypatch.setattr(store_cli, "set_state", store.real_set_state)
     monkeypatch.setattr(store_cli, "_harness_python", lambda: _HARNESS)
     monkeypatch.setattr(store_cli.subprocess, "run", fake_run)

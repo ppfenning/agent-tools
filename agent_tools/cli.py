@@ -5549,7 +5549,7 @@ def _chair_run(a: argparse.Namespace) -> int:
     last: collections.deque[str] = collections.deque([""], maxlen=1)
 
     def echo(line: str) -> None:
-        print(line)
+        chair_report.echo_line(line)
         last.append(line)
 
     provider, problem = _lake_provider(a)

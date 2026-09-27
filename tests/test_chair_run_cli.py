@@ -4,11 +4,12 @@ import contextlib
 import dataclasses
 import datetime
 import json
+import os
 
 import pytest
 from conftest import strip_ansi
 
-from agent_tools import chair_facts, chair_run, cli
+from agent_tools import chair, chair_facts, chair_run, cli, store_cli
 
 
 @pytest.fixture(autouse=True)
@@ -212,3 +213,13 @@ def test_an_unusable_provider_profile_refuses_before_any_lease(monkeypatch, tmp_
     args = cli.build_parser().parse_args(["chair", "run"])
     assert args.fn(args) == 2
     assert "no lease taken; lake: provider profile not readable: /x" in capsys.readouterr().out
+
+
+def test_the_loops_lease_take_names_its_label_and_own_pid(monkeypatch, tmp_path) -> None:
+    """The loop takes the lease in-process, so the holder is its label and os.getpid(), never the parent pid."""
+    monkeypatch.setattr(chair.store_cli, "lease_acquire", lambda _d, _n, holder, _t, _s: store_cli.LeaseGranted(epoch=1, holder=holder))
+    deps = cli._chair_run_deps(tmp_path, {}, "lane-a", os.getpid(), "h", False, print, tmp_path / "p.yaml", "files")
+    assert deps.exec_deps.acquire_lease("ignored", "h") == ""
+    holder = json.loads((tmp_path / chair.LEASE_FILENAME).read_text(encoding="utf-8"))["holder"]
+    assert holder == f"lane-a@h:{os.getpid()}"
+    assert "unlabeled" not in holder and f":{os.getppid()}" not in holder
