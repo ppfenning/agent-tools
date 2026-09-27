@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
-from agent_tools import chair, chair_apply_fetch, remote_lane, route
+from agent_tools import chair, chair_apply_fetch, chair_housekeeping, remote_lane, route, run_store
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
@@ -212,6 +212,19 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
 
 
+def _prune_available(run: Run) -> bool:
+    """Edge. True only when `python -m harness.store_backfill_traces prune --help` exits 0."""
+    code, _ = run(["python", "-m", "harness.store_backfill_traces", "prune", "--help"])
+    return code == 0
+
+
+def _housekeeping(action: Action, deps: Deps) -> Result:
+    """Lake sync, trace prune, runs clean, in order; the reason names all three, none stopping the others."""
+    traces_root = run_store._traces_root(deps.runs_dir).url
+    status, reason = chair_housekeeping.run_housekeeping(deps.run, traces_root, partial(_prune_available, deps.run))
+    return _result(action, status, reason)
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
@@ -226,6 +239,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _fetch_exit(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
+    if kind == "housekeeping":
+        return _housekeeping(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
