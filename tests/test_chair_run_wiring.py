@@ -212,3 +212,10 @@ def test_the_record_file_is_beaten_only_by_a_live_run_with_no_refusal() -> None:
         cli._record_beat_wanted(False, "chair: held by other@h:9 (store lease)"),
         cli._record_beat_wanted(True, ""),
     ] == [True, False, False]
+
+
+def test_the_real_deps_read_run_exits_from_the_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.chair_read_exits, "exits", lambda runs_dir: {"i": True, "runs": str(runs_dir)})
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.run_exited() == {"i": True, "runs": str(runs)}  # type: ignore[misc]
