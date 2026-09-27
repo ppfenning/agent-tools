@@ -70,6 +70,15 @@ def _deps(
     )
 
 
+def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
+    deps = replace(_deps(), remote_unfetched=lambda: {"i": "i-1"})
+    assert gather_facts(deps, NOW)["remote_unfetched"] == {"i": "i-1"}
+
+
+def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
+    assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
+
+
 def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
     limits = gather_facts(_deps(weekly_spent=85.0), NOW)["limits"]
     assert limits == {
@@ -201,7 +210,7 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     # remote_unfetched has no producer yet; a later task wires gather_facts to fill it from real runs.
     facts = gather_facts(_deps(), NOW)
     # The housekeeping keys are filled by the facts-edge task, which removes this exclusion.
-    assert set(facts) == set(Facts.__annotations__) - {"remote_unfetched", "last_housekeeping_at", "housekeeping_hours"}
+    assert set(facts) == set(Facts.__annotations__) - {"last_housekeeping_at", "housekeeping_hours"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
