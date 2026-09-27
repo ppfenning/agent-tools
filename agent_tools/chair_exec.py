@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
-from agent_tools import chair, route
+from agent_tools import chair, chair_apply_fetch, remote_lane, route
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
@@ -32,6 +32,8 @@ class Result(TypedDict):
     action: Action
     status: Status
     reason: str
+    run: NotRequired[str]  # a fetch_exit's run, for the next task's status line
+    host: NotRequired[str]  # a fetch_exit's remote host, read from its <run>.remote.json
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ class Deps:
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
     intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
+    runs_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's task records and remote record live here
+    work_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's ticket files live under work_dir/work/<initiative>
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -104,7 +108,7 @@ def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
         return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply"] if run and task and repo else None
-    if kind == "fetch":
+    if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
         return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id] if idea and initiative_id else None
@@ -180,6 +184,34 @@ def _launch(action: Action, deps: Deps) -> Result:
     return _result(action, "done" if code == 0 else "failed", output)
 
 
+def _fetched_host(runs_dir: Path, run: str) -> str:
+    """Edge. The host recorded in `<run>.remote.json`; "" when the file is missing or unparseable."""
+    try:
+        text = remote_lane.remote_record_path(runs_dir, run).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    record = remote_lane.parse_remote_record(text)
+    return record["host"] if record else ""
+
+
+def _fetch_exit(action: Action, deps: Deps) -> Result:
+    """`cox runs fetch` for a remote run, then fold its approvals into local ticket state on success.
+
+    A nonzero exit applies nothing and reports failed, exactly as `fetch` does; the fetch_exit stays
+    unresolved for the next tick to retry, since it never landed.
+    """
+    run, initiative = action.get("run", ""), action.get("initiative", "")
+    argv = argv_for(action)
+    if argv is None:
+        return _result(action, "refused", "fetch_exit needs a run id")
+    code, output = deps.run(argv)
+    if code != 0:
+        return _result(action, "failed", output)
+    approved = chair_apply_fetch.apply_fetched_approvals(deps.runs_dir, deps.work_dir, run, initiative)
+    reason = f"fetched {run}; approved: {', '.join(approved)}"
+    return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
@@ -190,6 +222,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _lease(action, deps)
     if kind in ("standby", "needs_chair"):
         return _result(action, "recorded")
+    if kind == "fetch_exit":
+        return _fetch_exit(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
@@ -285,4 +319,6 @@ def edge_deps(
         run_id=run_id,
         repo_for=repo_for,
         intake_id=partial(read_intake_id, workspace),
+        runs_dir=runs_dir,
+        work_dir=workspace,
     )

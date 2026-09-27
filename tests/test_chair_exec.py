@@ -1,7 +1,9 @@
+import json
 from dataclasses import replace
 
 import pytest
 
+from agent_tools import chair_exec, remote_lane
 from agent_tools.chair_exec import Deps, Refusal, argv_for, decompose_id, delete_branches_with, perform, run_argv, tail
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -29,6 +31,38 @@ def _touched(calls: list) -> list:
 
 def test_a_fetch_runs_cox_runs_fetch_on_its_run():
     assert argv_for({"kind": "fetch", "run": "r-1"}) == ["cox", "runs", "fetch", "r-1"]
+
+
+def test_a_fetch_exit_runs_the_same_cox_runs_fetch_argv_as_fetch():
+    assert argv_for({"kind": "fetch_exit", "run": "r-1", "initiative": "i"}) == ["cox", "runs", "fetch", "r-1"]
+
+
+def test_a_fetch_exit_that_exits_zero_applies_approvals_and_carries_run_and_host(tmp_path, monkeypatch) -> None:
+    remote_lane.remote_record_path(tmp_path, "r-1").write_text(
+        json.dumps({"host": "jarvis", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
+    )
+    calls: list = []
+
+    def fake_apply(runs_dir, work_dir, run, initiative):
+        calls.append((runs_dir, work_dir, run, initiative))
+        return ["t1", "t2"]
+
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", fake_apply)
+    deps = replace(_deps([]), runs_dir=tmp_path, work_dir=tmp_path)
+    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
+    assert calls == [(tmp_path, tmp_path, "r-1", "i")]
+    assert (results[0]["status"], results[0]["run"], results[0]["host"]) == ("done", "r-1", "jarvis")
+    assert results[0]["reason"] == "fetched r-1; approved: t1, t2"
+
+
+def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(chair_exec.chair_apply_fetch, "apply_fetched_approvals", lambda *a: calls.append(a) or [])
+    deps = replace(_deps([], code=1, output="boom"), runs_dir=tmp_path, work_dir=tmp_path)
+    results = perform([{"kind": "fetch_exit", "run": "r-1", "initiative": "i", "epoch": 1}], deps, lambda: 1, False)
+    assert calls == []
+    assert results[0]["status"] == "failed"
+    assert "run" not in results[0] and "host" not in results[0]
 
 
 def _land(task: str, repo: str) -> dict:
