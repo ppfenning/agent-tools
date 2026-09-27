@@ -1237,7 +1237,8 @@ def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, s
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
-    return Path(tempfile.gettempdir()) / f"cox-land-{Path(repo).resolve().name}-{branch.replace('/', '-')}"
+    """Carries this process's pid: on 2026-09-27 two concurrent lands of one branch, the chair's and the loop's, deleted each other's worktree mid-check."""
+    return Path(tempfile.gettempdir()) / f"cox-land-{Path(repo).resolve().name}-{branch.replace('/', '-')}-{os.getpid()}"
 
 
 def _link_venv(repo: Path, wt: Path) -> None:
