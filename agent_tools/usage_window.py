@@ -15,17 +15,19 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+import zoneinfo
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from agent_tools import run_store
 from agent_tools.pacing import Policy, Window
 
 __all__ = [
-    "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "block_remaining", "ceiling_remaining", "gather",
-    "gather_weekly", "read_usage", "usage_cost_usd", "weekly_window_from", "window_from",
+    "CCUSAGE_CACHE_S", "DEFAULT_POLICY", "WeeklyReset", "block_remaining", "ceiling_remaining",
+    "gather", "gather_weekly", "parse_weekly_reset", "read_usage", "usage_cost_usd",
+    "weekly_window_from", "weekly_window_start", "window_from",
 ]
 
 # Every pacing check shells out to ccusage (a ~2.5 s Node process) and they run
@@ -47,6 +49,49 @@ DEFAULT_POLICY = Policy(
     hard_stop_fraction=0.99,
     weekly_hard_stop_fraction=0.93,
 )
+
+
+class WeeklyReset(NamedTuple):
+    """A configured weekly spend-window reset, parsed from `spend.weekly_reset`.
+    `weekday` follows `datetime.weekday()`: Monday=0 .. Sunday=6. `tz` is an
+    IANA zone name such as `America/New_York`."""
+    weekday: int
+    hour: int
+    minute: int
+    tz: str
+
+
+_WEEKDAY_ABBR = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+
+
+def parse_weekly_reset(value: str | None) -> WeeklyReset | None:
+    """Pure parser for `spend.weekly_reset`, format `<Dow> <HH:MM> <Zone>` such
+    as `Sun 04:00 America/New_York`. `None` or anything unparseable returns
+    `None` and never raises: absent config is how a profile-less machine
+    keeps the rolling window."""
+    if value is None:
+        return None
+    parts = value.split()
+    if len(parts) != 3:
+        return None
+    dow, clock, zone = parts
+    weekday = _WEEKDAY_ABBR.get(dow)
+    if weekday is None:
+        return None
+    hour_text, sep, minute_text = clock.partition(":")
+    if not sep or not hour_text or not minute_text:
+        return None
+    try:
+        hour, minute = int(hour_text), int(minute_text)
+    except ValueError:
+        return None
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        return None
+    try:
+        zoneinfo.ZoneInfo(zone)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return None
+    return WeeklyReset(weekday=weekday, hour=hour, minute=minute, tz=zone)
 
 
 def _active_block(blocks_json: dict[str, Any]) -> dict[str, Any] | None:
@@ -228,6 +273,21 @@ def gather(
     return window_from(
         blocks_json, read_usage(runs_dir, now) if usage is None else usage, now, window_hours, ceiling_usd,
     )
+
+
+def weekly_window_start(now: datetime, reset: WeeklyReset | None) -> datetime:
+    """Pure. With no `reset`, the unchanged rolling 7-day cutoff. With one, the
+    most recent wall-clock occurrence of `reset.weekday`/`hour`/`minute` in
+    `reset.tz` at or before `now`, converted back to `now`'s own tzinfo."""
+    if reset is None:
+        return now - timedelta(days=7)
+    zone = zoneinfo.ZoneInfo(reset.tz)
+    local_now = now.astimezone(zone)
+    candidate = local_now.replace(hour=reset.hour, minute=reset.minute, second=0, microsecond=0)
+    candidate -= timedelta(days=(candidate.weekday() - reset.weekday) % 7)
+    if candidate > local_now:
+        candidate -= timedelta(days=7)
+    return candidate.astimezone(now.tzinfo)
 
 
 def weekly_window_from(
