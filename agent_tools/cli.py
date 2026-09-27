@@ -5468,6 +5468,13 @@ def _dispatch_counts(lanes: Sequence[run_store.Lane], local: str, listed: Sequen
     return {"": pidfile_live + sum(n for name, n in by_host.items() if name not in listed), **{name: by_host.get(name, 0) for name in listed}}
 
 
+def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
+    """The record file is beaten only by a live run whose lease renewal came back without a refusal."""
+    if dry_run:
+        return False
+    return lost == ""
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -5491,7 +5498,13 @@ def _chair_run_deps(
 
     def beat() -> object:
         snapshot.clear()
-        return "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
+        lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
+        if _record_beat_wanted(dry_run, lost):
+            with chair.locked(runs_dir):
+                moved, _ = chair.beat(chair.read(runs_dir), session, pid, host, now())
+                if moved is not None:
+                    chair.write(runs_dir, moved)
+        return lost
 
     def live_initiatives() -> list[str]:
         return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
