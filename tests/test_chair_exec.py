@@ -177,6 +177,22 @@ def test_the_status_line_names_a_refused_land_s_cause() -> None:
     assert line.endswith("needs chair: alpha:checks")
 
 
+def test_a_land_refused_by_the_repo_lease_is_busy_and_never_escalated() -> None:
+    calls: list = []
+    output = "land: refusing, pid 1 on host is landing in /repo"
+    results = perform([_land("t1", "r")], _deps(calls, output), lambda: 1, False)
+    assert [r["status"] for r in results] == ["busy"]
+    assert ("record", "needs_chair") not in calls
+
+
+def test_a_land_refused_for_any_other_reason_still_escalates_as_stranded() -> None:
+    recorded: list = []
+    deps = replace(_deps([], "land: refusing, /repo is dirty"), record=recorded.append)
+    results = perform([_land("t1", "r")], deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["not_landed", "escalated"]
+    assert [(a["kind"], a.get("cause")) for a in recorded] == [("land", None), ("needs_chair", "stranded")]
+
+
 def test_a_land_with_only_merge_is_not_counted_and_skips_its_repo_siblings() -> None:
     calls: list = []
     actions = [_land("t1", "r"), _land("t2", "r"), _clear("alpha"), _land("t3", "other")]
