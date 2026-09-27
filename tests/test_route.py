@@ -2012,3 +2012,13 @@ def test_pull_plan_routes_a_pr_to_a_review_and_an_issue_to_an_intake_file():
     pr = Candidate(title="Add retry", body="b", repo="a/b", link="l2", kind="pr")
     files, reviews, refusals = route.pull_plan([_cand("l1"), pr], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
     assert (len(files), reviews, refusals) == (1, ["l2"], [])
+
+
+def test_parse_profile_keeps_spend_weekly_reset_as_text():
+    text = VALID_PROFILE + 'spend:\n  weekly_ceiling_usd: 1430\n  weekly_reset: "Sun 04:00 America/New_York"  # the meter\n'
+    profile = route.parse_profile(text)
+    assert (profile["weekly_ceiling_usd"], profile["weekly_reset"]) == (1430.0, "Sun 04:00 America/New_York")
+
+
+def test_parse_profile_reads_an_unquoted_weekly_reset():
+    assert route.parse_profile(VALID_PROFILE + "spend:\n  weekly_reset: Sun 04:00 America/New_York\n")["weekly_reset"] == "Sun 04:00 America/New_York"
