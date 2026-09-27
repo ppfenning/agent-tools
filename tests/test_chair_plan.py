@@ -21,6 +21,7 @@ def _facts(**overrides) -> Facts:
         "work_store_ready": True,
         "sources_configured": True,
         "remote_unfetched": {},
+        "run_exited": {},
         "last_housekeeping_at": None,
         "housekeeping_hours": 24.0,
     }
@@ -103,6 +104,7 @@ def test_launch_cap_keeps_the_first_relaunches_in_order_and_drops_the_paired_cle
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         initiatives=[_initiative("a"), _initiative("b"), _initiative("c")],
+        run_exited={"a": True, "b": True, "c": True},
     )
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
@@ -155,6 +157,7 @@ def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 3, "go_degraded": False},
         dispatch={"max_in_flight": 9, "live_runs": 0, "hosts": []},
         initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
+        run_exited={"a": True},
     )
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
@@ -165,7 +168,7 @@ def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
 
 
 def test_a_relaunched_initiative_is_not_also_launched_as_an_epic():
-    facts = _facts(initiatives=[_initiative("a"), _initiative("b"), _blocked("c")])
+    facts = _facts(initiatives=[_initiative("a"), _initiative("b"), _blocked("c")], run_exited={"a": True, "b": True})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
         {"kind": "relaunch", "initiative": "a", "epoch": 7},
@@ -188,6 +191,7 @@ def test_dispatch_lanes_are_counted_after_the_kept_launches():
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
         dispatch={"max_in_flight": 3, "live_runs": 0, "hosts": []},
         initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
+        run_exited={"a": True},
     )
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
@@ -257,6 +261,7 @@ def _mixed() -> Facts:
         initiatives=[_initiative("i")],
         quarantines=[_SCOPE_QUARANTINE],
         intake=["n1", "n2"],
+        run_exited={"i": True},
     )
 
 
@@ -289,12 +294,12 @@ def test_another_holder_inside_its_takeover_plans_standby_naming_until():
 
 
 def test_a_remote_unfetched_initiative_gets_a_fetch_exit_action_before_its_relaunch():
-    facts = _facts(initiatives=[_initiative("i")], remote_unfetched={"i": "i-run-1"})
+    facts = _facts(initiatives=[_initiative("i")], remote_unfetched={"i": "i-run-1"}, run_exited={"i": True})
     assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "i", "run": "i-run-1", "epoch": 7}]
 
 
 def test_a_remote_unfetched_initiative_plans_no_relaunch_even_with_ready_tasks_and_met_needs():
-    facts = _facts(initiatives=[_initiative("a")], remote_unfetched={"a": "a-run-1"})
+    facts = _facts(initiatives=[_initiative("a")], remote_unfetched={"a": "a-run-1"}, run_exited={"a": True})
     assert "relaunch" not in _kinds(plan_tick(facts))
     assert "clear_branches" not in _kinds(plan_tick(facts))
 
@@ -306,12 +311,39 @@ def test_a_remote_unfetched_initiative_plans_no_launch_epic_even_with_ready_task
 
 
 def test_an_initiative_absent_from_remote_unfetched_still_relaunches_as_today():
-    facts = _facts(initiatives=[_initiative("a"), _initiative("b")], remote_unfetched={"a": "a-run-1"})
+    facts = _facts(initiatives=[_initiative("a"), _initiative("b")], remote_unfetched={"a": "a-run-1"}, run_exited={"b": True})
     assert plan_tick(facts) == [
         {"kind": "fetch_exit", "initiative": "a", "run": "a-run-1", "epoch": 7},
         {"kind": "clear_branches", "initiative": "b", "epoch": 7},
         {"kind": "relaunch", "initiative": "b", "epoch": 7},
     ]
+
+
+def test_an_initiative_with_a_recorded_exit_relaunches_as_today():
+    facts = _facts(initiatives=[_initiative("i")], run_exited={"i": True})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+def test_an_initiative_without_a_recorded_exit_plans_no_relaunch():
+    """The same ready, needs-met shape that used to relaunch on a stale-looking lease; run_exited false blocks it."""
+    facts = _facts(initiatives=[_initiative("i")], run_exited={"i": False})
+    assert plan_tick(facts) == []
+
+
+def test_an_initiative_absent_from_run_exited_plans_no_relaunch():
+    facts = _facts(initiatives=[_initiative("i")])
+    assert plan_tick(facts) == []
+
+
+def test_an_initiative_without_a_recorded_exit_stands_by_and_the_lane_goes_to_another():
+    """Withheld from fill too: no launch_epic for the gated initiative, while a blocked neighbour still launches."""
+    facts = _facts(initiatives=[_initiative("i"), _blocked("b")], run_exited={"i": False})
+    assert plan_tick(facts) == [{"kind": "launch_epic", "initiative": "b", "epoch": 7}]
+
+
 def test_absent_housekeeping_history_emits_one_housekeeping_action():
     assert plan_tick(_facts(), _NOW) == [{"kind": "housekeeping", "reason": "housekeeping due: last never", "epoch": 7}]
 

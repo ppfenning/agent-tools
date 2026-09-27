@@ -63,11 +63,28 @@ def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozense
     ]
 
 
+def _withhold_not_exited(actions: list[Action], not_exited: frozenset[str]) -> list[Action]:
+    """Drop a relaunch for an initiative whose newest run has no recorded exit; its paired clear_branches goes with it.
+
+    A stale-looking lease is never enough on its own; only facts run_exited being true clears this gate.
+    """
+    dropped = {n for n, a in enumerate(actions) if a["kind"] == "relaunch" and a["initiative"] in not_exited}
+    return [
+        a
+        for n, a in enumerate(actions)
+        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in not_exited)
+    ]
+
+
 def _plan_as_holder(facts: Facts) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
-    recovered = _withhold_remote_unfetched(plan_recover(facts), remote_unfetched)
+    run_exited = facts.get("run_exited", {})
+    pre_exit_gate = _withhold_remote_unfetched(plan_recover(facts), remote_unfetched)
+    would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
+    not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
+    recovered = _withhold_not_exited(pre_exit_gate, not_exited)
     if facts["limits"]["hard_stop"]:
         return [*lands, *fetch_exits, *_needs_chair_only(recovered)]
     cap = _launch_cap(facts["limits"])
@@ -75,7 +92,11 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
-    withheld = frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]}) | remote_unfetched
+    withheld = (
+        frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]})
+        | remote_unfetched
+        | not_exited
+    )
     return [*lands, *fetch_exits, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
 
 
