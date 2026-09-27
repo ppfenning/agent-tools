@@ -33,6 +33,7 @@ __all__ = [
     "launch_claim_gate",
     "launch_gate",
     "lint_items",
+    "merge_same_phase",
     "next_run_id",
     "overlay",
     "parse_frontmatter",
@@ -630,6 +631,143 @@ def lint_items(items, repo: str | None, grants) -> list:
     DAG's parsed ticket items; no model, no I/O."""
     problems = [p for item in items for p in _item_problems(item, repo, grants)]
     return problems + _coupling_problems(items)
+
+
+def _ordered_union(lists) -> list:
+    """Every value across `lists`, first-appearance order, de-duplicated."""
+    seen: set = set()
+    result: list = []
+    for values in lists:
+        for value in values:
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+    return result
+
+
+def _surface_components(items: list, indices: list) -> list:
+    """Connected components of `indices` into `items`, joining two indices
+    whenever their `surfaces` lists intersect. Each component's members
+    come out in ascending index order (file order), and components are
+    ordered by their first member's index."""
+    parent = {i: i for i in indices}
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            node = parent[node]
+        return node
+
+    by_surface: dict = {}
+    for i in indices:
+        for surface in items[i].get("surfaces", []):
+            by_surface.setdefault(surface, []).append(i)
+    for group in by_surface.values():
+        for other in group[1:]:
+            parent[find(other)] = find(group[0])
+
+    roots: dict = {}
+    components: list = []
+    for i in indices:
+        root = find(i)
+        if root not in roots:
+            roots[root] = []
+            components.append(roots[root])
+        roots[root].append(i)
+    return components
+
+
+def _shared_surfaces(members: list) -> list:
+    """Surfaces that connect at least two of `members`, first-appearance
+    order. For a chain A-B-C this is A-B's shared path and B-C's shared
+    path, not only a path every member has in common."""
+    counts: dict = {}
+    order: list = []
+    for member in members:
+        for surface in dict.fromkeys(member.get("surfaces", [])):
+            if surface not in counts:
+                counts[surface] = 0
+                order.append(surface)
+            counts[surface] += 1
+    return [surface for surface in order if counts[surface] > 1]
+
+
+def merge_same_phase(items: list) -> tuple[list, list]:
+    """Same-phase tickets whose state is `ready` or `todo` and whose
+    `surfaces` intersect, transitively, collapse into one merged ticket per
+    connected component; a ticket in `approved`, `in_progress`, or `done`
+    never joins a group. Pure: `items` is the in-memory ticket record list
+    route.py already builds (id, title, state, phase, surfaces, needs,
+    body); no file I/O. Returns the rewritten item list and one merge
+    record per merge performed, each carrying the member ids in order, the
+    merged id, and the surface(s) that connected the group.
+    """
+    by_phase: dict = {}
+    for index, item in enumerate(items):
+        by_phase.setdefault(item.get("phase"), []).append(index)
+
+    components: list = []
+    for indices in by_phase.values():
+        eligible = [i for i in indices if items[i].get("state") in ("ready", "todo")]
+        components.extend(_surface_components(items, eligible))
+
+    merged_by_index: dict = {}
+    dropped_by_index: dict = {}
+    id_rewrites: dict = {}
+    merges: list = []
+
+    for indices in components:
+        if len(indices) < 2:
+            continue
+        members = [items[i] for i in indices]
+        member_ids = {member["id"] for member in members}
+        merged_id = members[0]["id"]
+
+        merged_by_index[indices[0]] = {
+            **members[0],
+            "title": "; ".join(member["title"] for member in members),
+            "surfaces": _ordered_union(member.get("surfaces", []) for member in members),
+            "needs": [
+                needed
+                for needed in _ordered_union(member.get("needs", []) for member in members)
+                if needed not in member_ids
+            ],
+            "body": "\n\n".join(
+                f"## {member['title']}\n{member.get('body', '')}" for member in members
+            ),
+        }
+        for i, member in zip(indices[1:], members[1:]):
+            dropped_by_index[i] = {**items[i], "state": "dropped", "merged_into": merged_id}
+            id_rewrites[member["id"]] = merged_id
+
+        merges.append({
+            "members": [member["id"] for member in members],
+            "into": merged_id,
+            "surfaces": _shared_surfaces(members),
+        })
+
+    def rewritten_needs(needs: list) -> list:
+        result: list = []
+        for needed in needs:
+            replacement = id_rewrites.get(needed, needed)
+            if replacement not in result:
+                result.append(replacement)
+        return result
+
+    result_items: list = []
+    for index, item in enumerate(items):
+        if index in dropped_by_index:
+            result_items.append(dropped_by_index[index])
+        elif index in merged_by_index:
+            merged = merged_by_index[index]
+            result_items.append({**merged, "needs": rewritten_needs(merged["needs"])})
+        else:
+            needs = item.get("needs", [])
+            if any(needed in id_rewrites for needed in needs):
+                result_items.append({**item, "needs": rewritten_needs(needs)})
+            else:
+                result_items.append(item)
+
+    return result_items, merges
 
 
 _TIER_LADDER = ("cheap", "standard", "deep")
