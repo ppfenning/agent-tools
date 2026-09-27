@@ -174,6 +174,38 @@ def test_a_tick_that_lost_the_lease_leaves_the_record_file_untouched(tmp_path, m
     assert cli.chair.chair_path(runs).read_bytes() == before
 
 
+def _stranded_workspace_with_a_missing_repo(tmp_path):
+    """A `runs`/`work` pair whose one live, approved, unlanded record names a repo that does not exist."""
+    runs = tmp_path / "runs"
+    missing_repo = str(tmp_path / "gone")
+    tasks = runs / "r1" / "tasks" / "p1"
+    tasks.mkdir(parents=True)
+    record = {
+        "run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "landed": False, "repo": missing_repo,
+    }
+    (tasks / "t1.json").write_text(json.dumps(record), encoding="utf-8")
+    work = tmp_path / "work" / "acme" / "p1"
+    work.mkdir(parents=True)
+    (work / "t1.md").write_text("---\nid: t1\nstate: ready\n---\nbody\n", encoding="utf-8")
+    (tmp_path / "work" / "acme" / "initiative.md").write_text("---\nrepo: /unused\n---\nbody\n", encoding="utf-8")
+    return runs, missing_repo
+
+
+def test_a_missing_repo_is_reported_on_the_first_tick_and_not_the_second(tmp_path) -> None:
+    runs, missing_repo = _stranded_workspace_with_a_missing_repo(tmp_path)
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    first_missing = deps.facts_deps.missing_repos()  # type: ignore[misc]
+    first_reported = deps.facts_deps.reported_repos()  # type: ignore[misc]
+    assert cli.chair_facts.new_missing_repos(first_missing, first_reported) == [missing_repo]
+
+    second_missing = deps.facts_deps.missing_repos()  # type: ignore[misc]
+    second_reported = deps.facts_deps.reported_repos()  # type: ignore[misc]
+    assert cli.chair_facts.new_missing_repos(second_missing, second_reported) == []
+
+
 def test_the_record_file_is_beaten_only_by_a_live_run_with_no_refusal() -> None:
     assert [
         cli._record_beat_wanted(False, ""),
