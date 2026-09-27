@@ -15,8 +15,8 @@ from agent_tools.chair_types import Action, Facts
 from agent_tools.notify import Notification
 
 __all__ = [
-    "Deps", "echo_line", "failed_items", "format_status", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items",
-    "write_status",
+    "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "lands_this_tick", "launched_items", "mode_of",
+    "needs_chair_items", "would_items", "write_status",
 ]
 
 EASTERN = ZoneInfo("America/New_York")
@@ -75,6 +75,15 @@ def failed_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
+def fetched_items(results: Sequence[Result]) -> list[str]:
+    """`<run> from <host>` for every fetch_exit that landed; a host of None reads `on another machine`."""
+    return [
+        f"{r['action'].get('run', '?')} from {'on another machine' if r['action'].get('host') is None else r['action'].get('host')}"
+        for r in results
+        if r["status"] == "done" and r["action"].get("kind") == "fetch_exit"
+    ]
+
+
 def would_items(results: Sequence[Result]) -> list[str]:
     """`<kind>:<task or initiative>` for every dry_run result except standby and take_lease."""
     return [
@@ -95,7 +104,9 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
     needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
-    launched, failed, would = launched_items(results), failed_items(results), would_items(results)
+    launched, fetched, failed, would = (
+        launched_items(results), fetched_items(results), failed_items(results), would_items(results),
+    )
     drafts = facts.get("drafts", 0)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
@@ -106,6 +117,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
         *([f"launched: {', '.join(launched)}"] if launched else []),
+        *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",

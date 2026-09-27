@@ -72,6 +72,28 @@ def test_a_quiet_tick_names_no_launch_and_no_failure():
     assert "launched:" not in line and "failed:" not in line
 
 
+def test_a_fetch_exit_done_names_the_run_and_host():
+    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host="jarvis")], NOW)
+    assert "fetched: epic-a-1 from jarvis" in line
+
+
+def test_a_fetch_exit_done_with_no_host_says_another_machine():
+    line = format_status(_facts(), [], [_result("fetch_exit", "done", run="epic-a-1", host=None)], NOW)
+    assert "fetched: epic-a-1 from on another machine" in line
+
+
+def test_a_fetch_exit_failed_appears_as_failed_not_fetched():
+    line = format_status(_facts(), [], [_result("fetch_exit", "failed", run="epic-a-1")], NOW)
+    assert "fetched:" not in line
+    assert "failed: fetch_exit:?" in line
+
+
+def test_a_tick_with_no_fetch_exit_result_is_unchanged():
+    results = [_result("rescue", "done", initiative="epic-a", task_id="t1"), _result("retry", "done", initiative="epic-b")]
+    line = format_status(_facts(), [], results, NOW)
+    assert "fetched:" not in line
+
+
 def test_a_dry_run_line_names_what_it_would_do():
     line = format_status(_facts(), [], [_result("launch_epic", "dry_run", initiative="x")], NOW)
     assert "dry-run | would: launch_epic:x" in line
