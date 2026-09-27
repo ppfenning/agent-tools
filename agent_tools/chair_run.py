@@ -61,7 +61,7 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     deps.beat()
     gathered = deps.gather(deps.facts_deps, now)
     facts = as_holder(gathered) if dry_run else gathered
-    actions = deps.plan(facts)
+    actions = deps.plan(facts, now)
     results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
     try:
         return format_status(facts, actions, results, now)
