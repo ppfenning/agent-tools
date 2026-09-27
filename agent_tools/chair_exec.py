@@ -12,12 +12,13 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from agent_tools import chair
+from agent_tools import chair, route
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
 __all__ = [
-    "LAUNCH_KINDS", "Deps", "Result", "argv_for", "branch_pattern", "delete_branches_with", "edge_deps", "escalation", "landed", "perform",
+    "LAUNCH_KINDS", "Deps", "Refusal", "Result", "argv_for", "branch_pattern", "decompose_id", "delete_branches_with", "edge_deps",
+    "escalation", "landed", "perform", "tail",
 ]
 
 Status = Literal[
@@ -34,6 +35,15 @@ class Result(TypedDict):
 
 
 @dataclass(frozen=True)
+class Refusal:
+    reason: str
+
+
+def _no_intake_id(path: str) -> str:
+    return ""
+
+
+@dataclass(frozen=True)
 class Deps:
     run: Run  # (exit code, output); the only door to cox
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
@@ -41,11 +51,12 @@ class Deps:
     record: Callable[[Action], None]
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
+    intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
 _UNFENCED = ("standby", "take_lease")  # not writes, so a stale or missing epoch does not stop them
-_REASON_CAP = 200
+_REASON_CAP = 600
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 
 
@@ -61,8 +72,32 @@ def branch_pattern(initiative: str) -> str | None:
     return f"epic/{initiative}/*"
 
 
-def argv_for(action: Action) -> list[str] | None:
-    """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field."""
+def decompose_id(path: str, file_id: str) -> str | Refusal:
+    """The initiative id for an intake: its frontmatter id, else the file stem. Never the path; a path-shaped id is refused."""
+    chosen = file_id or Path(path).stem
+    if not chosen or "/" in chosen or "\\" in chosen or chosen.startswith("."):
+        return Refusal(f"intake {path!r} gives initiative id {chosen!r}, which is empty or path-shaped")
+    return chosen
+
+
+def tail(text: str, limit: int) -> str:
+    """The last whole lines of `text` that fit in `limit` characters; a single line longer than `limit` keeps its end."""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    window = text[-limit:]
+    if text[-limit - 1] == "\n":
+        return window
+    _, newline, rest = window.partition("\n")
+    return rest if newline and rest.strip() else window
+
+
+def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
+    """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field.
+
+    A decompose launch needs `initiative_id`, which `decompose_id` derives from the intake; it is never taken from the path.
+    """
     kind = action.get("kind")
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
     run = action.get("run", "")
@@ -72,7 +107,7 @@ def argv_for(action: Action) -> list[str] | None:
     if kind == "fetch":
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
-        return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative or idea] if idea else None
+        return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id] if idea and initiative_id else None
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
     if kind in LAUNCH_KINDS:
@@ -91,8 +126,8 @@ def _result(action: Action, status: Status, reason: str = "") -> Result:
 
 
 def _recorded(result: Result) -> Action:
-    """The action with its outcome attached; the reason is cut to 200 characters."""
-    return {**result["action"], "status": result["status"], "reason": result["reason"][:_REASON_CAP]}  # type: ignore[typeddict-item]
+    """The action with its outcome attached; the reason keeps its last 600 characters, where a traceback's failing frame is."""
+    return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}  # type: ignore[typeddict-item]
 
 
 def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -132,7 +167,13 @@ def _lease(action: Action, deps: Deps) -> Result:
 
 
 def _launch(action: Action, deps: Deps) -> Result:
-    argv = argv_for(action)
+    initiative_id: str | Refusal = ""
+    if action.get("kind") == "launch_decompose" and action.get("intake_ids"):
+        idea = action["intake_ids"][0]
+        initiative_id = decompose_id(idea, deps.intake_id(idea))
+    if isinstance(initiative_id, Refusal):
+        return _result(action, "refused", initiative_id.reason)
+    argv = argv_for(action, initiative_id)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
@@ -212,6 +253,16 @@ def delete_branches_with(run: Run, repo: str, pattern: str) -> tuple[list[str], 
     return deleted, "".join(out for _, (c, out) in outcomes if c != 0)
 
 
+def read_intake_id(workspace: Path, path: str) -> str:
+    """Edge. The `id` field of the intake file at `workspace/path`; "" when unreadable or absent."""
+    try:
+        fields, _ = route.parse_frontmatter((workspace / path).read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    value = fields.get("id", "")
+    return value if isinstance(value, str) else ""
+
+
 def edge_deps(
     runs_dir: Path,
     workspace: Path,
@@ -233,4 +284,5 @@ def edge_deps(
         record=record,
         run_id=run_id,
         repo_for=repo_for,
+        intake_id=partial(read_intake_id, workspace),
     )
