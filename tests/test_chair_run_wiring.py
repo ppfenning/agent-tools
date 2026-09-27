@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import sqlite3
 
-from agent_tools import cli
+from agent_tools import chair_run, cli
 
 TWELVE = {
     "lease", "docket", "approved", "quarantined", "stranded", "attempts",
@@ -118,3 +119,64 @@ def test_the_deps_weekly_reader_passes_a_store_spend_that_reads_the_store_from_s
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     deps.facts_deps.weekly()
     assert seen["store_spend"]("2026-08-29") == (runs, "2026-08-29")
+
+
+class _FakeStore:
+    """A store whose lease row names one holder; each renewal by that holder moves the heartbeat counter."""
+
+    def __init__(self, holder: str) -> None:
+        self.holder = holder
+        self.heartbeat = 0
+
+    def renew(self, holder: str, epoch: int):
+        if holder != self.holder:
+            return cli.chair.store_cli.LeaseRefused(epoch + 1, self.holder)
+        self.heartbeat += 1
+        return cli.chair.store_cli.LeaseGranted(epoch, holder)
+
+
+_OLD = "2020-01-01T00:00:00+00:00"
+
+
+def _chair_on_disk(tmp_path, monkeypatch, store_holder: str):
+    """A record file with an old heartbeat, a lease sidecar for chair-x@h:1, and deps whose tick stops after the beat."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    store = _FakeStore(store_holder)
+    monkeypatch.setattr(cli.chair.store_cli, "lease_renew", lambda runs_dir, name, who, epoch, ttl: store.renew(who, epoch))
+    (runs / cli.chair.LEASE_FILENAME).write_text(json.dumps({"holder": "chair-x@h:1", "epoch": 3}), encoding="utf-8")
+    cli.chair.write(runs, {"session": "chair-x", "pid": 1, "host": "h", "taken_at": _OLD, "heartbeat_at": _OLD, "runs": [], "claude_session": None})
+    deps = cli._chair_run_deps(runs, {}, "chair-x", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    def stop_after_beat(*_args):
+        raise RuntimeError("beat done")
+
+    quiet = dataclasses.replace(deps.report_deps, echo=lambda line: None)
+    return runs, store, dataclasses.replace(deps, gather=stop_after_beat, report_deps=quiet)
+
+
+def test_one_loop_tick_moves_the_store_lease_heartbeat_and_the_record_file_heartbeat(tmp_path, monkeypatch) -> None:
+    runs, store, deps = _chair_on_disk(tmp_path, monkeypatch, "chair-x@h:1")
+
+    chair_run.run(True, 0, False, deps)
+
+    assert store.heartbeat == 1
+    assert cli.chair.read(runs)["heartbeat_at"] > _OLD
+
+
+def test_a_tick_that_lost_the_lease_leaves_the_record_file_untouched(tmp_path, monkeypatch) -> None:
+    runs, store, deps = _chair_on_disk(tmp_path, monkeypatch, "other@h:9")
+    before = cli.chair.chair_path(runs).read_bytes()
+
+    chair_run.run(True, 0, False, deps)
+
+    assert store.heartbeat == 0
+    assert cli.chair.chair_path(runs).read_bytes() == before
+
+
+def test_the_record_file_is_beaten_only_by_a_live_run_with_no_refusal() -> None:
+    assert [
+        cli._record_beat_wanted(False, ""),
+        cli._record_beat_wanted(False, "chair: held by other@h:9 (store lease)"),
+        cli._record_beat_wanted(True, ""),
+    ] == [True, False, False]
