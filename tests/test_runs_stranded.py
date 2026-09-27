@@ -86,6 +86,42 @@ def test_an_id_shared_across_phases_of_the_same_initiative_scopes_to_the_records
     assert rows[0]["remedy"] == "cox runs land r1 --task t1 --repo /repo/right"
 
 
+def test_a_dropped_item_with_an_approved_record_is_not_stranded():
+    assert runs_stranded.stranded([_record()], [_item("dropped")]) == []
+
+
+def test_an_approved_item_is_still_stranded():
+    rows = runs_stranded.stranded([_record()], [_item("approved")])
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+                      "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
+
+
+def test_a_record_with_a_missing_repo_is_skipped():
+    record = _record(repo="/gone")
+    assert runs_stranded.stranded([record], [_item("ready")], repo_exists=lambda p: False) == []
+
+
+def test_a_present_repo_or_no_predicate_leaves_the_record_listed():
+    record = _record(repo="/here")
+    assert len(runs_stranded.stranded([record], [_item("ready")], repo_exists=lambda p: True)) == 1
+    assert len(runs_stranded.stranded([record], [_item("ready")], repo_exists=None)) == 1
+
+
+def test_a_record_with_no_repo_is_never_skipped_for_a_missing_one():
+    rows = runs_stranded.stranded([_record()], [_item("ready")], repo_exists=lambda p: False)
+    assert len(rows) == 1
+
+
+def test_missing_repos_returns_a_shared_path_once():
+    records = [_record(run="r1", repo="/gone"), _record(run="r2", repo="/gone")]
+    assert runs_stranded.missing_repos(records, [_item("ready")], lambda p: False) == ["/gone"]
+
+
+def test_missing_repos_omits_a_dropped_items_repo():
+    record = _record(repo="/gone")
+    assert runs_stranded.missing_repos([record], [_item("dropped")], lambda p: False) == []
+
+
 def _workspace(tmp_path, with_stranded):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
