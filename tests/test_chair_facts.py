@@ -233,3 +233,9 @@ def test_a_reported_path_leaves_the_facts_empty_and_raises_no_quarantine():
     facts = gather_facts(deps, NOW)
     assert facts["missing_repos"] == []
     assert facts["quarantines"] == gather_facts(_deps(), NOW)["quarantines"]
+def test_a_fake_run_exited_callable_appears_under_run_exited():
+    assert gather_facts(replace(_deps(), run_exited=lambda: {"i": True}), NOW)["run_exited"] == {"i": True}
+
+
+def test_no_run_exited_callable_gives_an_empty_mapping():
+    assert gather_facts(_deps(), NOW)["run_exited"] == {}

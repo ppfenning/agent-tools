@@ -93,6 +93,7 @@ class Facts(TypedDict):
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
+    run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
 
 
 ActionKind = Literal[
