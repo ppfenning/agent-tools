@@ -79,6 +79,21 @@ def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
 
 
+def test_a_history_callable_returning_a_timestamp_is_held_as_last_housekeeping_at():
+    deps = replace(_deps(), history=lambda: "2026-09-25T00:00:00Z")
+    assert gather_facts(deps, NOW)["last_housekeeping_at"] == "2026-09-25T00:00:00Z"
+
+
+def test_absent_history_and_housekeeping_hours_callables_give_none_and_24():
+    facts = gather_facts(_deps(), NOW)
+    assert (facts["last_housekeeping_at"], facts["housekeeping_hours"]) == (None, 24)
+
+
+def test_a_housekeeping_hours_callable_returning_6_gives_6_point_0():
+    deps = replace(_deps(), housekeeping_hours=lambda: 6)
+    assert gather_facts(deps, NOW)["housekeeping_hours"] == 6.0
+
+
 def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
     limits = gather_facts(_deps(weekly_spent=85.0), NOW)["limits"]
     assert limits == {
@@ -209,8 +224,7 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     # remote_unfetched has no producer yet; a later task wires gather_facts to fill it from real runs.
     facts = gather_facts(_deps(), NOW)
-    # The housekeeping keys are filled by the facts-edge task, which removes this exclusion.
-    assert set(facts) == set(Facts.__annotations__) - {"last_housekeeping_at", "housekeeping_hours"}
+    assert set(facts) == set(Facts.__annotations__)
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
