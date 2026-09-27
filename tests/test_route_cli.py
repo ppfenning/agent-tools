@@ -785,6 +785,49 @@ def test_launch_epic_starts_the_harness_detached_with_the_recorded_argv(tmp_path
     assert "--fix-attempts" in argv and "3" in argv
 
 
+def test_launch_epic_merges_same_phase_ready_tickets_before_dispatch(tmp_path, capsys):
+    # same-phase-tickets-that-share-a-file-are-merged-wire-merge-into-lint-and-launch:
+    # the merge (and its file writes) must land before the detached harness
+    # is started, so the harness — and anything reading the initiative dir
+    # after this call — finds the merged ticket, not the original two.
+    harness_dir = _write_harness(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    initiative_dir = ws / "work" / "demo"
+    build = initiative_dir / "p1"
+    build.mkdir(parents=True)
+    (initiative_dir / "initiative.md").write_text("---\nid: demo\ntitle: Demo\n---\n\nBody\n")
+    t1 = build / "t1.md"
+    t2 = build / "t2.md"
+    t1.write_text(
+        "---\nid: t1\ntitle: First\nphase: p1\nstate: ready\nsurfaces: [agent_tools/x.py]\n---\nfirst ticket\n",
+    )
+    t2.write_text(
+        "---\nid: t2\ntitle: Second\nphase: p1\nstate: ready\nsurfaces: [agent_tools/x.py]\n---\nsecond ticket\n",
+    )
+    profile = _write_launch_profile(tmp_path, harness_dir, ws)
+
+    rc = main([
+        "route", "launch", "epic",
+        "--profile", str(profile),
+        "--initiative", str(initiative_dir),
+        "--repo", str(repo),
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "merged: t1 + t2 -> t1 (shared agent_tools/x.py)" in out.splitlines()
+    pid_path = ws / "runs" / "demo-1.pid"
+    assert _wait_for(pid_path)
+    merged_fields, _ = route.parse_frontmatter(t1.read_text(encoding="utf-8"))
+    assert merged_fields["state"] == "ready"
+    assert merged_fields["title"] == "First; Second"
+    dropped_fields, _ = route.parse_frontmatter(t2.read_text(encoding="utf-8"))
+    assert dropped_fields["state"] == "dropped"
+    assert dropped_fields["merged_into"] == "t1"
+
+
 def test_launch_threads_the_profiles_spend_window_ceiling_into_the_usage_gate(tmp_path, monkeypatch, capsys):
     harness_dir = _write_harness(tmp_path)
     ws = tmp_path / "workspace"

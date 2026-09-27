@@ -67,8 +67,10 @@ that changes a ticket body. `Problem(task, rule, detail, fix)`. Rules:
 - **grant:** any command named in the body's evidence or fence that the role's `tools` grant and the sandbox
   allowlist do not permit (`cox`, `uv`, `gh`, `git push`, `ruff` when not installed) → `fix: name only
   pytest, git status, git diff`.
-- **coupling:** two tickets in one phase whose `surfaces` share a test file, or whose named modules import
-  one another → `fix: merge, or order with needs`.
+- **coupling:** two tickets in one phase whose `surfaces` share any entry, or whose named modules import
+  one another → `fix: merge them, or move one to a later phase`. A `needs` edge does not excuse the pair.
+  `cox route lint` and `cox route launch epic` merge same-phase `ready`/`todo` tickets that share a surface
+  first, so a remaining hit involves an `approved`, `in_progress` or `done` ticket.
 - **size:** a body over ~700 words → `fix: point at a spec file in the repository` (the measured `plan`
   death band).
 
