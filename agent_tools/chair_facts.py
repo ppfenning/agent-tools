@@ -12,6 +12,10 @@ from typing import Any
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
 from agent_tools.chair_plan_land import planned_tasks
+from agent_tools.chair_read_docket import docket_from_rows
+from agent_tools.chair_read_intake import intake_from_rows
+from agent_tools.chair_read_quarantined import quarantined_from_rows
+from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_types import (
     ApprovedTask,
     DispatchFacts,
@@ -57,6 +61,15 @@ class FactsDeps:
         Optional, and absent means no history, i.e. housekeeping is due.
     housekeeping_hours: the raw profile value at `chair.housekeeping_hours`, resolved by `resolve_housekeeping_hours`.
         Optional, and absent means 24 hours.
+    queue: `run_store.read_queue`'s rows for this tick, read once and fed to `chair_read_docket.docket_from_rows`,
+        `chair_read_intake.intake_from_rows`, `chair_read_quarantined.quarantined_from_rows` and
+        `stranded_records`-paired `chair_read_stranded.stranded_from_rows` to build ready, intake, quarantined and
+        stranded facts from the store. Optional, and an absent callable or an empty read falls the four facts back
+        to `docket`, `intake`, `quarantined` and `stranded`: an empty read means the store has no queue table or
+        harness yet, not that the board is empty.
+    stranded_records: the raw per-run task records `chair_read_stranded.stranded_from_rows` pairs against `queue`'s
+        task rows, the shape `_chair_stranded_inputs` reads from each run's `tasks/*/*.json` file. Optional, and
+        absent leaves `stranded` on the file reader even when `queue` has rows.
     """
 
     lease: Callable[[], Row]
@@ -77,6 +90,8 @@ class FactsDeps:
     pid: int
     host: str
     dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
+    queue: Callable[[], Sequence[Row]] | None = None  # run_store.read_queue rows; absent or empty falls back to docket, intake, quarantined and stranded
+    stranded_records: Callable[[], Sequence[Row]] | None = None  # paired with queue's task rows to build stranded; absent leaves stranded on the file reader
     drafts: Callable[[], int] | None = None
     missing_repos: Callable[[], list[str]] | None = None
     reported_repos: Callable[[], set[str]] | None = None
@@ -243,6 +258,11 @@ def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> li
     return sorted({p for p in missing if p not in reported})
 
 
+def intake_paths_from_rows(rows: Sequence[Row]) -> list[str]:
+    """Queued intake rows as `<task_id>.md`, in row order: the same relative-path shape `read_intake` returns."""
+    return [f"{row['task_id']}.md" for row in intake_from_rows(rows)]
+
+
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
 
 
@@ -260,10 +280,19 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     weekly = deps.weekly()
     assessment = pacing.assess(deps.window(), policy, now, weekly)
     docket = deps.docket()
+    # Read once: `rows` drives ready, intake, quarantined and (with stranded_records) stranded below. An empty
+    # read means the store has no queue table or harness yet, not that the board is empty, so each fact falls
+    # back to its file reader.
+    rows = list(deps.queue()) if deps.queue is not None else []
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ready = docket_from_rows(rows, now_iso) if rows else docket["initiatives"]
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
-    initiatives = initiative_facts(docket, live)
+    initiatives = initiative_facts({"initiatives": ready}, live)
+    quarantined = quarantined_from_rows(rows) if rows else list(deps.quarantined())
+    stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
+    stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(assessment, policy, weekly, dispatch["max_in_flight"]),
@@ -271,9 +300,9 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "approved": approved,
         "initiatives": initiatives,
         "quarantines": quarantine_facts(
-            deps.quarantined(), deps.stranded(), deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
+            quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
         ),
-        "intake": list(deps.intake()),
+        "intake": intake_paths_from_rows(rows) if rows else list(deps.intake()),
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
         "drafts": deps.drafts() if deps.drafts is not None else 0,
