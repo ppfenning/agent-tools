@@ -1284,10 +1284,37 @@ def _generate_and_amend(wt: Path, umbrella: str | None, echo: Callable[[str], No
 def _cherry_pick_generated(wt: Path, sha: str, umbrella: str | None, echo: Callable[[str], None] = print) -> tuple[bool, str]:
     """Cherry-pick `sha` into `wt`, then regenerate and amend. The real land and the resume check both
     build the pushed tree here, so the tree the resume check expects cannot drift from the tree pushed."""
-    cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", sha], capture_output=True, text=True)
+    cp = subprocess.run(
+        ["git", "-C", str(wt), "-c", "merge.conflictStyle=diff3", "cherry-pick", sha], capture_output=True, text=True
+    )
     if cp.returncode != 0:
-        subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
-        return False, cp.stderr.strip() or cp.stdout.strip()
+        conflicted = subprocess.run(
+            ["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"], capture_output=True, text=True
+        ).stdout.splitlines()
+
+        def resolve(name: str) -> str | None:
+            # A binary add/add leaves no markers, and a rename or directory/file conflict can leave no file:
+            # neither is resolvable, so both take the abort path rather than escaping mid-cherry-pick.
+            try:
+                return land.resolve_add_add_conflicts((wt / name).read_text())
+            except (OSError, UnicodeDecodeError):
+                return None
+
+        resolved = {name: resolve(name) for name in conflicted}
+        if not conflicted or any(text is None for text in resolved.values()):
+            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
+            return False, cp.stderr.strip() or cp.stdout.strip()
+        for name, text in resolved.items():
+            (wt / name).write_text(text)
+        subprocess.run(["git", "-C", str(wt), "add", *sorted(resolved)], capture_output=True, text=True)
+        cont = subprocess.run(
+            ["git", "-C", str(wt), "-c", "core.editor=true", "cherry-pick", "--continue"],
+            capture_output=True, text=True,
+        )
+        if cont.returncode != 0:
+            subprocess.run(["git", "-C", str(wt), "cherry-pick", "--abort"], capture_output=True, text=True)
+            return False, cont.stderr.strip() or cont.stdout.strip()
+        echo(f"resolved add/add: {', '.join(sorted(resolved))}")
     return _generate_and_amend(wt, umbrella, echo)
 
 
