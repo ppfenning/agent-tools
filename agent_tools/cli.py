@@ -39,12 +39,14 @@ from agent_tools import (
     chair_read_attempts,
     chair_read_docket,
     chair_read_exits,
+    chair_read_housekeeping,
     chair_read_intake,
     chair_read_lease,
     chair_read_live,
     chair_read_patch,
     chair_read_quarantined,
     chair_read_record,
+    chair_read_remote_unfetched,
     chair_read_run_id,
     chair_read_stranded,
     chair_report,
@@ -5766,6 +5768,11 @@ def _chair_run_deps(
         sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(draft_list.read_drafts(ws / "work", now_text())),
+        remote_unfetched=lambda: chair_read_remote_unfetched.read_remote_unfetched(
+            runs_dir, [row["id"] for row in docket()["initiatives"]]
+        ),
+        history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
+        housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
