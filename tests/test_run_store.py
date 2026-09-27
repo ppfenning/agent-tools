@@ -933,3 +933,148 @@ def test_the_run_task_ids_script_lists_each_task_of_the_run_once_from_a_sqlite_s
     conn.close()
     hit = subprocess.run(run_store._run_task_ids_argv(sys.executable, str(db), "r-1"), capture_output=True, text=True)
     assert run_store._phases_from(hit.stdout) == ["t1", "t2"]
+
+
+def test_queue_read_argv_carries_no_flags_without_a_filter():
+    assert run_store._queue_read_argv("/h/python", "u", None, None) == ["/h/python", "-m", "harness.store_queue", "read", "u"]
+
+
+def test_queue_read_argv_adds_initiative_and_kind_flags():
+    assert run_store._queue_read_argv("/h/python", "u", "i1", "task") == [
+        "/h/python", "-m", "harness.store_queue", "read", "u", "--initiative", "i1", "--kind", "task",
+    ]
+
+
+def test_queue_upsert_argv_is_one_sorted_json_argument():
+    argv = run_store._queue_upsert_argv("/h/python", "u", {"task_id": "t1", "initiative": "i1"})
+    assert argv == ["/h/python", "-m", "harness.store_queue", "upsert", "u", '{"initiative": "i1", "task_id": "t1"}']
+
+
+def test_queue_claim_argv_carries_ttl_and_now_as_strings():
+    argv = run_store._queue_claim_argv("/h/python", "u", "i1", "t1", "me", 30, "2026-09-26T00:00:00Z")
+    assert argv == ["/h/python", "-m", "harness.store_queue", "claim", "u", "i1", "t1", "me", "30", "2026-09-26T00:00:00Z"]
+
+
+def test_queue_release_argv_names_the_holder():
+    assert run_store._queue_release_argv("/h/python", "u", "i1", "t1", "me") == [
+        "/h/python", "-m", "harness.store_queue", "release", "u", "i1", "t1", "me",
+    ]
+
+
+def test_queue_rows_from_fills_every_key_and_keeps_extra_columns():
+    row = run_store._queue_rows_from('{"initiative": "i1", "task_id": "t1", "state": "todo", "colour": "red"}\n')[0]
+    assert {key: row[key] for key in (*run_store._QUEUE_COLUMNS, *run_store._CLAIM_KEYS)} == {
+        "kind": None, "initiative": "i1", "task_id": "t1", "phase": None, "state": "todo", "needs": None,
+        "title": None, "surfaces": None, "body": None, "extra": None, "holder": None, "epoch": None, "expires_at": None,
+    }
+    assert row["colour"] == "red"
+
+
+def test_queue_rows_from_keeps_a_held_rows_claim_and_skips_junk_lines():
+    out = '\nnot json\n{"initiative": "i1", "task_id": "t1", "holder": "me", "epoch": 2, "expires_at": "x"}\n[1]\n'
+    rows = run_store._queue_rows_from(out)
+    assert [(r["holder"], r["epoch"], r["expires_at"]) for r in rows] == [("me", 2, "x")]
+
+
+def test_claim_from_trims_to_the_three_claim_keys():
+    assert run_store._claim_from('{"holder": "me", "epoch": 3, "expires_at": "x", "state": "todo"}') == {
+        "holder": "me", "epoch": 3, "expires_at": "x",
+    }
+
+
+@pytest.mark.parametrize("stdout", ["", "junk", "[1]", '{"epoch": 1}', '{"holder": null}'])
+def test_claim_from_is_none_without_a_holder(stdout):
+    assert run_store._claim_from(stdout) is None
+
+
+def test_claim_reason_tells_held_from_unavailable():
+    assert (run_store._claim_reason(4), run_store._claim_reason(1)) == ("held", "unavailable")
+
+
+CLAIM = '{"holder": "me", "epoch": 2, "expires_at": "2026-09-26T00:05:00Z"}\n'
+CLAIM_NOW = "2026-09-26T00:00:00Z"
+
+
+def test_read_queue_runs_the_builders_argv_and_parses_rows(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, '{"initiative": "i1", "task_id": "t1", "extra_col": 1}\n'))
+    rows = run_store.read_queue(tmp_path, "i1", "task")
+    assert [r["task_id"] for r in rows] == ["t1"]
+    assert calls == [run_store._queue_read_argv("/h/python", "sqlite:///s.db", "i1", "task")]
+
+
+def test_upsert_row_is_true_and_repeating_it_issues_the_same_argv(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0))
+    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
+    assert (run_store.upsert_row(tmp_path, row), run_store.upsert_row(tmp_path, row)) == (True, True)
+    assert calls[0] == calls[1] == run_store._queue_upsert_argv("/h/python", "sqlite:///s.db", row)
+
+
+def test_claim_row_returns_the_claim_of_a_free_row(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, CLAIM))
+    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == {"holder": "me", "epoch": 2, "expires_at": "2026-09-26T00:05:00Z"}
+    assert calls == [run_store._queue_claim_argv("/h/python", "sqlite:///s.db", "i1", "t1", "me", 300, CLAIM_NOW)]
+
+
+def test_claim_row_retakes_an_expired_claim_at_the_now_it_was_given(tmp_path, monkeypatch):
+    later = "2026-09-26T01:00:00Z"
+    calls = stub_harness(monkeypatch, result=done(0, '{"holder": "me", "epoch": 3, "expires_at": "2026-09-26T01:05:00Z"}'))
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, later) == (
+        {"holder": "me", "epoch": 3, "expires_at": "2026-09-26T01:05:00Z"}, None,
+    )
+    assert calls[0][-1] == later
+
+
+def test_claim_row_is_none_held_when_another_holder_is_live(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(4))
+    assert run_store.claim_row(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) is None
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "held")
+
+
+def test_release_row_is_true_on_exit_zero_and_false_otherwise(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0))
+    assert run_store.release_row(tmp_path, "i1", "t1", "me") is True
+    assert calls == [run_store._queue_release_argv("/h/python", "sqlite:///s.db", "i1", "t1", "me")]
+    stub_harness(monkeypatch, result=done(4))
+    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
+
+
+def test_a_missing_table_reads_as_unavailable_everywhere(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1))
+    assert run_store.read_queue(tmp_path) == []
+    assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
+    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
+
+
+def test_a_claim_that_exits_zero_without_a_claim_is_unavailable(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0, ""))
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
+
+
+def test_a_missing_harness_runs_nothing_and_reads_as_unavailable(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.read_queue(tmp_path) == []
+    assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
+    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
+    assert calls == []
+
+
+@pytest.mark.parametrize("error", [OSError("gone"), subprocess.TimeoutExpired("x", 60)])
+def test_an_unreadable_store_or_failed_run_never_raises(tmp_path, monkeypatch, error):
+    stub_harness(monkeypatch, error=error)
+    assert run_store.read_queue(tmp_path) == []
+    assert run_store.upsert_row(tmp_path, {"initiative": "i1", "task_id": "t1"}) is False
+    assert run_store.release_row(tmp_path, "i1", "t1", "me") is False
+    assert run_store.claim_outcome(tmp_path, "i1", "t1", "me", 300, CLAIM_NOW) == (None, "unavailable")
+
+
+def test_an_unresolvable_store_url_reads_as_unavailable(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0))
+
+    def broken(runs_dir):
+        raise ValueError("bad profile")
+
+    monkeypatch.setattr(run_store, "_store_url", broken)
+    assert run_store.read_queue(tmp_path) == []
+    assert calls == []
