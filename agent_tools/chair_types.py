@@ -3,6 +3,7 @@
 Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
 the facts and executes the actions; the planners in between are pure.
 """
+from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
 
 
@@ -90,6 +91,8 @@ class Facts(TypedDict):
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
     missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
+    last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
+    housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
 
 
 ActionKind = Literal[
@@ -106,6 +109,7 @@ ActionKind = Literal[
     "launch_epic",
     "launch_decompose",
     "pull",
+    "housekeeping",
 ]
 
 
@@ -143,8 +147,8 @@ class PlanFill(Protocol):
 
 
 class PlanTick(Protocol):
-    def __call__(self, facts: Facts) -> list[Action]:
-        """plan_tick(facts) -> list[action]: the whole tick, lease first, then lands, recover and fill."""
+    def __call__(self, facts: Facts, now: datetime | None = None) -> list[Action]:
+        """plan_tick(facts, now) -> list[action]: the whole tick, lease first, then lands, recover and fill, then at most one housekeeping when now is given."""
         ...
 
 
