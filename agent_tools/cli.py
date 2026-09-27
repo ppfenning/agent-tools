@@ -79,6 +79,7 @@ from agent_tools import (
     review_pr,
     route,
     route_drift,
+    route_import,
     route_sync,
     route_sync_gh,
     router,
@@ -2239,6 +2240,49 @@ def _route_drift(a: argparse.Namespace) -> int:
     files = [(item["initiative"], item["id"], item["state"]) for item in _work_items(ws)]
     found = route_drift.drift(files, rows)
     print(route_drift.format_json(found) if a.json else route_drift.format_text(found))
+    return 0
+
+
+def _route_import_files(ws: Path) -> list[tuple[tuple[str, ...], str]]:
+    """Edge: `(path_parts, text)` for every intake and task file under `ws`, `path_parts` relative to `ws`."""
+    paths = sorted(ws.glob("intake/*.md")) + sorted(ws.glob("intake/done/*.md")) + sorted(ws.glob("work/*/*/*.md"))
+    return [(p.relative_to(ws).parts, t) for p in paths if (t := _read_text_or_none(p)) is not None]
+
+
+def _route_import_workspace(a: argparse.Namespace) -> Path | str:
+    """`--workspace`, else the profile's `workspace_dir`, else `.`, as `_sync_context` resolves it.
+    A str is why the profile is unreadable."""
+    if a.workspace:
+        return Path(a.workspace).expanduser()
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError as exc:
+        return f"profile unreadable: {exc}"
+    return Path(profile.get("workspace_dir") or ".").expanduser()
+
+
+def _route_import(a: argparse.Namespace) -> int:
+    """Loads intake/ and work/<initiative>/<phase>/*.md files into the store's work_items table.
+    Idempotent: importing the same files again reports zero written. Exits 2, after reporting the
+    count written so far, the moment a row fails to upsert."""
+    ws = _route_import_workspace(a)
+    if isinstance(ws, str):
+        print(f"route import: {ws}")
+        return 2
+    # A workspace with neither dir is a wrong path, not an empty queue: refuse rather than report "written 0".
+    if not (ws / "work").is_dir() and not (ws / "intake").is_dir():
+        print(f"route import: no work/ or intake/ under {ws}; pass --workspace or set workspace_dir in the profile")
+        return 2
+    runs_dir = ws / "runs"
+    plan = route_import.plan_import(_route_import_files(ws), run_store.read_queue(runs_dir))
+    written = 0
+    for row in plan.to_write:
+        if not run_store.upsert_row(runs_dir, row):
+            print(route_import.format_summary(written, plan))
+            return 2
+        written += 1
+    print(route_import.format_summary(written, plan))
     return 0
 
 
@@ -5195,6 +5239,11 @@ ROUTE_COMMANDS = [
         "drift", "route", "items whose store state and file state differ",
         (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
         _route_drift, False, (),
+    ),
+    commands.Command(
+        "import", "route", "load the current work item files into the store's work_items table",
+        (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
+        _route_import, False, (),
     ),
     commands.Command(
         "approve", "route", "approve a draft initiative's todo tickets: todo becomes ready",

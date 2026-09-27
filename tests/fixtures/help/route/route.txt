@@ -1,11 +1,11 @@
 usage: cox route [-h]
-                 {context,status,file,pull,lint,groups,drift,approve,decline,chair,sync,launch}
+                 {context,status,file,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
                  ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,pull,lint,groups,drift,approve,decline,chair,sync,launch}
+  {context,status,file,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -13,6 +13,7 @@ positional arguments:
     lint                static ticket lint over a filed initiative, work-shape.md §3
     groups              print the newest plans/intake-groups/<date>.md file, work-shape.md §5
     drift               items whose store state and file state differ
+    import              load the current work item files into the store's work_items table
     approve             approve a draft initiative's todo tickets: todo becomes ready
     decline             decline a draft initiative: its todo tickets become dropped
     chair               the chair lock for the landing loop (runs/chair.json)

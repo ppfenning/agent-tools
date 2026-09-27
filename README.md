@@ -95,6 +95,7 @@ cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake t
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
 cox route drift [--profile PROFILE] [--json]   items whose store state and file state differ
+cox route import [--profile PROFILE] [--workspace WORKSPACE]   load the current work item files into the store's work_items table
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS]   take the chair lock if no live chair holds it
