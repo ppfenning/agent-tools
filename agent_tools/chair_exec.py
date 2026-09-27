@@ -169,7 +169,9 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if error:
         return _result(action, "failed", f"deleted {deleted} in {repo}; git: {error.strip()}")
     if not deleted:
-        return _result(action, "failed", f"no branch matched {pattern} in {repo}")
+        # Nothing stale is the state a clear exists to reach: a relaunch that failed after an earlier clear must not be
+        # skipped forever because that clear already deleted the branches.
+        return _result(action, "done", f"nothing to clear: no branch matched {pattern} in {repo}")
     return _result(action, "done", f"deleted {deleted} in {repo}")
 
 
