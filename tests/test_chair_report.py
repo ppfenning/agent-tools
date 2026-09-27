@@ -1,16 +1,24 @@
 from datetime import UTC, datetime
 
-from agent_tools.chair_report import Deps, echo_line, format_status, lands_this_tick, write_status
+from agent_tools.chair_report import (
+    Deps,
+    echo_line,
+    format_status,
+    housekeeping_fragment,
+    lands_this_tick,
+    write_status,
+)
 from agent_tools.notify import Notification
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 
 
-def _facts(hard_stop=False, weekly=0.61, five=0.42):
+def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None):
     return {
         "limits": {"hard_stop": hard_stop, "weekly_fraction": weekly, "hard_stop_fraction": 0.9,
                    "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five},
         "dispatch": {"max_in_flight": 4, "live_runs": 2},
+        "last_housekeeping_at": last_housekeeping_at,
     }
 
 
@@ -23,7 +31,7 @@ def test_holding_line_carries_lanes_lands_limits_and_needs():
     line = format_status(_facts(), actions, [_landed()], NOW)
     assert line == (
         "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% weekly 61%/90% | holding"
-        " | needs chair: epic-a:harness"
+        " | needs chair: epic-a:harness | housekeeping never"
     )
 
 
@@ -155,3 +163,28 @@ def test_echo_line_flushes_stdout_after_the_line(monkeypatch):
     write_status("chair tick", Deps(echo=echo_line))
     assert stub.calls[-1] == ("flush", "")
     assert ("write", "chair tick") in stub.calls
+
+
+def test_housekeeping_3_hours_old_renders_3h():
+    assert housekeeping_fragment("2026-09-26T15:05:00+00:00", NOW) == "housekeeping 3h"
+
+
+def test_housekeeping_12_minutes_old_renders_12m():
+    assert housekeeping_fragment("2026-09-26T17:53:00+00:00", NOW) == "housekeeping 12m"
+
+
+def test_housekeeping_50_hours_old_renders_2d():
+    assert housekeeping_fragment("2026-09-24T16:05:00+00:00", NOW) == "housekeeping 2d"
+
+
+def test_housekeeping_none_renders_never():
+    assert housekeeping_fragment(None, NOW) == "housekeeping never"
+
+
+def test_housekeeping_naive_timestamp_renders_never():
+    assert housekeeping_fragment("2026-09-26T15:05:00", NOW) == "housekeeping never"
+
+
+def test_status_line_with_a_housekeeping_timestamp_carries_the_fragment():
+    line = format_status(_facts(last_housekeeping_at="2026-09-26T15:05:00+00:00"), [], [], NOW)
+    assert "housekeeping 3h" in line
