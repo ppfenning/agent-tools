@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import cli
+from agent_tools import cli, store_cli
 
 CATALOG = Path("/lake/catalog.db")
 
@@ -67,6 +67,14 @@ def test_a_sync_that_raises_prints_one_line_and_does_not_raise(lake, monkeypatch
     monkeypatch.setattr(lake_sync, "sync", boom)
     cli._lake_after_land(a, tmp_path / "runs", 0, ["mark_done"])
     assert capsys.readouterr().out == "lake: sync skipped (RuntimeError)\n"
+
+
+def test_a_lease_held_by_another_host_skips_without_raising(lake, monkeypatch, capsys):
+    a, tmp_path, lake_sync = lake
+    monkeypatch.setattr(lake_sync, "sync", lambda catalog, store_url, dry_run=False: pytest.fail("synced"))
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda *args, **kwargs: store_cli.LeaseRefused(3, "other"))
+    cli._lake_after_land(a, tmp_path / "runs", 0, ["mark_done"])
+    assert capsys.readouterr().out == "lake: sync skipped (held by other)\n"
 
 
 def test_a_lake_nobody_created_stays_uncreated(lake, monkeypatch, capsys):

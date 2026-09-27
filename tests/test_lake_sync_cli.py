@@ -235,6 +235,21 @@ def test_the_lake_modules_read_only_what_the_dry_run_preview_supplies(env, capsy
 
 
 @needs_lake
+def test_a_lease_held_by_another_host_skips_without_syncing(env, monkeypatch, capsys) -> None:
+    from agent_tools import lake_sync, store_cli
+
+    _, argv = env
+    monkeypatch.setattr(lake_sync, "sync", lambda *args, **kwargs: pytest.fail("synced"))
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda *args, **kwargs: store_cli.LeaseRefused(3, "other"))
+    rc, out = _run(argv, capsys)
+    assert rc == 0
+    assert out == "lake: sync skipped (held by other)\n"
+    rc, out = _run([*argv, "--json"], capsys)
+    assert rc == 0
+    assert json.loads(out) == {"status": "held", "holder": "other"}
+
+
+@needs_lake
 def test_json_reports_the_tables_and_traces(env, capsys) -> None:
     _, argv = env
     rc, out = _run([*argv, "--json"], capsys)

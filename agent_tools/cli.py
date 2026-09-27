@@ -64,6 +64,7 @@ from agent_tools import (
     install,
     install_exec,
     lake_config,
+    lake_lease,
     land,
     land_lease,
     lane_hosts,
@@ -1816,9 +1817,16 @@ def _lake_after_land(a: argparse.Namespace, runs_dir: Path, rc: int, reached: Se
             return
         root = store_url.profile_traces_root(provider, runs).url
         root = root if "://" in root else str(Path(root).resolve())
-        report = _lake_real_run(config, store_url.profile_store_url(provider, runs), root)
-        rows = sum(t["rows_appended"] for t in report["tables"])
-        print(f"lake: +{rows} rows, +{report['traces']['registered']} trace files")
+        sync = _lake_real_run(config, store_url.profile_store_url(provider, runs), root)
+        outcome = lake_lease.sync_under_lease(sync, runs)
+        if isinstance(outcome, lake_lease.Synced):
+            report = outcome.value
+            rows = sum(t["rows_appended"] for t in report["tables"])
+            print(f"lake: +{rows} rows, +{report['traces']['registered']} trace files")
+        elif isinstance(outcome, lake_lease.SkippedHeld):
+            print(f"lake: sync skipped (held by {outcome.holder})")
+        else:
+            print(f"lake: sync skipped ({outcome.name})")
     except Exception as exc:  # the land has already happened; a lake problem must not fail it
         print(f"lake: sync skipped ({type(exc).__name__})")
 
@@ -4785,16 +4793,20 @@ def _lake_catalog_missing(catalog_uri: str) -> bool:
     return catalog_uri.startswith("sqlite:///") and not Path(catalog_uri.removeprefix("sqlite:///")).exists()
 
 
-def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str) -> dict:
-    """Edge. Create any missing table, append the new rows, register the new trace files."""
+def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str) -> Callable[[], dict]:
+    """Edge. Create any missing table; return the callable a lease guards that appends the new rows and registers traces."""
     catalog = lake_config.load_catalog(config)
     # Imported here: these modules import pyiceberg and pyarrow at module top, and cli.py must load without the extra.
     from agent_tools import lake_sync, lake_tables, lake_traces
 
     lake_tables.ensure_tables(catalog)
-    results = lake_sync.sync(catalog, store)
-    traces = lake_traces.register_traces(catalog, root)
-    return _lake_sync_report(results, traces, False, (), config.catalog_uri, config.warehouse, root)
+
+    def sync() -> dict:
+        results = lake_sync.sync(catalog, store)
+        traces = lake_traces.register_traces(catalog, root)
+        return _lake_sync_report(results, traces, False, (), config.catalog_uri, config.warehouse, root)
+
+    return sync
 
 
 def _lake_open_readonly(config: lake_config.LakeConfig, name: str):
@@ -4847,6 +4859,24 @@ def _lake_refuse(a: argparse.Namespace, message: str) -> int:
     return 2
 
 
+def _lake_sync_done(a: argparse.Namespace, report: dict) -> int:
+    print(json.dumps(report, indent=2) if a.json else "\n".join(_lake_sync_lines(report)))
+    return 0
+
+
+def _lake_sync_outcome(a: argparse.Namespace, outcome: lake_lease.SyncOutcome) -> int:
+    """Report a real run's outcome once the lease decided whether it ran; a held or errored sync still exits 0."""
+    if isinstance(outcome, lake_lease.Synced):
+        return _lake_sync_done(a, outcome.value)
+    if isinstance(outcome, lake_lease.SkippedHeld):
+        message = f"lake: sync skipped (held by {outcome.holder})"
+        print(json.dumps({"status": "held", "holder": outcome.holder}, indent=2) if a.json else message)
+        return 0
+    message = f"lake: sync skipped ({outcome.name})"
+    print(json.dumps({"status": outcome.name}, indent=2) if a.json else message)
+    return 0
+
+
 def _lake_sync(a: argparse.Namespace) -> int:
     """Edge. Sync the run store and the trace files into the Iceberg lake; `--dry-run` creates and writes nothing."""
     # Absolute: `file://runs/lake` would name a host, and a relative trace path registered once would break from another cwd.
@@ -4859,15 +4889,16 @@ def _lake_sync(a: argparse.Namespace) -> int:
     root = store_url.profile_traces_root(provider, runs_dir).url
     root = root if "://" in root else str(Path(root).resolve())
     try:
-        report = _lake_dry_run(config, store, root) if a.dry_run else _lake_real_run(config, store, root)
+        if a.dry_run:
+            return _lake_sync_done(a, _lake_dry_run(config, store, root))
+        outcome = lake_lease.sync_under_lease(_lake_real_run(config, store, root), runs_dir)
     except lake_config.LakeUnavailable as err:
         return _lake_refuse(a, str(err))
     except ImportError as err:
         # pyiceberg imported, but a module the lake also needs, such as pyarrow, did not.
         return _lake_refuse(a, f"the Iceberg lake needs the optional extra `lake`; {err.name or err} is missing: "
                                "pip install 'coxswain-tools[lake]'")
-    print(json.dumps(report, indent=2) if a.json else "\n".join(_lake_sync_lines(report)))
-    return 0
+    return _lake_sync_outcome(a, outcome)
 
 
 def _lake_config_for(a: argparse.Namespace) -> tuple[lake_config.LakeConfig | None, str | None]:
