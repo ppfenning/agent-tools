@@ -15,8 +15,8 @@ from agent_tools.chair_types import Action, Facts
 from agent_tools.notify import Notification
 
 __all__ = [
-    "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "lands_this_tick", "launched_items", "mode_of",
-    "needs_chair_items", "would_items", "write_status",
+    "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment", "lands_this_tick",
+    "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
 ]
 
 EASTERN = ZoneInfo("America/New_York")
@@ -99,6 +99,23 @@ def _five_hour(limits: dict) -> str:
     return "5h n/a" if fraction is None else f"5h {fraction:.0%}"
 
 
+def housekeeping_fragment(last_housekeeping_at: str | None, now: datetime) -> str:
+    """`housekeeping <age>`, minutes under an hour, hours under 48, else days; `never` when unset, unparseable or naive."""
+    try:
+        then = datetime.fromisoformat(last_housekeeping_at) if last_housekeeping_at else None
+    except ValueError:
+        return "housekeeping never"
+    if then is None or then.tzinfo is None:  # a naive stamp cannot be subtracted from the tz-aware `now`
+        return "housekeeping never"
+    minutes = int((now - then).total_seconds() // 60)
+    if minutes < 60:
+        return f"housekeeping {minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"housekeeping {hours}h"
+    return f"housekeeping {hours // 24}d"
+
+
 def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Result], now: datetime) -> str:
     """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
     limits, dispatch = facts["limits"], facts["dispatch"]
@@ -121,6 +138,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"failed: {', '.join(failed)}"] if failed else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",
+        *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),
     ]
     return " | ".join(parts)
 
