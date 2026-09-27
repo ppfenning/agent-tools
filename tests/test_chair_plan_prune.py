@@ -1,4 +1,4 @@
-from agent_tools.chair_plan_prune import prune_argv, worktrees_to_prune
+from agent_tools.chair_plan_prune import phases_to_carry, prune_argv, worktrees_to_prune
 
 MAIN = "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n"
 FIX = "worktree /wt/fix\nHEAD bbb\nbranch refs/heads/epic/foo/fix\n"
@@ -52,3 +52,30 @@ def test_argv_orders_every_remove_before_every_branch_delete():
 
 def test_argv_of_no_entries_is_empty():
     assert prune_argv([]) == []
+
+
+def test_unfinished_phase_is_carried():
+    approved = [{"initiative": "foo", "phase": "fix", "phase_done": False}]
+    assert phases_to_carry(approved, "foo") == {"fix"}
+
+
+def test_phase_whose_rows_are_all_done_is_not_carried():
+    approved = [
+        {"initiative": "foo", "phase": "fix", "phase_done": True},
+        {"initiative": "foo", "phase": "fix", "phase_done": True},
+    ]
+    assert phases_to_carry(approved, "foo") == set()
+
+
+def test_initiative_with_no_approved_rows_carries_nothing():
+    assert phases_to_carry([], "foo") == set()
+
+
+def test_argv_skips_branch_delete_for_a_carried_phase_only():
+    porcelain = "\n".join([MAIN, FIX, BUILD])
+    entries = worktrees_to_prune(porcelain, "foo")
+    assert prune_argv(entries, {"fix"}) == [
+        ["git", "worktree", "remove", "--force", "/wt/fix"],
+        ["git", "worktree", "remove", "--force", "/wt/build"],
+        ["git", "branch", "-D", "epic/foo/build"],
+    ]
