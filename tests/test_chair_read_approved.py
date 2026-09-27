@@ -27,6 +27,16 @@ def test_phase_done_is_true_once_all_siblings_are_done() -> None:
     assert [r["phase_done"] for r in rows] == [True]
 
 
+def test_two_approved_siblings_are_each_phase_done() -> None:
+    rows = approved_rows([_item("a", "approved"), _item("b", "approved")])
+    assert [r["phase_done"] for r in rows] == [True, True]
+
+
+def test_a_dropped_sibling_does_not_hold_the_phase_open() -> None:
+    rows = approved_rows([_item("a", "approved"), _item("b", "dropped")])
+    assert [r["phase_done"] for r in rows] == [True]
+
+
 def test_needs_is_carried_through_as_a_list() -> None:
     needs = ["x", "y"]
     rows = approved_rows([_item("a", "approved", needs=needs)])

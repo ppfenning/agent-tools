@@ -15,10 +15,15 @@ from agent_tools.remote_lane import fetched_record_path, land_needs_fetch, remot
 Item = Mapping[str, Any]
 
 
+_COMPLETE = frozenset({"done", "approved", "dropped"})
+
+
 def phase_done(item: Item, items: Sequence[Item]) -> bool:
-    """True when every other task in the item's initiative and phase is done; a lone task is True."""
+    """True when every other task in the item's initiative and phase is done, approved or dropped; a lone task is True.
+
+    Approved siblings count: requiring them to be landed first deadlocked every phase with two approved tasks."""
     return all(
-        other["state"] == "done"
+        other["state"] in _COMPLETE
         for other in items
         if other is not item
         and other["initiative"] == item["initiative"]
