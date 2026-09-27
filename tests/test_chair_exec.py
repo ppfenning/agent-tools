@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from agent_tools.chair_exec import Deps, argv_for, delete_branches_with, perform, run_argv
+from agent_tools.chair_exec import Deps, Refusal, argv_for, decompose_id, delete_branches_with, perform, run_argv, tail
 
 LANDED = "merge: ok\nmark_done: ok\n"
 
@@ -172,16 +172,16 @@ def test_take_lease_is_never_fenced() -> None:
     assert calls == [("lease", "h"), ("record", "take_lease")]
 
 
-def test_every_result_is_recorded_with_its_status_and_a_reason_cut_to_200_chars() -> None:
+def test_every_result_is_recorded_with_its_status_and_a_reason_cut_to_600_chars() -> None:
     recorded: list = []
     deps = Deps(
-        run=lambda argv: (1, "x" * 300), delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
+        run=lambda argv: (1, "x" * 700), delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
         record=recorded.append, run_id=lambda action: "", repo_for=lambda action: "",
     )
     actions = [{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}, {"kind": "pull", "epoch": 9}]
     perform(actions, deps, lambda: 1, False)
     assert [(a["kind"], a["status"]) for a in recorded] == [("rescue", "failed"), ("pull", "fenced")]
-    assert recorded[0]["reason"] == "x" * 200
+    assert recorded[0]["reason"] == "x" * 600
     assert recorded[0]["initiative"] == "a"
 
 
@@ -214,3 +214,48 @@ def test_a_take_lease_over_an_expired_takeover_steals_and_a_plain_one_does_not()
     perform([{"kind": "take_lease", "epoch": 1, "reason": "takeover expired at 2026-09-26T15:00:00+00:00"}], deps, lambda: 1, False)
     perform([{"kind": "take_lease", "epoch": 1}], deps, lambda: 1, False)
     assert [c for c in calls if c[0] == "lease"] == [("lease", True), ("lease", False)]
+
+
+def test_an_intake_with_an_id_yields_that_id() -> None:
+    assert decompose_id("intake/x.md", "alpha") == "alpha"
+
+
+def test_an_intake_without_an_id_yields_its_stem() -> None:
+    assert decompose_id("intake/my-idea.md", "") == "my-idea"
+
+
+@pytest.mark.parametrize("bad", ["a/b", "..", ".hidden", "a\\b"])
+def test_a_path_shaped_id_is_refused(bad: str) -> None:
+    assert isinstance(decompose_id("intake/x.md", bad), Refusal)
+
+
+def test_a_long_traceback_keeps_its_last_lines_and_not_its_head() -> None:
+    frames = "".join(f'  File "m{i}.py", line {i}\n' for i in range(50))
+    kept = tail("Traceback (most recent call last):\n" + frames + "ValueError: boom", 100)
+    assert kept.endswith('  File "m49.py", line 49\nValueError: boom')
+    assert "Traceback" not in kept and len(kept) <= 100
+
+
+def test_a_short_string_is_unchanged_by_tail() -> None:
+    assert tail("short", 200) == "short"
+
+
+def test_a_decompose_argv_keeps_the_path_as_idea_and_uses_the_derived_id() -> None:
+    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
+    assert argv_for(action, "alpha") == ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "alpha"]
+    assert argv_for(action) is None
+
+
+def test_a_decompose_with_a_path_shaped_id_records_the_refusal_and_launches_nothing() -> None:
+    calls: list = []
+    recorded: list = []
+    deps = replace(_deps(calls), intake_id=lambda path: "../x", record=recorded.append)
+    perform([{"kind": "launch_decompose", "intake_ids": ["intake/x.md"], "epoch": 1}], deps, lambda: 1, False)
+    assert _touched(calls) == []
+    assert (recorded[0]["status"], "path-shaped" in recorded[0]["reason"]) == ("refused", True)
+
+
+def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
+    calls: list = []
+    perform([{"kind": "launch_decompose", "intake_ids": ["intake/my-idea.md"], "epoch": 1}], _deps(calls), lambda: 1, False)
+    assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea"])]
