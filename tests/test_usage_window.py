@@ -309,6 +309,13 @@ def test_weekly_window_from_excludes_a_usage_file_eight_days_old(tmp_path):
     assert window.spent_usd == 0.0
 
 
+def test_weekly_window_from_with_reset_anchors_start_at_weekly_window_start():
+    reset = WeeklyReset(weekday=_NOW.weekday(), hour=4, minute=0, tz="UTC")
+    window = weekly_window_from([(_NOW - timedelta(hours=1), {"cost_usd": 9.0})], _NOW, reset=reset)
+    assert window.start == weekly_window_start(_NOW, reset)
+    assert window.start != _NOW - timedelta(days=7)
+
+
 def test_gather_weekly_threads_a_passed_ceiling_onto_the_window(tmp_path):
     path = tmp_path / "one.usage.json"
     path.write_text('{"cost_usd": 4.0}', encoding="utf-8")
@@ -445,6 +452,19 @@ def test_gather_weekly_asks_the_store_from_seven_days_before_now_as_iso_text(tmp
     seen = []
     gather_weekly(tmp_path, _NOW, store_spend=lambda since: seen.append(since) or 1.0)
     assert seen == ["2026-08-29T12:00:00+00:00"]
+
+
+def test_gather_weekly_with_reset_anchors_start_through_the_store_path(tmp_path):
+    reset = WeeklyReset(weekday=_NOW.weekday(), hour=4, minute=0, tz="UTC")
+    window = gather_weekly(tmp_path, _NOW, store_spend=lambda since: 123.0, reset=reset)
+    assert window.start == weekly_window_start(_NOW, reset)
+
+
+def test_gather_weekly_with_reset_anchors_start_through_the_usage_files_path(tmp_path):
+    reset = WeeklyReset(weekday=_NOW.weekday(), hour=4, minute=0, tz="UTC")
+    given = [(_NOW - timedelta(hours=1), {"cost_usd": 3.0})]
+    window = gather_weekly(tmp_path, _NOW, usage=given, reset=reset)
+    assert window.start == weekly_window_start(_NOW, reset)
 
 
 def test_weekly_window_start_with_no_reset_is_the_rolling_7_day_start():
