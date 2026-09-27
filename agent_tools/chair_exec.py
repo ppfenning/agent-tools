@@ -182,6 +182,55 @@ def _lease(action: Action, deps: Deps) -> Result:
     return _result(action, "refused", line) if line else _result(action, "done")
 
 
+def _rendered_value(value: object) -> object:
+    """A list renders as the flat-list literal `_frontmatter` writes and `parse_frontmatter` reads back; anything else is unchanged."""
+    if isinstance(value, list):
+        return route._Raw("[" + ", ".join(route._yaml_scalar(v) for v in value) + "]")
+    return value
+
+
+def _initiative_tickets(work_dir: Path, initiative: str) -> list[dict]:
+    """Edge. Every ticket under `work/<initiative>/*/*.md`, `work_item`'s fields plus `body` for `merge_same_phase`.
+
+    A missing initiative directory reads as no tickets, not an error.
+    """
+    tickets = []
+    for task_path in sorted((work_dir / "work" / initiative).glob("*/*.md")):
+        if task_path.name == "initiative.md":
+            continue
+        try:
+            text = task_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fields, body = route.parse_frontmatter(text)
+        item = route.work_item(fields, initiative=initiative, phase_dir=task_path.parent.name, stem=task_path.stem)
+        tickets.append({**item, "body": body})
+    return tickets
+
+
+def _write_ticket(work_dir: Path, item: dict) -> None:
+    """Edge. `item` re-rendered to frontmatter and written back to `work_dir/work/<initiative>/<file>`, the shape `_initiative_tickets` read it from."""
+    fields = [(key, _rendered_value(value)) for key, value in item.items() if key not in ("initiative", "file", "body")]
+    text = route._frontmatter(fields, item.get("body", ""))
+    (work_dir / "work" / item["initiative"] / item["file"]).write_text(text, encoding="utf-8")
+
+
+def _merge_and_write(work_dir: Path, initiative: str) -> None:
+    """Same-phase ready/todo tickets of `initiative` that share a surface collapse into one; the merged ticket and
+    every dropped member are written back to disk before the next build starts, so it sees one ticket where two
+    used to collide."""
+    tickets = _initiative_tickets(work_dir, initiative)
+    if not tickets:
+        return
+    merged_items, merges = route.merge_same_phase(tickets)
+    by_id = {item["id"]: item for item in merged_items}
+    changed_ids = {member_id for merge in merges for member_id in merge["members"]}
+    for ticket_id in changed_ids:
+        item = by_id.get(ticket_id)
+        if item is not None:
+            _write_ticket(work_dir, item)
+
+
 def _launch(action: Action, deps: Deps) -> Result:
     initiative_id: str | Refusal = ""
     if action.get("kind") == "launch_decompose" and action.get("intake_ids"):
@@ -189,6 +238,8 @@ def _launch(action: Action, deps: Deps) -> Result:
         initiative_id = decompose_id(idea, deps.intake_id(idea))
     if isinstance(initiative_id, Refusal):
         return _result(action, "refused", initiative_id.reason)
+    if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
+        _merge_and_write(deps.work_dir, action["initiative"])
     argv = argv_for(action, initiative_id)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")

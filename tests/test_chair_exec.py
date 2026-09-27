@@ -403,6 +403,71 @@ def test_a_decompose_argv_keeps_the_path_as_idea_and_uses_the_derived_id() -> No
     assert argv_for(action) is None
 
 
+def _ticket(tmp_path, initiative: str, phase: str, ticket_id: str, title: str, body: str, surfaces: list[str], state: str = "ready"):
+    path = tmp_path / "work" / initiative / phase / f"{ticket_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    surfaces_line = "[" + ", ".join(surfaces) + "]"
+    path.write_text(
+        f"---\nid: {ticket_id}\nphase: {phase}\nstate: {state}\nneeds: []\nsurfaces: {surfaces_line}\ntitle: {title}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_initiative_tickets_reads_every_ticket_file_with_its_body(tmp_path) -> None:
+    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
+    tickets = chair_exec._initiative_tickets(tmp_path, "alpha")
+    assert [(t["id"], t["state"], t["surfaces"], t["body"]) for t in tickets] == [
+        ("t1", "ready", ["agent_tools/shared.py"], "First body.")
+    ]
+
+
+def test_write_ticket_round_trips_through_initiative_tickets(tmp_path) -> None:
+    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
+    [item] = chair_exec._initiative_tickets(tmp_path, "alpha")
+    chair_exec._write_ticket(tmp_path, {**item, "title": "Renamed", "state": "dropped", "merged_into": "t2"})
+    [reread] = chair_exec._initiative_tickets(tmp_path, "alpha")
+    assert (reread["title"], reread["state"], reread["merged_into"]) == ("Renamed", "dropped", "t2")
+
+
+def test_merge_and_write_collapses_two_same_phase_tickets_sharing_a_surface(tmp_path) -> None:
+    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
+    _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
+    chair_exec._merge_and_write(tmp_path, "alpha")
+    merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
+    dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
+    assert "title: First ticket; Second ticket" in merged_text
+    assert "state: ready" in merged_text
+    assert "state: dropped" in dropped_text
+    assert "merged_into: t1" in dropped_text
+
+
+def test_launch_epic_merges_same_phase_tickets_before_dispatching_the_merged_ticket(tmp_path) -> None:
+    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
+    _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path)
+    perform([{"kind": "launch_epic", "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)
+    merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
+    dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
+    assert "title: First ticket; Second ticket" in merged_text
+    assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
+    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha"])]
+
+
+def test_relaunch_merges_same_phase_tickets_before_dispatching_the_merged_ticket(tmp_path) -> None:
+    _ticket(tmp_path, "alpha", "build", "t1", "First ticket", "First body.", ["agent_tools/shared.py"])
+    _ticket(tmp_path, "alpha", "build", "t2", "Second ticket", "Second body.", ["agent_tools/shared.py"])
+    calls: list = []
+    deps = replace(_deps(calls), work_dir=tmp_path)
+    perform([{"kind": "relaunch", "initiative": "alpha", "epoch": 1}], deps, lambda: 1, False)
+    merged_text = (tmp_path / "work" / "alpha" / "build" / "t1.md").read_text(encoding="utf-8")
+    dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
+    assert "title: First ticket; Second ticket" in merged_text
+    assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
+    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha"])]
+
+
 def test_a_decompose_with_a_path_shaped_id_records_the_refusal_and_launches_nothing() -> None:
     calls: list = []
     recorded: list = []
