@@ -47,6 +47,10 @@ class FactsDeps:
     live_initiatives: initiatives with a live run, meaning the `runs:<initiative>` store lease is held and
         unexpired, or failing that `runs/<run>.pid` names a live pid.
     drafts: the number of initiatives waiting for approval. Optional, and absent means 0.
+    missing_repos: sorted, de-duplicated repository path strings, the list `runs_stranded` will produce for
+        repositories that no longer exist. Optional, and absent means empty.
+    reported_repos: the paths already reported on an earlier tick. Optional, and absent means empty.
+        A missing repository is reported once, in the status line, and never becomes a needs_chair fact.
     """
 
     lease: Callable[[], Row]
@@ -68,6 +72,8 @@ class FactsDeps:
     host: str
     dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
     drafts: Callable[[], int] | None = None
+    missing_repos: Callable[[], list[str]] | None = None
+    reported_repos: Callable[[], set[str]] | None = None
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -222,6 +228,11 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
     ]
 
 
+def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> list[str]:
+    """The paths in `missing` not in `reported`, de-duplicated and sorted."""
+    return sorted({p for p in missing if p not in reported})
+
+
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     policy = deps.policy()
     weekly = deps.weekly()
@@ -244,4 +255,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
         "drafts": deps.drafts() if deps.drafts is not None else 0,
+        "missing_repos": new_missing_repos(
+            deps.missing_repos() if deps.missing_repos is not None else [],
+            deps.reported_repos() if deps.reported_repos is not None else set(),
+        ),
     }

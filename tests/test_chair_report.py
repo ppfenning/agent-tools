@@ -100,6 +100,17 @@ def test_drafts_0_leaves_the_line_as_it_was():
     assert "drafts" not in line
 
 
+def test_a_new_missing_repo_is_named_in_the_line():
+    line = format_status(dict(_facts(), missing_repos=["/repo/a"]), [], [], NOW)
+    assert " | skipped missing repo /repo/a | needs chair: none" in line
+
+
+def test_no_missing_repos_leaves_the_line_as_it_was():
+    line = format_status(dict(_facts(), missing_repos=[]), [], [], NOW)
+    assert line == format_status(_facts(), [], [], NOW)
+    assert "missing repo" not in line
+
+
 def test_standby_line_with_an_until_says_who_holds_the_chair_until_when():
     actions = [{"kind": "standby", "holder": "chair-7@box-1:42", "host": "box-1", "until": "2026-09-26T15:00:00+00:00"}]
     line = format_status(_facts(), actions, [_landed("standby", "recorded")], NOW)
