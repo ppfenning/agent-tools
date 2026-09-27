@@ -17,6 +17,7 @@ def _facts(**overrides) -> Facts:
         "intake": [],
         "work_store_ready": True,
         "sources_configured": True,
+        "remote_unfetched": {},
     }
     return {**base, **overrides}  # type: ignore[return-value]
 
@@ -280,3 +281,29 @@ def test_another_holder_with_an_expired_takeover_plans_take_lease_with_the_reaso
 def test_another_holder_inside_its_takeover_plans_standby_naming_until():
     facts = _facts(lease=_lease(expired=False, until="2026-09-26T15:00:00+00:00"))
     assert plan_tick(facts) == [{"kind": "standby", "holder": "other", "host": "elsewhere", "until": "2026-09-26T15:00:00+00:00", "epoch": 7}]
+
+
+def test_a_remote_unfetched_initiative_gets_a_fetch_exit_action_before_its_relaunch():
+    facts = _facts(initiatives=[_initiative("i")], remote_unfetched={"i": "i-run-1"})
+    assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "i", "run": "i-run-1", "epoch": 7}]
+
+
+def test_a_remote_unfetched_initiative_plans_no_relaunch_even_with_ready_tasks_and_met_needs():
+    facts = _facts(initiatives=[_initiative("a")], remote_unfetched={"a": "a-run-1"})
+    assert "relaunch" not in _kinds(plan_tick(facts))
+    assert "clear_branches" not in _kinds(plan_tick(facts))
+
+
+def test_a_remote_unfetched_initiative_plans_no_launch_epic_even_with_ready_tasks_and_met_needs():
+    unstarted = {**_initiative("o"), "started": False}
+    facts = _facts(initiatives=[unstarted], remote_unfetched={"o": "o-run-1"})
+    assert plan_tick(facts) == [{"kind": "fetch_exit", "initiative": "o", "run": "o-run-1", "epoch": 7}]
+
+
+def test_an_initiative_absent_from_remote_unfetched_still_relaunches_as_today():
+    facts = _facts(initiatives=[_initiative("a"), _initiative("b")], remote_unfetched={"a": "a-run-1"})
+    assert plan_tick(facts) == [
+        {"kind": "fetch_exit", "initiative": "a", "run": "a-run-1", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "b", "epoch": 7},
+        {"kind": "relaunch", "initiative": "b", "epoch": 7},
+    ]

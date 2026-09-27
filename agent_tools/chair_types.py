@@ -85,12 +85,17 @@ class Facts(TypedDict):
     work_store_ready: bool
     sources_configured: bool
     drafts: int  # initiatives waiting for approval
+    # An initiative's newest run is remote and unfetched: a `<run>.remote.json` beside the runs
+    # directory with no local run directory or log for that run id. Maps the initiative id to
+    # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
+    remote_unfetched: dict[str, str]
 
 
 ActionKind = Literal[
     "standby",
     "take_lease",
     "fetch",
+    "fetch_exit",
     "land",
     "clear_branches",
     "relaunch",
@@ -108,7 +113,7 @@ class Action(TypedDict, total=False):
     epoch: int
     task_id: str
     repo: str
-    run: str  # a land or fetch names the run that holds the approved record
+    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit names the run still pending fetch
     initiative: str  # retry and rescue carry initiative and task_id
     cause: str
     intake_ids: list[str]
