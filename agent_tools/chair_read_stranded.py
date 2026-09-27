@@ -28,3 +28,13 @@ def read_missing_repos(records: list[dict], items: list[dict],
                         repo_exists: Callable[[str], bool] = os.path.isdir) -> list[str]:
     """Edge. The repo paths `read_stranded` is skipping because `repo_exists` rejects them."""
     return runs_stranded.missing_repos(records, items, repo_exists)
+
+
+def stranded_from_rows(rows: list[dict], records: list[dict]) -> list[dict]:
+    """The same rule as `read_stranded`, with each task's state taken from `rows` (kind "task") instead of files."""
+    items = [
+        {"id": row.get("task_id"), "initiative": row.get("initiative"), "phase": row.get("phase"), "state": row.get("state")}
+        for row in rows
+        if row.get("kind") == "task"
+    ]
+    return keep_stranded_keys(runs_stranded.stranded(records, items))

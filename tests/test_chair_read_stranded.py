@@ -1,4 +1,4 @@
-from agent_tools.chair_read_stranded import keep_stranded_keys, read_missing_repos, read_stranded
+from agent_tools.chair_read_stranded import keep_stranded_keys, read_missing_repos, read_stranded, stranded_from_rows
 
 
 def test_a_full_row_keeps_exactly_the_five_keys():
@@ -49,3 +49,28 @@ def test_read_stranded_keeps_the_five_key_row_for_a_live_present_repo():
     assert read_stranded(records, items, lambda repo: True) == [
         {"run": "r1", "task": "r1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task r1 --repo /here"},
     ]
+def _record(**over):
+    base = {
+        "run": "r1", "task": "t1", "phase": "p1", "branch": "b1",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "landed": False,
+    }
+    return {**base, **over}
+
+
+def _row(state, **over):
+    base = {
+        "kind": "task", "initiative": "acme", "task_id": "t1", "phase": "p1", "state": state,
+        "needs": [], "title": "", "surfaces": [], "body": "", "extra": {},
+    }
+    return {**base, **over}
+
+
+def test_a_ready_row_for_an_approved_unlanded_record_is_stranded():
+    assert stranded_from_rows([_row("ready")], [_record()]) == [
+        {"run": "r1", "task": "t1", "phase": "p1", "branch": "b1", "remedy": None}
+    ]
+
+
+def test_a_done_row_for_the_same_task_is_not_stranded():
+    assert stranded_from_rows([_row("done")], [_record()]) == []

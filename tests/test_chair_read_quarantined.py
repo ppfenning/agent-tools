@@ -1,5 +1,11 @@
 from agent_tools import run_store
-from agent_tools.chair_read_quarantined import attempts_on_current_body, body_sha, quarantined_rows, read_quarantined
+from agent_tools.chair_read_quarantined import (
+    attempts_on_current_body,
+    body_sha,
+    quarantined_from_rows,
+    quarantined_rows,
+    read_quarantined,
+)
 
 BODY = "body\n"
 ON_BODY = {"run": "i-1", "ts": "2026-09-25T01:00:00Z", "body_sha": body_sha(BODY)}
@@ -54,3 +60,20 @@ def test_under_files_mode_the_file_state_holds_and_the_store_is_not_read(tmp_pat
 def test_under_store_mode_a_done_store_row_hides_a_file_once_quarantined(tmp_path, monkeypatch):
     _world(tmp_path, monkeypatch, [{"initiative": "a", "task_id": "t1", "state": "done"}])
     assert read_quarantined(tmp_path, "store") == []
+
+
+ROW = {
+    "kind": "task", "initiative": "a", "task_id": "t1", "phase": "p1", "state": "quarantined",
+    "needs": [], "title": "", "surfaces": [], "body": BODY,
+    "extra": {"attempts": [{"run": "i-1", "ts": "2026-09-25T01:00:00Z", "cause": "harness", "body_sha": body_sha(BODY)}]},
+}
+
+
+def test_a_quarantined_row_gives_its_fact_with_body_sha_and_cause_from_the_newest_attempt():
+    assert quarantined_from_rows([ROW]) == [
+        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "body_sha": body_sha(BODY), "cause": "harness"}
+    ]
+
+
+def test_a_row_in_any_other_state_gives_no_fact():
+    assert quarantined_from_rows([{**ROW, "state": "ready"}]) == []
