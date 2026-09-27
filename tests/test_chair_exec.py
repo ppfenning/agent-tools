@@ -155,7 +155,7 @@ def test_a_refusing_land_blocks_its_repo_siblings_this_tick() -> None:
     results = perform(actions, _deps(calls, output, code=1), lambda: 1, False)
     assert [r["status"] for r in results] == ["refused", "escalated", "skipped", "escalated"]
     assert [r["action"].get("cause") for r in results if r["status"] == "escalated"] == ["conflict", STRANDED_CAUSE]
-    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--task", "t1", "--repo", "r", "--apply"])]
+    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--task", "t1", "--repo", "r", "--apply", "--no-claim"])]
 
 
 def test_a_land_refused_before_it_runs_blocks_nothing() -> None:
@@ -370,7 +370,7 @@ def test_dry_run_performs_nothing() -> None:
 def test_a_rescue_launches_through_cox_route_launch_rescue() -> None:
     calls: list = []
     results = perform([{"kind": "rescue", "initiative": "a", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
-    assert _touched(calls) == [("run", ["cox", "route", "launch", "rescue", "--initiative", "work/a", "--task", "t1"])]
+    assert _touched(calls) == [("run", ["cox", "route", "launch", "rescue", "--initiative", "work/a", "--task", "t1", "--no-claim"])]
     assert [r["status"] for r in results] == ["done"]
 
 
@@ -442,14 +442,14 @@ def test_a_dry_run_records_nothing() -> None:
 
 @pytest.mark.parametrize("kind", ["relaunch", "retry", "launch_epic"])
 def test_an_epic_launch_names_the_initiative_by_its_work_path(kind: str) -> None:
-    assert argv_for({"kind": kind, "initiative": "x"})[-2:] == ["--initiative", "work/x"]  # type: ignore[typeddict-item,index]
+    assert argv_for({"kind": kind, "initiative": "x"})[-3:] == ["--initiative", "work/x", "--no-claim"]  # type: ignore[typeddict-item,index]
     with_repo = argv_for({"kind": kind, "initiative": "x", "repo": "/r"})  # type: ignore[typeddict-item]
-    assert with_repo[-4:] == ["--initiative", "work/x", "--repo", "/r"]  # type: ignore[index]
+    assert with_repo[-5:] == ["--initiative", "work/x", "--no-claim", "--repo", "/r"]  # type: ignore[index]
 
 
 def test_a_launch_with_a_host_ends_with_on_that_host() -> None:
     assert argv_for({"kind": "launch_epic", "initiative": "x", "host": "jarvis"})[-2:] == ["--on", "jarvis"]  # type: ignore[index]
-    assert argv_for({"kind": "launch_epic", "initiative": "x"}) == ["cox", "route", "launch", "epic", "--initiative", "work/x"]
+    assert argv_for({"kind": "launch_epic", "initiative": "x"}) == ["cox", "route", "launch", "epic", "--initiative", "work/x", "--no-claim"]
 
 
 def test_run_argv_runs_in_the_given_directory(tmp_path) -> None:
@@ -491,7 +491,7 @@ def test_a_short_string_is_unchanged_by_tail() -> None:
 
 def test_a_decompose_argv_keeps_the_path_as_idea_and_uses_the_derived_id() -> None:
     action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
-    assert argv_for(action, "alpha") == ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "alpha"]
+    assert argv_for(action, "alpha") == ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "alpha", "--no-claim"]
     assert argv_for(action) is None
 
 
@@ -544,7 +544,7 @@ def test_launch_epic_merges_same_phase_tickets_before_dispatching_the_merged_tic
     dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
     assert "title: First ticket; Second ticket" in merged_text
     assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
-    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha"])]
+    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha", "--no-claim"])]
 
 
 def test_relaunch_merges_same_phase_tickets_before_dispatching_the_merged_ticket(tmp_path) -> None:
@@ -557,7 +557,7 @@ def test_relaunch_merges_same_phase_tickets_before_dispatching_the_merged_ticket
     dropped_text = (tmp_path / "work" / "alpha" / "build" / "t2.md").read_text(encoding="utf-8")
     assert "title: First ticket; Second ticket" in merged_text
     assert "state: dropped" in dropped_text and "merged_into: t1" in dropped_text
-    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha"])]
+    assert [c for c in calls if c[0] == "run"] == [("run", ["cox", "route", "launch", "epic", "--initiative", "work/alpha", "--no-claim"])]
 
 
 def test_a_decompose_with_a_path_shaped_id_records_the_refusal_and_launches_nothing() -> None:
@@ -572,7 +572,7 @@ def test_a_decompose_with_a_path_shaped_id_records_the_refusal_and_launches_noth
 def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
     calls: list = []
     perform([{"kind": "launch_decompose", "intake_ids": ["intake/my-idea.md"], "epoch": 1}], _deps(calls), lambda: 1, False)
-    assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea"])]
+    assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea", "--no-claim"])]
 
 
 _HK_PROBE = ["python", "-m", "harness.store_backfill_traces", "prune", "--help"]

@@ -137,21 +137,23 @@ def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
     A decompose launch needs `initiative_id`, which `decompose_id` derives from the intake; it is never taken from the path.
     """
     kind = action.get("kind")
+    # The loop already holds the chair: a command it starts must never claim the loop lease itself (a land that
+    # found the record stale took it with an empty host on 2026-09-27 and put the loop in standby).
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
     run = action.get("run", "")
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
-        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply"] if run and task and repo else None
+        return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim"] if run and task and repo else None
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
-        return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id] if idea and initiative_id else None
+        return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, "--no-claim"] if idea and initiative_id else None
     if kind == "rescue":
-        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task] if initiative and task else None
+        return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim"] if initiative and task else None
     if kind in LAUNCH_KINDS:
         host = action.get("host", "")
         return [
-            "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}",
+            "cox", "route", "launch", "epic", "--initiative", f"work/{initiative}", "--no-claim",
             *(["--repo", repo] if repo else []), *(["--on", host] if host else []),
         ] if initiative else None
     if kind == "pull":
