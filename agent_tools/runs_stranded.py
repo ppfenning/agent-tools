@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from agent_tools.land import arbitration_verdict
+from agent_tools.land import _approved as land_approved
 
 
 def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
@@ -22,9 +22,8 @@ def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
 
 
 def _approved_and_unlanded(record: dict) -> bool:
-    return ((record.get("review") or {}).get("verdict") == "approve"
-            and arbitration_verdict(record) == "approve"
-            and not record.get("landed"))
+    """The land's own approval rule, so a unanimously approved record (no arbiter ran) counts too."""
+    return land_approved(record) is None and not record.get("landed")
 
 
 def _remedy(record: dict, item: dict | None) -> str | None:
