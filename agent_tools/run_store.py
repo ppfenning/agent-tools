@@ -946,6 +946,106 @@ def task_state_of(runs_dir: Path, initiative: str, task: str) -> str | None:
     return task_state(work_items(runs_dir, initiative), initiative, task)
 
 
+_QUEUE_COLUMNS = ("kind", "initiative", "task_id", "phase", "state", "needs", "title", "surfaces", "body", "extra")
+_CLAIM_KEYS = ("holder", "epoch", "expires_at")
+_HELD_EXIT = 4
+HELD = "held"
+UNAVAILABLE = "unavailable"
+
+# Assumed harness subcommands, for graphs to match. Each is `<python> -m harness.store_queue <verb> <store-url> ...`:
+#   read URL [--initiative I] [--kind K]       one JSON object per row per line, extra columns allowed
+#   upsert URL ROW_JSON                        one row keyed (initiative, task_id); exit 0 when written, safe to repeat
+#   claim URL INITIATIVE TASK HOLDER TTL_S NOW one conditional row update that bumps epoch; exit 0 prints the
+#                                              claim JSON {holder, epoch, expires_at}; exit 4 means a live claim by
+#                                              another holder (unknown: graphs must confirm 4 for held)
+#   release URL INITIATIVE TASK HOLDER         clears the claim only when HOLDER matches; exit 0 when cleared
+# Any other non-zero exit, or a harness that is absent, reads as unavailable.
+
+
+def _queue_read_argv(python: str, url: str, initiative: str | None, kind: str | None) -> list[str]:
+    """Pure: the argv that prints queue rows as JSON lines, narrowed by initiative and kind when given."""
+    narrow = [*([] if initiative is None else ["--initiative", initiative]), *([] if kind is None else ["--kind", kind])]
+    return [python, "-m", "harness.store_queue", "read", url, *narrow]
+
+
+def _queue_upsert_argv(python: str, url: str, row: Mapping[str, Any]) -> list[str]:
+    """Pure: the argv that upserts one row. The row is one JSON argument with sorted keys, so equal rows give equal argv."""
+    return [python, "-m", "harness.store_queue", "upsert", url, json.dumps(row, sort_keys=True, default=str)]
+
+
+def _queue_claim_argv(python: str, url: str, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> list[str]:
+    """Pure: the argv that claims a row. `now` is the caller's clock reading, so the store never consults its own."""
+    return [python, "-m", "harness.store_queue", "claim", url, initiative, task_id, holder, str(ttl_s), now]
+
+
+def _queue_release_argv(python: str, url: str, initiative: str, task_id: str, holder: str) -> list[str]:
+    """Pure: the argv that clears a row's claim when `holder` holds it."""
+    return [python, "-m", "harness.store_queue", "release", url, initiative, task_id, holder]
+
+
+def _queue_rows_from(stdout: str) -> list[dict]:
+    """Pure: the JSON-object lines of the output, each with every queue and claim key present (None when absent) and extras kept."""
+    blank = dict.fromkeys((*_QUEUE_COLUMNS, *_CLAIM_KEYS))
+    return [{**blank, **row} for row in _work_items_from(stdout)]
+
+
+def _claim_from(stdout: str) -> dict | None:
+    """Pure: `{holder, epoch, expires_at}` from a JSON object naming a holder, else None."""
+    claim = _task_record_from(stdout)
+    return None if claim is None or claim.get("holder") is None else {key: claim.get(key) for key in _CLAIM_KEYS}
+
+
+def _claim_reason(returncode: int) -> str:
+    """Pure: why a non-zero claim exit failed, `HELD` for the assumed held code, else `UNAVAILABLE`."""
+    return HELD if returncode == _HELD_EXIT else UNAVAILABLE
+
+
+def _queue_run(runs_dir: Path, build: Any) -> Any | None:
+    """Edge: run the argv `build(python, url)` through the harness python; None when it cannot run. Never raises."""
+    python = _harness_python()
+    if python is None:
+        return None
+    try:
+        argv = build(str(python), _store_url(Path(runs_dir)))
+        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except Exception:  # an unreadable profile or store must read as unavailable, not crash the caller
+        return None
+
+
+def read_queue(runs_dir: Path, initiative: str | None = None, kind: str | None = None) -> list[dict]:
+    """Edge: queue rows from the store, optionally for one initiative and kind. Empty when the harness, table or store is unavailable."""
+    done = _queue_run(runs_dir, lambda python, url: _queue_read_argv(python, url, initiative, kind))
+    return _queue_rows_from(done.stdout) if done is not None and done.returncode == 0 else []
+
+
+def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
+    """Edge: True when the store took the row, False when it could not."""
+    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
+    return done is not None and done.returncode == 0
+
+
+def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> bool:
+    """Edge: True when the claim was cleared, False when `holder` did not hold it or the store could not say."""
+    done = _queue_run(runs_dir, lambda python, url: _queue_release_argv(python, url, initiative, task_id, holder))
+    return done is not None and done.returncode == 0
+
+
+def claim_outcome(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> tuple[dict | None, str | None]:
+    """Edge: `(claim, None)` when taken, else `(None, HELD)` or `(None, UNAVAILABLE)` so a caller can tell them apart."""
+    done = _queue_run(runs_dir, lambda python, url: _queue_claim_argv(python, url, initiative, task_id, holder, ttl_s, now))
+    if done is None:
+        return None, UNAVAILABLE
+    if done.returncode != 0:
+        return None, _claim_reason(done.returncode)
+    claim = _claim_from(done.stdout)
+    return (claim, None) if claim is not None else (None, UNAVAILABLE)
+
+
+def claim_row(runs_dir: Path, initiative: str, task_id: str, holder: str, ttl_s: float, now: str) -> dict | None:
+    """Edge: the claim taken on a free or expired row at `now`, None when held or unavailable; `claim_outcome` says which."""
+    return claim_outcome(runs_dir, initiative, task_id, holder, ttl_s, now)[0]
+
+
 def _import_pyarrow() -> tuple[Any, Any]:
     """The only place pyarrow is imported: `(pyarrow.fs, pyarrow.parquet)`, else TracesUnavailable naming the extra."""
     try:
