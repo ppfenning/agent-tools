@@ -65,13 +65,13 @@ def test_a_stranded_row_in_another_phase_is_not_dropped_by_the_land():
     assert [q["cause"] for q in quarantine_facts([], other, [], set(), lambda i, t: False, planned)] == [STRANDED_CAUSE]
 
 
-def test_a_land_that_does_not_land_escalates_to_needs_chair():
+def test_a_land_that_refuses_escalates_to_needs_chair_with_its_cause():
     land = {"kind": "land", "task_id": "t", "repo": "/r", "run": "x-1", "initiative": "x", "epoch": 1}
     results, recorded = _perform(land, code=1, output="merge: conflict")
-    assert [(r["action"]["kind"], r["status"]) for r in results] == [("land", "not_landed"), ("needs_chair", "escalated")]
-    assert [(a["kind"], a["status"]) for a in recorded] == [("land", "not_landed"), ("needs_chair", "escalated")]
+    assert [(r["action"]["kind"], r["status"]) for r in results] == [("land", "refused"), ("needs_chair", "escalated")]
+    assert [(a["kind"], a["status"]) for a in recorded] == [("land", "refused"), ("needs_chair", "escalated")]
     assert {k: v for k, v in recorded[1].items() if k not in ("status", "reason")} == {
-        "kind": "needs_chair", "initiative": "x", "task_id": "t", "cause": STRANDED_CAUSE, "epoch": 1,
+        "kind": "needs_chair", "initiative": "x", "task_id": "t", "cause": "land", "epoch": 1,
     }
 
 

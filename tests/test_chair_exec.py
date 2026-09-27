@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
@@ -11,10 +12,13 @@ from agent_tools.chair_exec import (
     argv_for,
     decompose_id,
     delete_branches_with,
+    land_refusal,
     perform,
     run_argv,
     tail,
 )
+from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_report import format_status
 from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -91,14 +95,86 @@ def test_a_fenced_action_is_refused_and_touches_nothing() -> None:
     assert calls == [("record", "pull")]
 
 
+def test_land_refusal_is_none_on_a_clean_exit() -> None:
+    assert land_refusal(_land("t1", "r"), 0, LANDED) is None
+
+
+def test_land_refusal_names_a_conflict_from_the_output() -> None:
+    # git cherry-pick's own conflict text, verbatim from a real conflict through `cli._execute_land_step`:
+    # its "CONFLICT (content): ..." line goes to stdout, which that step drops whenever stderr is non-empty,
+    # so the substring this rule reads is stderr's "error: could not apply ...", not "CONFLICT".
+    output = (
+        "error: could not apply a1b2c3d... Add seams module\n"
+        "hint: After resolving the conflicts, mark them with\n"
+        'hint: "git add/rm <pathspec>", then run\n'
+        'hint: "git cherry-pick --continue".\n'
+    )
+    refusal = land_refusal(_land("t1", "r"), 1, output)
+    assert refusal["cause"] == "conflict"
+
+
+def test_land_refusal_names_failing_checks_from_the_output() -> None:
+    refusal = land_refusal(_land("t1", "r"), 1, "failing checks: lint")
+    assert refusal["cause"] == "checks"
+
+
+def test_land_refusal_names_a_missing_branch_from_the_output() -> None:
+    refusal = land_refusal(_land("t1", "r"), 1, "no candidate branch found for t1: tried agents/run-1/t1")
+    assert refusal["cause"] == "missing_branch"
+
+
+def test_land_refusal_falls_back_to_land_for_any_other_nonzero_exit() -> None:
+    refusal = land_refusal(_land("t1", "r"), 1, "boom, something else broke")
+    assert refusal["cause"] == "land"
+
+
+def test_land_refusal_carries_the_action_s_initiative_and_task_id() -> None:
+    action = {"kind": "land", "task_id": "t9", "initiative": "alpha", "repo": "r", "run": "run-1", "epoch": 3}
+    assert land_refusal(action, 1, "boom") == {
+        "kind": "needs_chair", "initiative": "alpha", "task_id": "t9", "cause": "land", "epoch": 3,
+    }
+
+
 def test_a_land_counts_only_when_both_markers_appear() -> None:
     results = perform([_land("t1", "r")], _deps([]), lambda: 1, False)
     assert [r["status"] for r in results] == ["landed"]
 
 
-def test_a_land_with_both_markers_but_a_nonzero_exit_is_not_counted() -> None:
-    results = perform([_land("t1", "r")], _deps([], code=1), lambda: 1, False)
-    assert [r["status"] for r in results] == ["not_landed", "escalated"]
+def test_a_land_with_a_nonzero_exit_is_refused_and_escalated_with_its_cause() -> None:
+    calls: list = []
+    results = perform([_land("t1", "r")], _deps(calls, code=1), lambda: 1, False)
+    assert [(r["action"]["kind"], r["status"]) for r in results] == [("land", "refused"), ("needs_chair", "escalated")]
+    assert results[1]["action"]["cause"] == "land"
+    assert [c for c in calls if c[0] == "record"] == [("record", "land"), ("record", "needs_chair")]
+
+
+def test_a_refusing_land_blocks_its_repo_siblings_this_tick() -> None:
+    calls: list = []
+    actions = [_land("t1", "r"), _land("t2", "r")]
+    output = "error: could not apply a1b2c3d... Add seams module\n"
+    results = perform(actions, _deps(calls, output, code=1), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "escalated", "skipped", "escalated"]
+    assert [r["action"].get("cause") for r in results if r["status"] == "escalated"] == ["conflict", STRANDED_CAUSE]
+    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--task", "t1", "--repo", "r", "--apply"])]
+
+
+def test_a_land_refused_before_it_runs_blocks_nothing() -> None:
+    calls: list = []
+    actions = [{"kind": "land", "task_id": "t1", "repo": "r", "epoch": 1}, _land("t2", "r")]
+    results = perform(actions, _deps(calls), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "escalated", "landed"]
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["t2"]
+
+
+def test_the_status_line_names_a_refused_land_s_cause() -> None:
+    facts = {
+        "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "five_hour_fraction": None},
+        "dispatch": {"max_in_flight": 4, "live_runs": 0},
+    }
+    land = {**_land("t1", "r"), "initiative": "alpha"}
+    results = perform([land], _deps([], "failing checks: lint", code=1), lambda: 1, False)
+    line = format_status(facts, [], results, datetime(2026, 9, 27, tzinfo=UTC))
+    assert line.endswith("needs chair: alpha:checks")
 
 
 def test_a_land_with_only_merge_is_not_counted_and_skips_its_repo_siblings() -> None:

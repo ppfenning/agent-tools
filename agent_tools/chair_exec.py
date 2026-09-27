@@ -18,7 +18,7 @@ from agent_tools.chair_types import Action, is_fenced
 
 __all__ = [
     "LAUNCH_KINDS", "Deps", "Refusal", "Result", "argv_for", "branch_pattern", "decompose_id", "delete_branches_with", "edge_deps",
-    "escalation", "landed", "perform", "tail",
+    "escalation", "land_refusal", "landed", "perform", "tail",
 ]
 
 Status = Literal[
@@ -34,6 +34,7 @@ class Result(TypedDict):
     reason: str
     run: NotRequired[str]  # a fetch_exit's run, for the next task's status line
     host: NotRequired[str]  # a fetch_exit's remote host, read from its <run>.remote.json
+    needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,30 @@ _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 def landed(code: int, output: str) -> bool:
     """A land counts only when it exits 0 and the output shows both the merge and the mark_done step."""
     return code == 0 and "merge:" in output and "mark_done:" in output
+
+
+def land_refusal(action: Action, code: int, output: str) -> Action | None:
+    """None on a clean exit; else the needs_chair a land's refusal raises, its cause read from `output` by
+    literal substring, else the land fallback.
+
+    "could not apply" is git cherry-pick's own conflict line (its stderr on a conflict, verified against
+    `_execute_land_step`'s cherry_pick step); "CONFLICT" never appears there because that step keeps stderr
+    over stdout, and cherry-pick writes its "CONFLICT (content): ..." line to stdout, not stderr.
+    """
+    if code == 0:
+        return None
+    if "could not apply" in output:
+        cause = "conflict"
+    elif "failing checks:" in output:
+        cause = "checks"
+    elif "no branch is exactly one commit ahead of" in output or "no candidate branch found for" in output:
+        cause = "missing_branch"
+    else:
+        cause = "land"
+    return {
+        "kind": "needs_chair", "initiative": action.get("initiative", ""), "task_id": action.get("task_id", ""),
+        "cause": cause, "epoch": action.get("epoch", 0),
+    }
 
 
 def branch_pattern(initiative: str) -> str | None:
@@ -142,6 +167,9 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
     code, output = deps.run(argv)
+    refusal = land_refusal(action, code, output)
+    if refusal is not None:
+        return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     return _result(action, "landed" if landed(code, output) else "not_landed", output)
 
 
@@ -312,6 +340,8 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
     A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
+    A land whose command exits nonzero is refused, escalated with the cause `land_refusal` read from its output,
+    and blocks its repo's later lands this tick. A land refused before its command runs blocks nothing.
     """
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task of the uncounted land that blocks its later lands and deletes
@@ -327,7 +357,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
         else:
             result = _execute(action, deps, blocked)
-        if action.get("kind") == "land" and result["status"] == "not_landed":
+        if action.get("kind") == "land" and (result["status"] == "not_landed" or "needs_chair" in result):
             blocked[action.get("repo", "")] = action.get("task_id", "")
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
@@ -341,7 +371,8 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
 
 
 def escalation(land: Action) -> Action:
-    """The needs_chair a land that did not land raises: the facts dropped its stranded row, so this reports it instead."""
+    """The needs_chair a land that did not land raises when its command gave no refusal to classify: the facts
+    dropped its stranded row, so this reports it instead."""
     return {
         "kind": "needs_chair", "initiative": land.get("initiative", ""), "task_id": land.get("task_id", ""),
         "cause": STRANDED_CAUSE, "epoch": land.get("epoch", 0),
@@ -349,7 +380,8 @@ def escalation(land: Action) -> Action:
 
 
 def _escalate(land: Action, result: Result) -> Result:
-    return _result(escalation(land), "escalated", f"land {land.get('task_id', '')} {result['status']}")
+    raised = result.get("needs_chair") or escalation(land)
+    return _result(raised, "escalated", f"land {land.get('task_id', '')} {result['status']}")
 
 
 def run_argv(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
