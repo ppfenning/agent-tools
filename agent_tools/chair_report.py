@@ -8,18 +8,15 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
-from agent_tools.chair_types import Action, Facts
+from agent_tools.chair_types import EASTERN, Action, Facts
 from agent_tools.notify import Notification
 
 __all__ = [
-    "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment", "lands_this_tick",
-    "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
+    "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment",
+    "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
 ]
-
-EASTERN = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -99,6 +96,13 @@ def _five_hour(limits: dict) -> str:
     return "5h n/a" if fraction is None else f"5h {fraction:.0%}"
 
 
+def _weekly(limits: dict) -> str:
+    """`weekly <fraction>/<hard stop fraction>`, with `since <window_start_day>` when the edge supplies one."""
+    base = f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%}"
+    window_start_day = limits.get("window_start_day")
+    return base if window_start_day is None else f"{base} since {window_start_day}"
+
+
 def housekeeping_fragment(last_housekeeping_at: str | None, now: datetime) -> str:
     """`housekeeping <age>`, minutes under an hour, hours under 48, else days; `never` when unset, unparseable or naive."""
     try:
@@ -130,7 +134,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
         f"lands {lands_this_tick(results)}",
         *([f"drafts {drafts}"] if drafts > 0 else []),
-        f"limits {_five_hour(dict(limits))} weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%}{stop}",
+        f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
         *([f"launched: {', '.join(launched)}"] if launched else []),

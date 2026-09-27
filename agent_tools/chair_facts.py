@@ -17,6 +17,7 @@ from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_types import (
+    EASTERN,
     ApprovedTask,
     DispatchFacts,
     Facts,
@@ -125,6 +126,18 @@ def weekly_fraction(weekly: pacing.Window | None) -> float:
     return weekly.spent_usd / weekly.ceiling_usd
 
 
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def window_start_day(start: datetime) -> str:
+    """`Sat 23:00 EDT`: the start in EASTERN, as the status line prints its own time.
+
+    `start` arrives in UTC, so formatting it unconverted shows the wrong hour and, near midnight, the wrong day.
+    The day name comes from WEEKDAYS, not `%a`, which follows the host's locale."""
+    local = start.astimezone(EASTERN)
+    return f"{WEEKDAYS[local.weekday()]} {local:%H:%M %Z}"
+
+
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int
 ) -> LimitsFacts:
@@ -137,6 +150,7 @@ def limits_facts(
         "launch_cap": max_in_flight if assessment.verdict in LAUNCHING_VERDICTS else 0,
         "go_degraded": assessment.verdict == "go_degraded",
         "five_hour_fraction": assessment.spent_fraction,
+        "window_start_day": window_start_day(weekly.start) if weekly is not None else None,
     }
 
 

@@ -5,6 +5,9 @@ the facts and executes the actions; the planners in between are pure.
 """
 from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
+from zoneinfo import ZoneInfo
+
+EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 
 
 class LeaseFacts(TypedDict):
@@ -27,6 +30,7 @@ class LimitsFacts(TypedDict):
     launch_cap: int
     go_degraded: bool
     five_hour_fraction: float | None
+    window_start_day: str | None  # the weekly window's start in EASTERN, as `Sun 04:00 EDT`; None when there is no weekly window
 
 
 class HostLanes(TypedDict):

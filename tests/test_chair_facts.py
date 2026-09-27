@@ -15,6 +15,7 @@ from agent_tools.chair_facts import (
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_attempts import with_stored_rescues
 from agent_tools.chair_types import Facts
+from agent_tools.usage_window import WeeklyReset, weekly_window_start
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
 POLICY = pacing.Policy(
@@ -103,12 +104,27 @@ def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
         "launch_cap": 0,
         "go_degraded": False,
         "five_hour_fraction": 0.01,
+        "window_start_day": "Fri 07:00 EDT",
     }
 
 
 def test_five_hour_fraction_is_the_assessments_spent_fraction():
     assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
     assert limits_facts(assessment, POLICY, _window(10.0, 168), 2)["five_hour_fraction"] == 0.42
+
+
+def test_a_saturday_night_eastern_reset_reads_as_saturday_not_as_the_utc_sunday():
+    # The reset's start is 2026-11-01 03:00 UTC, a Sunday in UTC; the operator configured Saturday 23:00 Eastern.
+    reset = WeeklyReset(weekday=5, hour=23, minute=0, tz="America/New_York")
+    start = weekly_window_start(datetime(2026, 11, 2, 15, 0, tzinfo=UTC), reset)
+    assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
+    window = pacing.Window(start, start + timedelta(days=7), 10.0, 100.0, 0.0, 0)
+    assert limits_facts(assessment, POLICY, window, 2)["window_start_day"] == "Sat 23:00 EDT"
+
+
+def test_no_weekly_window_gives_no_window_start_day():
+    assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
+    assert limits_facts(assessment, POLICY, None, 2)["window_start_day"] is None
 
 
 def test_weekly_spend_under_the_fraction_launches_up_to_max_in_flight():

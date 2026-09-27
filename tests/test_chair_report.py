@@ -13,10 +13,11 @@ from agent_tools.notify import Notification
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 
 
-def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None):
+def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None, window_start_day=None):
     return {
         "limits": {"hard_stop": hard_stop, "weekly_fraction": weekly, "hard_stop_fraction": 0.9,
-                   "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five},
+                   "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five,
+                   "window_start_day": window_start_day},
         "dispatch": {"max_in_flight": 4, "live_runs": 2},
         "last_housekeeping_at": last_housekeeping_at,
     }
@@ -46,6 +47,11 @@ def test_hard_stop_line_says_hard_stop():
     line = format_status(_facts(hard_stop=True, weekly=0.95), [], [], NOW)
     assert "weekly 95%/90% hard stop" in line
     assert "hard stop" not in format_status(_facts(), [], [], NOW)
+
+
+def test_a_window_start_day_appears_since_it_in_the_weekly_fragment():
+    line = format_status(_facts(window_start_day="Sun 04:00"), [], [], NOW)
+    assert "weekly 61%/90% since Sun 04:00" in line
 
 
 def test_dry_run_line_says_dry_run():
