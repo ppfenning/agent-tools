@@ -133,6 +133,47 @@ def test_missing_repos_omits_a_dropped_items_repo():
     assert runs_stranded.missing_repos([record], [_item("dropped")], lambda p: False) == []
 
 
+def test_a_phase_branch_the_predicate_reports_as_existing_is_skipped():
+    record = _record(branch="epic/p1")
+    rows = runs_stranded.stranded([record], [_item("ready")], branch_exists=lambda repo, branch: True)
+    assert rows == []
+
+
+def test_the_same_phase_branch_reported_gone_is_still_listed():
+    record = _record(branch="epic/p1")
+    rows = runs_stranded.stranded([record], [_item("ready")], branch_exists=lambda repo, branch: False)
+    assert len(rows) == 1
+
+
+def test_a_task_scoped_branch_is_listed_regardless_of_the_predicate():
+    record = _record(branch="agents/r1/t1")
+    rows = runs_stranded.stranded([record], [_item("ready")], branch_exists=lambda repo, branch: True)
+    assert len(rows) == 1
+
+
+def test_an_epic_task_merge_target_branch_is_listed_even_when_the_predicate_reports_it_present():
+    record = _record(branch="epic/acme/p1--t1")
+    rows = runs_stranded.stranded([record], [_item("ready")], branch_exists=lambda repo, branch: True)
+    assert len(rows) == 1
+
+
+def test_branch_exists_is_asked_about_the_items_repo_when_the_record_has_none():
+    calls = []
+    record = _record(branch="epic/acme/p1")
+    rows = runs_stranded.stranded([record], [_item("ready")],
+                                  branch_exists=lambda repo, branch: calls.append((repo, branch)) is None)
+    assert rows == []
+    assert calls == [("/repo/acme", "epic/acme/p1")]
+
+
+def test_omitting_branch_exists_reproduces_todays_list_unchanged():
+    record = _record(branch="epic/p1")
+    with_none = runs_stranded.stranded([record], [_item("ready")], branch_exists=None)
+    without_arg = runs_stranded.stranded([record], [_item("ready")])
+    assert with_none == without_arg
+    assert len(without_arg) == 1
+
+
 def _workspace(tmp_path, with_stranded, item_state="ready", record_repo=None):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")

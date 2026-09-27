@@ -72,8 +72,19 @@ def _missing(record: dict, repo_exists: Callable[[str], bool]) -> bool:
     return bool(repo) and not repo_exists(repo)
 
 
+def _carried(record: dict, item: dict | None, branch_exists: Callable[[str, str], bool]) -> bool:
+    """True when the record's `branch` is a bare phase branch `epic/<init>/<phase>`
+    that `branch_exists` reports present in the resolved repo. `epic/...--<task>`
+    is task-scoped, as in `cleanup.plan_cleanup`, so it is never carried."""
+    branch = record.get("branch")
+    repo = record.get("repo") or (item.get("repo") if item else None)
+    return (bool(branch) and bool(repo) and branch.startswith("epic/") and "--" not in branch
+            and branch_exists(repo, branch))
+
+
 def stranded(records: list[dict], items: list[dict],
-             repo_exists: Callable[[str], bool] | None = None) -> list[dict]:
+             repo_exists: Callable[[str], bool] | None = None,
+             branch_exists: Callable[[str, str], bool] | None = None) -> list[dict]:
     """Rows for approved, unlanded records whose matching item is `ready`
     or `approved`. `items` are expected to carry a resolved `repo` (the edge
     reads it from the initiative's own frontmatter, since a work item's
@@ -82,9 +93,15 @@ def stranded(records: list[dict], items: list[dict],
     and phase is still reported, with `remedy` left `None` rather than
     matched against a foreign item's state or repo. `repo_exists` is
     injected; `None` treats every repo as present, and a record with no
-    `repo` is never skipped for a missing one."""
+    `repo` is never skipped for a missing one. `branch_exists` is injected
+    too; when given, a record on a bare phase branch it reports as still
+    present is skipped as not stranded but waiting on its phase's carried
+    branch under the one-merge-per-phase relaunch rule, while `None`, any
+    task-scoped branch, and a record with no resolvable repo behave exactly
+    as before."""
     return [_row(record, item) for record, item in _live_pairs(records, items)
-            if repo_exists is None or not _missing(record, repo_exists)]
+            if (repo_exists is None or not _missing(record, repo_exists))
+            and (branch_exists is None or not _carried(record, item, branch_exists))]
 
 
 def missing_repos(records: list[dict], items: list[dict],
