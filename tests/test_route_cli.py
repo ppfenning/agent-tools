@@ -873,7 +873,7 @@ def test_launch_refuses_on_a_weekly_breach_even_though_the_window_is_not_close(t
         return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=10.0, ceiling_usd=ceiling_usd,
                       burn_usd_per_hour=0.0, runs_in_flight=0)
 
-    def fake_gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None):
+    def fake_gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None, store_spend=None, reset=None):
         return Window(start=_USAGE_START, end=_USAGE_END, spent_usd=95.0, ceiling_usd=weekly_ceiling_usd,
                       burn_usd_per_hour=0.0, runs_in_flight=0)
 

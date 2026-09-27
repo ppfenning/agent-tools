@@ -432,7 +432,7 @@ def test_gather_and_gather_weekly_use_a_given_usage_instead_of_reading(tmp_path,
 def test_usage_assessment_reads_the_runs_dir_once(tmp_path, monkeypatch):
     calls = []
     real = read_usage
-    monkeypatch.setattr(cli.usage_window, "read_usage", lambda d, now: calls.append(d) or real(d, now))
+    monkeypatch.setattr(cli.usage_window, "read_usage", lambda d, now, reset=None: calls.append(d) or real(d, now, reset))
     cli._usage_assessment(tmp_path)
     assert calls == [tmp_path]
 

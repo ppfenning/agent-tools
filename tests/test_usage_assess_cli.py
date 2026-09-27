@@ -92,3 +92,27 @@ def test_usage_assess_resolves_the_profiles_window_ceiling_usd_not_unmeasured(ca
     assert code == 0
     assert captured["ceiling_usd"] == 50.0
     assert "unmeasured" not in out
+
+
+def test_usage_assess_json_passes_the_profiles_parsed_weekly_reset_to_gather_weekly(capsys, monkeypatch, tmp_path):
+    # `route.parse_profile`'s own grammar for `spend.weekly_reset` is out of
+    # scope here; the profile dict it would produce is supplied directly so
+    # this test exercises only `_usage_assess`'s wiring of that value through
+    # to `gather_weekly`.
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("workspace_dir: /tmp/ws\n", encoding="utf-8")
+    monkeypatch.setattr(cli.route, "parse_profile", lambda text: {"weekly_reset": "Sun 04:00 America/New_York"})
+    captured = {}
+
+    def _gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None, store_spend=None, reset=None):
+        captured["reset"] = reset
+        return Window(start=_START, end=_END, spent_usd=5.0, ceiling_usd=weekly_ceiling_usd,
+                      burn_usd_per_hour=0.0, runs_in_flight=1)
+
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _unmeasured_window())
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", _gather_weekly)
+    code = cli.main(["usage", "assess", "--json", "--runs-dir", str(tmp_path), "--profile", str(profile_path)])
+    d = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert d["verdict"] == "go"
+    assert captured["reset"] == cli.usage_window.parse_weekly_reset("Sun 04:00 America/New_York")
