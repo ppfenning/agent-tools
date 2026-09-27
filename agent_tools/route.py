@@ -575,34 +575,20 @@ def _item_problems(item: dict, repo: str | None, grants) -> list:
     return reach + grant + size + cross_repo
 
 
-def _needs_closure(items) -> dict:
-    """Task id to the set of every task id reachable transitively through
-    `needs`. A cycle just stops the walk from revisiting a seen node."""
-    edges = {item["task"]: list(item.get("needs", [])) for item in items}
-
-    def reach(start: str) -> set:
-        seen: set = set()
-        stack = list(edges.get(start, ()))
-        while stack:
-            node = stack.pop()
-            if node not in seen:
-                seen.add(node)
-                stack.extend(edges.get(node, ()))
-        return seen
-
-    return {task: reach(task) for task in edges}
-
-
 def _coupling_problems(items) -> list:
-    """Two tickets in one phase sharing a test-file surface, unless one
-    reaches the other through `needs` (transitive, either direction).
+    """Two tickets in one phase sharing any `surfaces` entry.
+
+    `merge_same_phase` already folds a same-phase `ready`/`todo` pair that
+    shares a surface into one ticket before this runs, so a hit here means
+    at least one side is `approved`, `in_progress`, or `done` (excluded
+    from merging) and still collides with another ticket in its phase — a
+    `needs` edge between the two no longer excuses it.
 
     §3's coupling rule has a second clause — "or whose named modules
     import one another" — not checked here. Wrong belief to avoid: that
     this function covers coupling in full; `items` carries surface paths,
     not import graphs, so the import clause is undetected.
     """
-    closure = _needs_closure(items)
     by_phase: dict = {}
     for item in items:
         by_phase.setdefault(item.get("phase"), []).append(item)
@@ -610,18 +596,15 @@ def _coupling_problems(items) -> list:
     for group in by_phase.values():
         for i, first in enumerate(group):
             for second in group[i + 1:]:
-                if (second["task"] in closure.get(first["task"], set())
-                        or first["task"] in closure.get(second["task"], set())):
-                    continue
                 shared = sorted(
                     s for s in first.get("surfaces", [])
-                    if ("test_" in s or s.startswith("tests/")) and s in second.get("surfaces", [])
+                    if s in second.get("surfaces", [])
                 )
                 if shared:
                     problems.append(Problem(
                         first["task"], "coupling",
                         f"{first['task']} and {second['task']} both surface {shared[0]!r}",
-                        "merge, or order with needs",
+                        "merge them, or move one to a later phase",
                     ))
     return problems
 
@@ -768,6 +751,75 @@ def merge_same_phase(items: list) -> tuple[list, list]:
                 result_items.append(item)
 
     return result_items, merges
+
+
+def merge_report_lines(merges: list) -> list[str]:
+    """One `merged: <id> + <id> -> <into> (shared <surface>)` line per
+    `merge_same_phase` merge record, member ids joined in order, naming
+    only the first surface the group shares."""
+    return [
+        f"merged: {' + '.join(merge['members'])} -> {merge['into']} (shared {merge['surfaces'][0]})"
+        for merge in merges
+    ]
+
+
+def _header_value(value) -> str:
+    """A frontmatter value as `_frontmatter` writes it: a list as a flat list literal, anything else as a scalar."""
+    if isinstance(value, list):
+        return "[" + ", ".join(_yaml_scalar(str(v)) for v in value) + "]"
+    return _yaml_scalar(str(value))
+
+
+def _is_key_line(line: str, key: str) -> bool:
+    return line == f"{key}:" or line.startswith(f"{key}: ")
+
+
+def _with_header_fields(header_lines: list, changes: list) -> list:
+    """`header_lines` with each `(key, value)` in `changes` set: a key already
+    present has its line and any block-list continuation lines under it
+    replaced in place; a new key is appended. Every other line is kept byte
+    for byte, so fields this module cannot parse, such as `attempts` as a
+    block list of mappings, survive."""
+    if not changes:
+        return header_lines
+    (key, value), rest = changes[0], changes[1:]
+    new_line = f"{key}: {_header_value(value)}"
+    start = next((i for i, line in enumerate(header_lines) if _is_key_line(line, key)), None)
+    if start is None:
+        return _with_header_fields([*header_lines, new_line], rest)
+    end = next(
+        (i for i in range(start + 1, len(header_lines))
+         if not (header_lines[i][:1].isspace() or header_lines[i].startswith("- "))),
+        len(header_lines),
+    )
+    return _with_header_fields([*header_lines[:start], new_line, *header_lines[end:]], rest)
+
+
+def merged_ticket_text(original: str, item: dict) -> str:
+    """`original`, a ticket file's text, with only the fields a
+    `merge_same_phase` result changed rewritten. A `dropped` member gets
+    `state: dropped` and `merged_into`, body untouched; a survivor gets its
+    merged `title`, `surfaces`, `needs` and body. Wrong belief this guards:
+    that a ticket can be rebuilt from the fields the merge reads. Real
+    tickets also carry `budget_usd`, `attempts` and `lint`, and the chair's
+    quarantine and cause readers depend on `attempts`, so every header line
+    the merge did not change is kept verbatim."""
+    dropped = item.get("state") == "dropped"
+    changes = (
+        [("state", "dropped"), ("merged_into", item["merged_into"])]
+        if dropped
+        else [("title", item["title"]), ("surfaces", list(item.get("surfaces", []))),
+              ("needs", list(item.get("needs", [])))]
+    )
+    opening, closing = "---\n", "\n---\n"
+    close_index = original.find(closing, len(opening)) if original.startswith(opening) else -1
+    if close_index == -1:
+        body = original if dropped else item.get("body", "")
+        return _frontmatter([(key, _Raw(_header_value(value))) for key, value in changes], body)
+    header_lines = original[len(opening):close_index].split("\n")
+    header = "\n".join(_with_header_fields(header_lines, changes))
+    after = original[close_index + len(closing):] if dropped else f"\n{item.get('body', '')}\n"
+    return f"{opening}{header}{closing}{after}"
 
 
 _TIER_LADDER = ("cheap", "standard", "deep")

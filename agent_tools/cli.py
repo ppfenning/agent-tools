@@ -3133,6 +3133,7 @@ def _route_launch(a: argparse.Namespace) -> int:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     if a.graph == "epic":
+        _merge_initiative_tickets(Path(a.initiative).expanduser())
         # Only --include-blocked lifts this guard; --force never does.
         initiative_id = Path(a.initiative).expanduser().name
         held = route.launch_blockers([
@@ -3581,6 +3582,42 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     return 0 if outcome == "fetched" else 2
 
 
+def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
+    """`route.merge_same_phase` on the tickets under `initiative_dir`: the
+    same glob-and-`parse_frontmatter` read `_route_lint` used to do alone,
+    now also the write-back. The merged ticket and every `dropped` member
+    are rewritten in place with `route.merged_ticket_text`, which keeps
+    every header line the merge did not change. One `merged: ...` line
+    prints per merge, and the returned list drops the `dropped` entries:
+    they are already folded into a survivor, so a caller linting or
+    launching next must not see them beside it.
+    """
+    paths = sorted(initiative_dir.glob("*/*.md"))
+    texts = [path.read_text(encoding="utf-8") for path in paths]
+    items = [
+        {
+            "task": fields.get("id", path.stem),
+            "id": fields.get("id", path.stem),
+            "title": fields.get("title", fields.get("id", path.stem)),
+            "state": fields.get("state", "todo"),
+            "phase": fields.get("phase", path.parent.name),
+            "surfaces": fields.get("surfaces", []),
+            "body": body,
+            "needs": fields.get("needs", []),
+        }
+        for path, text in zip(paths, texts)
+        for fields, body in [route.parse_frontmatter(text)]
+    ]
+    merged_items, merges = route.merge_same_phase(items)
+    touched = {member for merge in merges for member in merge["members"]}
+    for path, text, item in zip(paths, texts, merged_items):
+        if item["id"] in touched:
+            path.write_text(route.merged_ticket_text(text, item), encoding="utf-8")
+    for line in route.merge_report_lines(merges):
+        print(line)
+    return [item for item in merged_items if item.get("state") != "dropped"]
+
+
 def _route_lint(a: argparse.Namespace) -> int:
     """work-shape.md §3: `cox route lint <initiative>`, before dispatch.
     `--repo` falls back to the initiative's own `repo:` frontmatter; only
@@ -3588,16 +3625,7 @@ def _route_lint(a: argparse.Namespace) -> int:
     said once here rather than left for `lint_items` to flag every path.
     """
     initiative_dir = Path(a.initiative_dir)
-    items = []
-    for path in sorted(initiative_dir.glob("*/*.md")):
-        fields, body = route.parse_frontmatter(path.read_text(encoding="utf-8"))
-        items.append({
-            "task": fields.get("id", path.stem),
-            "phase": fields.get("phase", path.parent.name),
-            "surfaces": fields.get("surfaces", []),
-            "body": body,
-            "needs": fields.get("needs", []),
-        })
+    items = _merge_initiative_tickets(initiative_dir)
     repo = a.repo
     if not repo:
         init_path = initiative_dir / "initiative.md"

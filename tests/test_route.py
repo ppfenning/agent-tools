@@ -1599,29 +1599,33 @@ def test_lint_items_flags_a_coupling_violation():
     assert problems == [
         route.Problem(
             "t1", "coupling", "t1 and t2 both surface 'tests/test_route.py'",
-            "merge, or order with needs",
+            "merge them, or move one to a later phase",
         )
     ]
 
 
-def test_lint_items_does_not_flag_coupling_when_a_needs_edge_orders_the_pair():
-    # tools-loop-fixes-lint-needs: a needs-ordered pair is clean under coupling.
+def test_lint_items_flags_coupling_even_when_a_needs_edge_orders_the_pair():
+    # same-phase-tickets-that-share-a-file-are-merged-wire-merge-into-lint-and-launch:
+    # the needs exemption is gone, since merge_same_phase now folds a mergeable
+    # pair before this check ever sees it; a needs edge no longer excuses one.
     items = [
         {"task": "t1", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "first ticket"},
         {"task": "t2", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "second ticket",
          "needs": ["t1"]},
     ]
-    assert route.lint_items(items, "acme/widgets", ()) == []
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert [p.rule for p in problems] == ["coupling"]
 
 
-def test_lint_items_does_not_flag_coupling_across_a_needs_chain():
-    # A needs B, B needs C: A and C reach each other transitively.
+def test_lint_items_flags_coupling_across_a_former_needs_chain():
+    # A needs B, B needs C: previously exempted through transitive reach.
     items = [
         {"task": "a", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "a", "needs": ["b"]},
         {"task": "b", "phase": "build", "surfaces": [], "body": "b", "needs": ["c"]},
         {"task": "c", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "c"},
     ]
-    assert route.lint_items(items, "acme/widgets", ()) == []
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert [p.rule for p in problems] == ["coupling"]
 
 
 def test_lint_items_pins_coupling_as_a_phase_scoped_rule_when_no_needs_edge_exists():
@@ -1632,6 +1636,87 @@ def test_lint_items_pins_coupling_as_a_phase_scoped_rule_when_no_needs_edge_exis
         {"task": "t2", "phase": "ship", "surfaces": ["tests/test_route.py"], "body": "second ticket"},
     ]
     assert route.lint_items(items, "acme/widgets", ()) == []
+
+
+def test_coupling_problems_flags_an_approved_ticket_sharing_a_surface_with_a_ready_one():
+    # merge_same_phase never touches an `approved` ticket, so a same-phase
+    # collision with it is a real problem, not one already folded away.
+    items = [
+        {"task": "t1", "phase": "build", "state": "approved", "surfaces": ["agent_tools/route.py"]},
+        {"task": "t2", "phase": "build", "state": "ready", "surfaces": ["agent_tools/route.py"]},
+    ]
+    problems = route._coupling_problems(items)
+    assert [p.rule for p in problems] == ["coupling"]
+
+
+def test_coupling_problems_flags_a_needs_joined_ready_pair_sharing_a_surface():
+    # The old needs exemption is gone: a needs edge no longer excuses a pair.
+    items = [
+        {"task": "t1", "phase": "build", "state": "ready", "surfaces": ["agent_tools/route.py"]},
+        {"task": "t2", "phase": "build", "state": "ready", "surfaces": ["agent_tools/route.py"],
+         "needs": ["t1"]},
+    ]
+    problems = route._coupling_problems(items)
+    assert [p.rule for p in problems] == ["coupling"]
+
+
+def test_coupling_problems_flags_a_shared_surface_that_is_not_a_test_file():
+    # Broadened past test files: any shared surfaces entry counts.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": ["agent_tools/route.py"]},
+        {"task": "t2", "phase": "build", "surfaces": ["agent_tools/route.py"]},
+    ]
+    problems = route._coupling_problems(items)
+    assert problems == [
+        route.Problem(
+            "t1", "coupling", "t1 and t2 both surface 'agent_tools/route.py'",
+            "merge them, or move one to a later phase",
+        )
+    ]
+
+
+def test_merge_report_lines_names_members_merged_id_and_shared_surface():
+    merges = [{"members": ["a", "b"], "into": "a", "surfaces": ["agent_tools/x.py"]}]
+    assert route.merge_report_lines(merges) == [
+        "merged: a + b -> a (shared agent_tools/x.py)"
+    ]
+
+
+# The shape `initiative_files` files with `budget_usd`, plus one attempt as the chair records it.
+_FILED_TICKET = (
+    "---\nid: a\nphase: build\nstate: ready\nneeds: []\nsurfaces: [agent_tools/x.py]\ntitle: Add A\n"
+    "budget_usd: 2.0\nattempts:\n  - run: demo-1\n    ts: '2026-09-01'\n    body_sha: abc\nlint: []\n"
+    "---\n\nBody A\n"
+)
+
+
+def test_merged_ticket_text_keeps_budget_attempts_and_lint_on_a_survivor():
+    survivor = {
+        "id": "a", "title": "Add A; Add B", "state": "ready", "phase": "build",
+        "surfaces": ["agent_tools/x.py", "agent_tools/y.py"], "needs": ["c"],
+        "body": "## Add A\nBody A\n\n## Add B\nBody B",
+    }
+    assert route.merged_ticket_text(_FILED_TICKET, survivor) == (
+        "---\nid: a\nphase: build\nstate: ready\nneeds: [c]\nsurfaces: [agent_tools/x.py, agent_tools/y.py]\n"
+        "title: Add A; Add B\nbudget_usd: 2.0\nattempts:\n  - run: demo-1\n    ts: '2026-09-01'\n"
+        "    body_sha: abc\nlint: []\n---\n\n## Add A\nBody A\n\n## Add B\nBody B\n"
+    )
+
+
+def test_merged_ticket_text_marks_a_dropped_member_and_keeps_everything_else():
+    dropped = {"id": "a", "title": "Add A", "state": "dropped", "merged_into": "z"}
+    assert route.merged_ticket_text(_FILED_TICKET, dropped) == _FILED_TICKET.replace(
+        "state: ready", "state: dropped"
+    ).replace("lint: []\n---", "lint: []\nmerged_into: z\n---")
+
+
+def test_merged_ticket_text_replaces_a_block_list_field_whole():
+    original = "---\nid: a\nsurfaces:\n  - agent_tools/x.py\ntitle: A\n---\n\nBody\n"
+    survivor = {"id": "a", "title": "A; B", "surfaces": ["agent_tools/x.py", "agent_tools/y.py"], "needs": [],
+                "body": "Merged"}
+    assert route.merged_ticket_text(original, survivor) == (
+        "---\nid: a\nsurfaces: [agent_tools/x.py, agent_tools/y.py]\ntitle: A; B\nneeds: []\n---\n\nMerged\n"
+    )
 
 
 def test_lint_items_flags_a_size_violation():
@@ -1820,9 +1905,51 @@ def test_route_lint_cli_stands_reach_down_and_says_so_once_with_no_repo_anywhere
     assert out == f"routing: no repo found for {initiative}; reach check skipped\n"
 
 
+def test_route_lint_cli_merges_same_phase_ready_tickets_before_linting(tmp_path, capsys):
+    # same-phase-tickets-that-share-a-file-are-merged-wire-merge-into-lint-and-launch:
+    # merge_same_phase runs first, so a mergeable pair never reaches the
+    # coupling check as two separate tickets.
+    initiative = tmp_path / "widget-fix"
+    initiative.mkdir()
+    (initiative / "initiative.md").write_text(
+        '---\nid: "widget-fix"\ntitle: "Widget fix"\nrepo: "acme/widgets"\n---\nfix the widget\n',
+        encoding="utf-8",
+    )
+    build = initiative / "build"
+    build.mkdir()
+    t1 = build / "t1.md"
+    t2 = build / "t2.md"
+    attempt = "attempts:\n  - run: widget-fix-1\n    ts: '2026-09-01'\n"
+    t1.write_text(
+        "---\nid: t1\ntitle: First\nphase: build\nstate: ready\nsurfaces: [tests/test_widget.py]\n"
+        f"budget_usd: 2.0\n{attempt}lint: []\n---\nfirst ticket\n",
+        encoding="utf-8",
+    )
+    t2.write_text(
+        "---\nid: t2\ntitle: Second\nphase: build\nstate: ready\nsurfaces: [tests/test_widget.py]\n"
+        f"budget_usd: 3.0\n{attempt}---\nsecond ticket\n",
+        encoding="utf-8",
+    )
+    code = cli._route_lint(_lint_ns(initiative))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)\n"
+    merged_text = t1.read_text(encoding="utf-8")
+    merged_fields, _ = route.parse_frontmatter(merged_text)
+    assert merged_fields["state"] == "ready"
+    assert merged_fields["title"] == "First; Second"
+    assert f"budget_usd: 2.0\n{attempt}lint: []\n" in merged_text
+    dropped_text = t2.read_text(encoding="utf-8")
+    dropped_fields, _ = route.parse_frontmatter(dropped_text)
+    assert dropped_fields["state"] == "dropped"
+    assert dropped_fields["merged_into"] == "t1"
+    assert f"budget_usd: 3.0\n{attempt}" in dropped_text
+
+
 def test_route_lint_cli_does_not_flag_coupling_when_a_needs_edge_orders_the_pair(tmp_path, capsys):
-    # tools-loop-fixes-lint-needs: `_route_lint` must carry `needs` onto
-    # each item it builds, or the closure check never sees the edge.
+    # tools-loop-fixes-lint-needs: with no explicit `state:`, `_route_lint`
+    # defaults both tickets to `todo`, so they are still merge-eligible and
+    # the merge runs before any coupling check would otherwise see them.
     initiative = tmp_path / "widget-fix"
     initiative.mkdir()
     (initiative / "initiative.md").write_text(
@@ -1842,7 +1969,7 @@ def test_route_lint_cli_does_not_flag_coupling_when_a_needs_edge_orders_the_pair
     code = cli._route_lint(_lint_ns(initiative))
     out = capsys.readouterr().out
     assert code == 0
-    assert out == ""
+    assert out == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)\n"
 
 
 def test_parse_profile_reads_the_weekly_ceiling_beside_the_window_ceiling():
