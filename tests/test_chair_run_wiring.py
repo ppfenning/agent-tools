@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
 
 from agent_tools import cli
 
@@ -36,6 +37,58 @@ def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_p
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
         "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0}],
     }
+
+
+HOSTS_DDL = ("CREATE TABLE hosts (name TEXT PRIMARY KEY, ssh TEXT, capacity INTEGER, state TEXT, beat_at TEXT,"
+             " versions_json TEXT, updated_at TEXT, updated_by TEXT)")
+BEAT = '{"login_ok": true, "workspace_dir": "/srv/ws"}'
+
+
+def _hosts_table(runs, *rows) -> None:
+    """The graphs-hosts-table columns; each row is (name, ssh, capacity, state, versions_json)."""
+    runs.mkdir()
+    conn = sqlite3.connect(runs / "cox.db")
+    conn.execute(HOSTS_DDL)
+    conn.executemany(
+        "INSERT INTO hosts VALUES (?, ?, ?, ?, '2026-09-26T11:58:00Z', ?, '2026-09-26T11:58:00Z', 'chair')", rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_the_dispatch_facts_name_only_the_active_table_hosts_when_the_table_has_rows(tmp_path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
+    runs = tmp_path / "runs"
+    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("pi", "pi", 2, "draining", BEAT))
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
+    assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
+        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0, "capacity": 8}],
+    }
+
+
+def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_chair_says_why(tmp_path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
+    runs = tmp_path / "runs"
+    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("fresh", "fresh", 4, "active", None))
+    said: list[str] = []
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, said.append, profile, "files")
+    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["jarvis"]  # type: ignore[misc]
+    assert said == [
+        "chair run: not dispatching to fresh: no workspace_dir; run `cox host beat` on each",
+        "chair run: profile lane_hosts not in the hosts table are not lane hosts while it has rows: other;"
+        " add them with `cox host add`",
+    ]
+
+
+def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_rows(tmp_path) -> None:
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
+    runs = tmp_path / "runs"
+    _hosts_table(runs)
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
+    assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [{"name": "other", "live_runs": 0}]  # type: ignore[misc]
 
 
 def test_a_live_pidfile_run_with_no_store_lane_still_counts_as_a_local_lane(tmp_path, monkeypatch) -> None:

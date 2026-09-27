@@ -112,6 +112,13 @@ cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|stand
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
 cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit that keeps `cox chair run` alive
+cox host add NAME --ssh SSH --capacity CAPACITY   add or update a host in the table
+cox host list   one line per host: state, capacity, beat age, login
+cox host drain NAME   stop launching on a host; its live lanes finish
+cox host activate NAME   make a host a lane host again
+cox host beat [NAME]   record this machine's versions and claude login in the table
+cox host doctor NAME   the table's line for a host, then its doctor over ssh
+cox host sync NAME   git pull --ff-only in the harness, cartridges and tools checkouts on a host
 cox router select --role ROLE [--db DB] [--profile PROFILE] [--json]   the effective tier for a role under the profile's router: off|shadow|on flag
 cox steward propose [--db DB] [--profile PROFILE] [--json]   write each candidate clearing the evidence bar as a new intake file; never edits a provider profile
 cox steward draft [--profile PROFILE] [--json]   write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded

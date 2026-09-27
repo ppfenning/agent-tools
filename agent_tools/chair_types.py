@@ -3,7 +3,7 @@
 Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
 the facts and executes the actions; the planners in between are pure.
 """
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict
 
 
 class LeaseFacts(TypedDict):
@@ -31,10 +31,11 @@ class LimitsFacts(TypedDict):
 class HostLanes(TypedDict):
     name: str
     live_runs: int
+    capacity: NotRequired[int]
 
 
 class DispatchFacts(TypedDict):
-    """live_runs counts the local machine's live lanes; hosts holds each profile lane host in profile order."""
+    """live_runs counts the local machine's live lanes; hosts holds each lane host in order, a capacity replacing max_in_flight for that host."""
 
     max_in_flight: int
     live_runs: int

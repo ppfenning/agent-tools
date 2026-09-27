@@ -51,7 +51,7 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
 
 def plan_fill(facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
     dispatch = facts["dispatch"]
-    host_free = [(h["name"], max(0, dispatch["max_in_flight"] - h["live_runs"])) for h in dispatch["hosts"]]
+    host_free = [(h["name"], max(0, h.get("capacity", dispatch["max_in_flight"]) - h["live_runs"])) for h in dispatch["hosts"]]
     if free_lanes <= 0 and not any(free for _, free in host_free):
         return []
     local_lanes = max(0, free_lanes)
