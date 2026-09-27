@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from agent_tools.land import arbitration_verdict
 
 
@@ -41,18 +43,17 @@ def _row(record: dict, item: dict | None) -> dict:
     }
 
 
-def stranded(records: list[dict], items: list[dict]) -> list[dict]:
-    """Rows for approved, unlanded records whose matching item is not
-    `done`. `items` are expected to carry a resolved `repo` (the edge
-    reads it from the initiative's own frontmatter, since a work item's
-    `id`/`initiative` name a ticket, not a filesystem path). A record
-    whose task id does not resolve to one item under its own initiative
-    and phase is still reported, with `remedy` left `None` rather than
-    matched against a foreign item's state or repo."""
+_LIVE_STATES = frozenset({"ready", "approved"})
+
+
+def _live_pairs(records: list[dict], items: list[dict]) -> list[tuple[dict, dict | None]]:
+    """Approved, unlanded records paired with their resolved item. A record
+    whose task names no item is left out; one whose item is ambiguous is
+    kept with `None`; one whose item is not in a live state is left out."""
     by_id: dict[str, list[dict]] = {}
     for item in items:
         by_id.setdefault(item.get("id"), []).append(item)
-    rows = []
+    pairs = []
     for record in records:
         if not _approved_and_unlanded(record):
             continue
@@ -60,7 +61,36 @@ def stranded(records: list[dict], items: list[dict]) -> list[dict]:
         if not candidates:
             continue
         item = _scoped_item(record, candidates)
-        if item is not None and item.get("state") == "done":
+        if item is not None and item.get("state") not in _LIVE_STATES:
             continue
-        rows.append(_row(record, item))
-    return rows
+        pairs.append((record, item))
+    return pairs
+
+
+def _missing(record: dict, repo_exists: Callable[[str], bool]) -> bool:
+    """True when the record's own non-empty `repo` fails `repo_exists`."""
+    repo = record.get("repo")
+    return bool(repo) and not repo_exists(repo)
+
+
+def stranded(records: list[dict], items: list[dict],
+             repo_exists: Callable[[str], bool] | None = None) -> list[dict]:
+    """Rows for approved, unlanded records whose matching item is `ready`
+    or `approved`. `items` are expected to carry a resolved `repo` (the edge
+    reads it from the initiative's own frontmatter, since a work item's
+    `id`/`initiative` name a ticket, not a filesystem path). A record
+    whose task id does not resolve to one item under its own initiative
+    and phase is still reported, with `remedy` left `None` rather than
+    matched against a foreign item's state or repo. `repo_exists` is
+    injected; `None` treats every repo as present, and a record with no
+    `repo` is never skipped for a missing one."""
+    return [_row(record, item) for record, item in _live_pairs(records, items)
+            if repo_exists is None or not _missing(record, repo_exists)]
+
+
+def missing_repos(records: list[dict], items: list[dict],
+                  repo_exists: Callable[[str], bool]) -> list[str]:
+    """Sorted, de-duplicated repo paths of records `stranded` skips because
+    the repo is missing. A record with a non-live item is not counted."""
+    return sorted({record["repo"] for record, _ in _live_pairs(records, items)
+                   if _missing(record, repo_exists)})
