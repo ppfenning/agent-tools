@@ -262,3 +262,62 @@ def test_a_fake_run_exited_callable_appears_under_run_exited():
 
 def test_no_run_exited_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["run_exited"] == {}
+
+
+def _row(initiative: str, task_id: str, state: str, **extra: object) -> dict:
+    return {
+        "kind": "task", "initiative": initiative, "phase": "p1", "task_id": task_id, "state": state,
+        "needs": [], "holder": None, "expires_at": None, "body": "", "extra": {},
+        **extra,
+    }
+
+
+ROWS = [
+    _row("i", "a", "ready"),
+    # A quarantined-state row sits in a different initiative than "a": `route.STATES` has no "quarantined" member,
+    # so a quarantined row in the same initiative as a ready task would zero out that initiative's own readiness.
+    _row("j", "b", "quarantined", body="the body", extra={"attempts": [{"run": "j-9", "cause": "code", "ts": "2026-09-01"}]}),
+    _row("i", "c", "approved"),
+    {"kind": "intake", "initiative": "intake", "phase": "", "task_id": "q1", "state": "queued", "extra": {"initiative": None}},
+]
+STRANDED_RECORDS = [
+    {"run": "i-5", "task": "c", "phase": "p1", "initiative": "i", "branch": "i/c", "repo": "r",
+     "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}, "landed": False},
+]
+
+
+def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignored():
+    deps = replace(
+        _deps(),
+        queue=lambda: ROWS,
+        stranded_records=lambda: STRANDED_RECORDS,
+        attempts=lambda: ({"run": "j-9", "phase": "p1", "task": "b", "initiative": "j", "cause": "code"},),
+        docket=lambda: {"initiatives": [{"id": "z", "started": False, "ready_tasks": [], "landed": []}], "busy_lanes": 1, "max_in_flight": 2},
+        intake=lambda: ["zzz-intake.md"],
+        quarantined=lambda: ({"initiative": "z", "phase": "p9", "task": "z"},),
+        stranded=lambda: ({"run": "z-1", "task": "z", "phase": "p9", "branch": "z/z", "remedy": None},),
+    )
+    facts = gather_facts(deps, NOW)
+    # "j" also appears (its quarantined-state row leaves it unlaunchable): the fixed point is "i"'s own facts.
+    initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
+    assert initiative_i == {"id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": []}], "landed": set()}
+    assert facts["intake"] == ["q1.md"]
+    assert facts["quarantines"] == [
+        {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
+        {"task_id": "c", "initiative": "i", "cause": "stranded", "harness_failures": 0, "has_patch": False, "rescue_failed": False},
+    ]
+
+
+def test_an_empty_queue_read_falls_back_to_the_file_readers():
+    deps = replace(_deps(), queue=lambda: [])
+    assert gather_facts(deps, NOW) == gather_facts(_deps(), NOW)
+
+
+def test_a_claimed_task_is_absent_from_the_ready_facts():
+    rows = [
+        {**_row("i", "a", "ready"), "holder": "other", "expires_at": "2026-09-26T00:00:00Z"},
+        _row("i", "b", "ready"),
+    ]
+    deps = replace(_deps(), queue=lambda: rows)
+    facts = gather_facts(deps, NOW)
+    assert [t["id"] for t in facts["initiatives"][0]["ready_tasks"]] == ["b"]
