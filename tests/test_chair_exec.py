@@ -4,7 +4,17 @@ from dataclasses import replace
 import pytest
 
 from agent_tools import chair_exec, chair_housekeeping, remote_lane
-from agent_tools.chair_exec import Deps, Refusal, argv_for, decompose_id, delete_branches_with, perform, run_argv, tail
+from agent_tools.chair_exec import (
+    Deps,
+    Refusal,
+    Run,
+    argv_for,
+    decompose_id,
+    delete_branches_with,
+    perform,
+    run_argv,
+    tail,
+)
 from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -117,7 +127,10 @@ def test_clear_branches_refuses_a_foreign_glob() -> None:
 def test_clear_branches_deletes_its_own_glob_in_the_resolved_repo() -> None:
     calls: list = []
     results = perform([{**_clear("alpha"), "repo": "/w/app"}], _deps(calls), lambda: 1, False)
-    assert _touched(calls) == [("delete", "/w/app", "epic/alpha/*")]
+    assert _touched(calls) == [
+        ("run", ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]),
+        ("delete", "/w/app", "epic/alpha/*"),
+    ]
     assert results[0]["status"] == "done"
     assert "epic/alpha/t1" in results[0]["reason"]
 
@@ -137,6 +150,114 @@ def test_delete_branches_runs_git_in_the_named_repo_and_reports_what_it_deleted(
     assert delete_branches_with(run, "/w/app", "epic/alpha/*") == (["epic/alpha/t1"], "")
     assert all(a[:3] == ["git", "-C", "/w/app"] for a in argvs)
     assert argvs[1] == ["git", "-C", "/w/app", "branch", "-D", "epic/alpha/t1"]
+
+
+_MAIN_WORKTREE = "worktree /w/app\nHEAD aaa\nbranch refs/heads/main"
+_ALPHA_WORKTREE = "worktree /w/app/.worktrees/alpha-build\nHEAD bbb\nbranch refs/heads/epic/alpha/build"
+
+
+def _porcelain_run(calls: list, listing: str, fail_remove_path: str = "") -> Run:
+    """A fake git runner: `worktree list` returns `listing`; `worktree remove` on `fail_remove_path` fails."""
+
+    def run(argv):
+        calls.append(("run", argv))
+        if "list" in argv:
+            return 0, listing
+        if "remove" in argv and fail_remove_path and fail_remove_path in argv:
+            return 1, "boom"
+        return 0, ""
+
+    return run
+
+
+def test_clear_branches_prunes_the_matching_worktree_then_deletes_its_branch() -> None:
+    """The sweep finds nothing left after the prune deleted the only match; the clear is still done."""
+    calls: list = []
+    listing = f"{_MAIN_WORKTREE}\n\n{_ALPHA_WORKTREE}\n"
+    deps = replace(_deps(calls, deleted=()), run=_porcelain_run(calls, listing), repo_for=lambda action: "/w/app")
+    results = perform([{**_clear("alpha"), "repo": "/w/app"}], deps, lambda: 1, False)
+    assert _touched(calls) == [
+        ("run", ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]),
+        ("run", ["git", "-C", "/w/app", "worktree", "remove", "--force", "/w/app/.worktrees/alpha-build"]),
+        ("run", ["git", "-C", "/w/app", "branch", "-D", "epic/alpha/build"]),
+        ("delete", "/w/app", "epic/alpha/*"),
+    ]
+    assert results[0]["status"] == "done"
+
+
+def test_clear_branches_with_no_matching_worktree_still_sweeps_the_pattern() -> None:
+    """No live worktree to prune, so chair_plan_prune builds no argv; the pattern sweep clear_branches already makes today still runs."""
+    calls: list = []
+    listing = f"{_MAIN_WORKTREE}\n"
+    deps = replace(_deps(calls), run=_porcelain_run(calls, listing), repo_for=lambda action: "/w/app")
+    results = perform([{**_clear("alpha"), "repo": "/w/app"}], deps, lambda: 1, False)
+    assert _touched(calls) == [
+        ("run", ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]),
+        ("delete", "/w/app", "epic/alpha/*"),
+    ]
+    assert results[0]["status"] == "done"
+
+
+def test_clear_branches_stops_after_a_failing_worktree_remove() -> None:
+    calls: list = []
+    listing = f"{_MAIN_WORKTREE}\n\n{_ALPHA_WORKTREE}\n"
+    deps = replace(
+        _deps(calls),
+        run=_porcelain_run(calls, listing, fail_remove_path="/w/app/.worktrees/alpha-build"),
+        repo_for=lambda action: "/w/app",
+    )
+    results = perform([{**_clear("alpha"), "repo": "/w/app"}], deps, lambda: 1, False)
+    assert _touched(calls) == [
+        ("run", ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]),
+        ("run", ["git", "-C", "/w/app", "worktree", "remove", "--force", "/w/app/.worktrees/alpha-build"]),
+    ]
+    assert results[0]["status"] == "failed"
+
+
+def test_a_failed_clear_branches_holds_back_its_relaunch_this_tick() -> None:
+    calls: list = []
+    listing = f"{_MAIN_WORKTREE}\n\n{_ALPHA_WORKTREE}\n"
+    deps = replace(
+        _deps(calls),
+        run=_porcelain_run(calls, listing, fail_remove_path="/w/app/.worktrees/alpha-build"),
+        repo_for=lambda action: "/w/app",
+    )
+    actions = [{**_clear("alpha"), "repo": "/w/app"}, {"kind": "relaunch", "initiative": "alpha", "epoch": 1}]
+    results = perform(actions, deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["failed", "skipped"]
+    assert not any(c[1][0] == "cox" for c in _touched(calls) if c[0] == "run")
+
+
+def _git_repo(argvs: list, listing: str, branches: set) -> Run:
+    """A stateful fake git: `branch -D` removes from `branches`, and `for-each-ref` lists what is left."""
+
+    def run(argv):
+        argvs.append(argv)
+        if "list" in argv:
+            return 0, listing
+        if "for-each-ref" in argv:
+            prefix = argv[-1].removeprefix("refs/heads/").removesuffix("*")
+            return 0, "\n".join(sorted(b for b in branches if b.startswith(prefix)))
+        if "-D" in argv:
+            branches.discard(argv[-1])
+        return 0, ""
+
+    return run
+
+
+def test_a_cleared_single_worktree_is_done_through_the_real_sweep_and_its_relaunch_runs() -> None:
+    argvs: list = []
+    branches = {"main", "epic/alpha/build"}
+    run = _git_repo(argvs, f"{_MAIN_WORKTREE}\n\n{_ALPHA_WORKTREE}\n", branches)
+    deps = replace(
+        _deps([]), run=run, delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
+        repo_for=lambda action: "/w/app",
+    )
+    actions = [_clear("alpha"), {"kind": "relaunch", "initiative": "alpha", "epoch": 1}]
+    results = perform(actions, deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["done", "done"]
+    assert branches == {"main"}
+    assert [a[3] if a[0] == "git" else a[0] for a in argvs] == ["worktree", "worktree", "branch", "for-each-ref", "cox"]
 
 
 def test_a_missing_binary_is_an_exit_code_not_an_exception() -> None:

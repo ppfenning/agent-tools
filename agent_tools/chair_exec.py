@@ -12,7 +12,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
-from agent_tools import chair, chair_apply_fetch, chair_housekeeping, remote_lane, route, run_store
+from agent_tools import chair, chair_apply_fetch, chair_housekeeping, chair_plan_prune, remote_lane, route, run_store
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
@@ -47,7 +47,7 @@ def _no_intake_id(path: str) -> str:
 
 @dataclass(frozen=True)
 class Deps:
-    run: Run  # (exit code, output); the only door to cox
+    run: Run  # (exit code, output); the only door to cox and git
     delete_branches: Callable[[str, str], tuple[list[str], str]]  # (repo, pattern) -> (deleted names, error text)
     acquire_lease: Callable[..., str]  # (holder, host), or (holder, host, steal=True) over an expired takeover -> refusal line or ""
     record: Callable[[Action], None]
@@ -155,7 +155,17 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
-    deleted, error = deps.delete_branches(repo, pattern)
+    code, listing = deps.run(["git", "-C", repo, "worktree", "list", "--porcelain"])
+    if code != 0:
+        return _result(action, "failed", f"git worktree list in {repo}: {listing.strip()}")
+    entries = chair_plan_prune.worktrees_to_prune(listing, initiative)
+    for argv in chair_plan_prune.prune_argv(entries):
+        code, output = deps.run(["git", "-C", repo, *argv[1:]])
+        if code != 0:
+            return _result(action, "failed", f"{' '.join(argv)} in {repo}: {output.strip()}")
+    # The prune already deleted its entries' branches, so the sweep finding nothing after a prune is success, not a miss.
+    swept, error = deps.delete_branches(repo, pattern)
+    deleted = [e["branch"] for e in entries] + swept
     if error:
         return _result(action, "failed", f"deleted {deleted} in {repo}; git: {error.strip()}")
     if not deleted:
@@ -248,19 +258,26 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
     """Edge. One result per action, in order; each is recorded after it runs.
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
+    A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
     """
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task of the uncounted land that blocks its later lands and deletes
+    uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
     for action in actions:
         if dry_run:
             results.append(_result(action, "dry_run"))
             continue
+        initiative = action.get("initiative", "")
         if action.get("kind") not in _UNFENCED and is_fenced(action, current_epoch()):
             result = _result(action, "fenced", "planned under another lease epoch")
+        elif action.get("kind") == "relaunch" and initiative in uncleared:
+            result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
         else:
             result = _execute(action, deps, blocked)
         if action.get("kind") == "land" and result["status"] == "not_landed":
             blocked[action.get("repo", "")] = action.get("task_id", "")
+        if action.get("kind") == "clear_branches" and result["status"] != "done":
+            uncleared[initiative] = result["status"]
         deps.record(_recorded(result))
         results.append(result)
         if action.get("kind") == "land" and result["status"] not in ("landed", "fenced"):
