@@ -55,6 +55,34 @@ def quarantined_rows(items: Iterable[Item]) -> list[Row]:
     return rows
 
 
+def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
+    """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
+
+    A row already names its own quarantine, so no state or attempt-matching gate is needed to find one; the
+    newest attempt in `extra["attempts"]` on the row's current `body` supplies `run` and `cause`, by the same
+    `body_sha`/`attempts_on_current_body` rule `quarantined_rows` uses. A row with no such attempt still gets
+    a fact, with `run` and `cause` empty."""
+    facts = []
+    for row in rows:
+        if row.get("state") != "quarantined":
+            continue
+        body = str(row.get("body") or "")
+        attempts = [a for a in (row.get("extra") or {}).get("attempts") or [] if isinstance(a, Mapping)]
+        on_body = attempts_on_current_body(attempts, body)
+        newest = max(on_body, key=lambda a: str(a.get("ts") or "")) if on_body else {}
+        facts.append(
+            {
+                "initiative": str(row.get("initiative") or ""),
+                "phase": str(row.get("phase") or ""),
+                "task": str(row.get("task_id") or ""),
+                "run": str(newest.get("run") or ""),
+                "body_sha": body_sha(body),
+                "cause": str(newest.get("cause") or ""),
+            }
+        )
+    return facts
+
+
 def read_quarantined(root: Path, mode: str) -> list[Row]:
     """Edge. The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does."""
     texts = {p: p.read_text() for p in sorted(root.glob("work/*/*/*.md"))}
