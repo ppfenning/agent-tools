@@ -3,8 +3,9 @@ from dataclasses import replace
 
 import pytest
 
-from agent_tools import chair_exec, remote_lane
+from agent_tools import chair_exec, chair_housekeeping, remote_lane
 from agent_tools.chair_exec import Deps, Refusal, argv_for, decompose_id, delete_branches_with, perform, run_argv, tail
+from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
 
@@ -293,3 +294,63 @@ def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
     calls: list = []
     perform([{"kind": "launch_decompose", "intake_ids": ["intake/my-idea.md"], "epoch": 1}], _deps(calls), lambda: 1, False)
     assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea"])]
+
+
+_HK_PROBE = ["python", "-m", "harness.store_backfill_traces", "prune", "--help"]
+_HK_PRUNE = ["python", "-m", "harness.store_backfill_traces", "prune", "t/traces", "--older-than", "7"]
+_HK_SYNC = ["cox", "lake", "sync"]
+
+
+def _hk_deps(monkeypatch, calls: list, fail: tuple = ()) -> Deps:
+    """Fake housekeeping runner: any argv in `fail` exits 1, everything else exits 0; traces root is fixed to "t/traces"."""
+    def run(argv: list) -> tuple[int, str]:
+        calls.append(argv)
+        return (1, f"boom: {argv[0]}") if argv in fail else (0, "ok")
+
+    monkeypatch.setattr(chair_exec.run_store, "_traces_root", lambda runs_dir: TracesRoot("t/traces", False))
+    return Deps(
+        run=run, delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
+        record=lambda action: None, run_id=lambda action: "", repo_for=lambda action: "",
+    )
+
+
+def test_a_housekeeping_action_with_a_successful_runner_names_all_three_steps(monkeypatch) -> None:
+    calls: list = []
+    deps = _hk_deps(monkeypatch, calls)
+    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
+    assert results[0]["status"] == "done"
+    reason = results[0]["reason"]
+    assert "lake sync: ok" in reason
+    assert "prune: ok" in reason
+    assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
+    assert _HK_PRUNE in calls
+
+
+def test_a_failed_lake_sync_still_reports_the_prune_and_clean_outcomes(monkeypatch) -> None:
+    calls: list = []
+    deps = _hk_deps(monkeypatch, calls, fail=(_HK_SYNC,))
+    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
+    assert results[0]["status"] == "failed"
+    reason = results[0]["reason"]
+    assert "lake sync: FAILED" in reason
+    assert "prune: ok" in reason
+    assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
+
+
+def test_a_dry_run_housekeeping_action_runs_no_step(monkeypatch) -> None:
+    calls: list = []
+    deps = _hk_deps(monkeypatch, calls)
+    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, True)
+    assert results[0]["status"] == "dry_run"
+    assert calls == []
+
+
+def test_a_prune_probe_that_fails_records_the_skip_reason(monkeypatch) -> None:
+    calls: list = []
+    deps = _hk_deps(monkeypatch, calls, fail=(_HK_PROBE,))
+    results = perform([{"kind": "housekeeping", "epoch": 1}], deps, lambda: 1, False)
+    reason = results[0]["reason"]
+    assert chair_housekeeping.PRUNE_SKIPPED in reason
+    assert "lake sync: ok" in reason
+    assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
+    assert _HK_PRUNE not in calls
