@@ -1683,6 +1683,99 @@ def test_lint_items_reports_one_cross_repo_problem_for_a_path_named_twice():
     assert [p.rule for p in problems] == ["cross_repo"]
 
 
+def _ticket(id, title, *, state="ready", phase="build", surfaces=(), needs=(), body=""):
+    return {
+        "id": id,
+        "title": title,
+        "state": state,
+        "phase": phase,
+        "surfaces": list(surfaces),
+        "needs": list(needs),
+        "body": body,
+    }
+
+
+def test_merge_same_phase_merges_two_ready_tickets_sharing_one_surface():
+    items = [
+        _ticket("a", "Add A", surfaces=["agent_tools/x.py"], body="Body A"),
+        _ticket("b", "Add B", surfaces=["agent_tools/x.py"], body="Body B"),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert result_items == [
+        {
+            "id": "a", "title": "Add A; Add B", "state": "ready", "phase": "build",
+            "surfaces": ["agent_tools/x.py"], "needs": [],
+            "body": "## Add A\nBody A\n\n## Add B\nBody B",
+        },
+        {
+            "id": "b", "title": "Add B", "state": "dropped", "phase": "build",
+            "surfaces": ["agent_tools/x.py"], "needs": [], "body": "Body B",
+            "merged_into": "a",
+        },
+    ]
+    assert merges == [{"members": ["a", "b"], "into": "a", "surfaces": ["agent_tools/x.py"]}]
+
+
+def test_merge_same_phase_merges_a_chain_through_an_intermediate_ticket():
+    items = [
+        _ticket("a", "Add A", surfaces=["agent_tools/x.py"]),
+        _ticket("b", "Add B", surfaces=["agent_tools/x.py", "agent_tools/y.py"]),
+        _ticket("c", "Add C", surfaces=["agent_tools/y.py"]),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert len(result_items) == 3
+    merged = result_items[0]
+    assert merged["id"] == "a"
+    assert merged["title"] == "Add A; Add B; Add C"
+    assert merged["surfaces"] == ["agent_tools/x.py", "agent_tools/y.py"]
+    assert [item["state"] for item in result_items[1:]] == ["dropped", "dropped"]
+    assert [item["merged_into"] for item in result_items[1:]] == ["a", "a"]
+    assert merges == [{
+        "members": ["a", "b", "c"], "into": "a",
+        "surfaces": ["agent_tools/x.py", "agent_tools/y.py"],
+    }]
+
+
+def test_merge_same_phase_leaves_different_phase_tickets_untouched():
+    items = [
+        _ticket("a", "Add A", phase="build", surfaces=["agent_tools/x.py"]),
+        _ticket("b", "Add B", phase="test", surfaces=["agent_tools/x.py"]),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert result_items == items
+    assert merges == []
+
+
+def test_merge_same_phase_never_merges_a_done_ticket():
+    items = [
+        _ticket("a", "Add A", state="done", surfaces=["agent_tools/x.py"]),
+        _ticket("b", "Add B", state="ready", surfaces=["agent_tools/x.py"]),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert result_items == items
+    assert merges == []
+
+
+def test_merge_same_phase_rewrites_an_external_needs_reference_to_the_merged_id():
+    items = [
+        _ticket("a", "Add A", surfaces=["agent_tools/x.py"]),
+        _ticket("b", "Add B", surfaces=["agent_tools/x.py"]),
+        _ticket("c", "Add C", phase="test", needs=["b"]),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert result_items[2]["needs"] == ["a"]
+
+
+def test_merge_same_phase_leaves_disjoint_same_phase_tickets_untouched():
+    items = [
+        _ticket("a", "Add A", surfaces=["agent_tools/x.py"]),
+        _ticket("b", "Add B", surfaces=["agent_tools/y.py"]),
+    ]
+    result_items, merges = route.merge_same_phase(items)
+    assert result_items == items
+    assert merges == []
+
+
 def _lint_ns(initiative_dir, repo=None):
     return argparse.Namespace(initiative_dir=str(initiative_dir), repo=repo)
 
