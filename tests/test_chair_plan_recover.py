@@ -1,7 +1,7 @@
 import copy
 
 from agent_tools.chair_plan_recover import plan_recover
-from agent_tools.chair_types import Facts, InitiativeFacts, QuarantineFacts
+from agent_tools.chair_types import ApprovedTask, Facts, InitiativeFacts, QuarantineFacts
 
 
 def _initiative(started: bool = True, ready: list[dict] | None = None, landed: set[str] | None = None) -> InitiativeFacts:
@@ -31,12 +31,29 @@ def _quarantine(
     }
 
 
-def _facts(initiatives: list[InitiativeFacts], quarantines: list[QuarantineFacts]) -> Facts:
+def _approved(task_id: str = "q1", phase_done: bool = False, run: str = "r1", initiative: str = "i") -> ApprovedTask:
+    return {
+        "id": task_id,
+        "initiative": initiative,
+        "repo": "repo",
+        "phase": "p",
+        "phase_done": phase_done,
+        "needs": [],
+        "run": run,
+        "needs_fetch": False,
+    }
+
+
+def _facts(
+    initiatives: list[InitiativeFacts],
+    quarantines: list[QuarantineFacts],
+    approved: list[ApprovedTask] | None = None,
+) -> Facts:
     return {
         "lease": {"holder": "a", "host": "h", "epoch": 1, "mine": True, "released": False, "stale": False},
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 3, "live_runs": 0},
-        "approved": [],
+        "approved": [] if approved is None else approved,
         "initiatives": initiatives,
         "quarantines": quarantines,
         "intake": [],
@@ -111,6 +128,27 @@ def test_a_retried_initiative_is_not_relaunched_this_tick():
 
 def test_a_needs_chair_quarantine_drops_a_retry_on_the_same_initiative():
     facts = _facts([], [_quarantine(task_id="q1"), _quarantine(cause="verify", task_id="q2")])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "verify"}]
+
+
+def test_a_stranded_quarantine_matching_an_approved_row_plans_no_action_whatever_its_phase_done():
+    stranded = [_quarantine(cause="stranded", task_id="q1")]
+    assert plan_recover(_facts([], stranded, approved=[_approved(task_id="q1", phase_done=False)])) == []
+    assert plan_recover(_facts([], stranded, approved=[_approved(task_id="q1", phase_done=True)])) == []
+
+
+def test_a_stranded_quarantine_with_no_matching_approved_row_still_needs_the_chair():
+    facts = _facts([], [_quarantine(cause="stranded", task_id="q1")], approved=[_approved(task_id="other")])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "stranded"}]
+
+
+def test_a_stranded_quarantine_whose_task_id_is_approved_only_in_another_initiative_still_needs_the_chair():
+    facts = _facts([], [_quarantine(cause="stranded", task_id="q1")], approved=[_approved(task_id="q1", initiative="j")])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "stranded"}]
+
+
+def test_a_non_stranded_cause_matching_an_approved_row_still_needs_the_chair():
+    facts = _facts([], [_quarantine(cause="verify", task_id="q1")], approved=[_approved(task_id="q1")])
     assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "verify"}]
 
 

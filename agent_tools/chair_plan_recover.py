@@ -6,10 +6,18 @@ from typing import Literal
 
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts
 
-Recovery = Literal["rescue", "retry", "needs_chair"]
+Recovery = Literal["rescue", "retry", "needs_chair", "none"]
+
+STRANDED_CAUSE = "stranded"
 
 
-def _recovery(q: QuarantineFacts) -> Recovery:
+def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]]) -> Recovery:
+    # A stranded task that is also an approved, unlanded row waits for its own phase to land as a whole: no
+    # lone land, and not the chair either. The match is (initiative, task id), not the bare id. It cannot
+    # include phase: a task id repeats across phases and QuarantineFacts carries no phase, so a same-id task in
+    # another phase of the same initiative still matches.
+    if q["cause"] == STRANDED_CAUSE and (q["initiative"], q["task_id"]) in approved:
+        return "none"
     # harness_failures == 0 on a harness cause is not a case the rules name; the chair looks at it.
     if q["cause"] != "harness" or q["harness_failures"] != 1:
         return "needs_chair"
@@ -20,23 +28,19 @@ def _recovery(q: QuarantineFacts) -> Recovery:
     return "retry"
 
 
-def _needs_chair_initiatives(quarantines: list[QuarantineFacts]) -> set[str]:
-    return {q["initiative"] for q in quarantines if _recovery(q) == "needs_chair"}
-
-
-def _quarantine_action(q: QuarantineFacts) -> Action:
-    kind = _recovery(q)
+def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
     if kind == "needs_chair":
         return {"kind": "needs_chair", "initiative": q["initiative"], "cause": q["cause"]}
     return {"kind": kind, "task_id": q["task_id"], "initiative": q["initiative"]}
 
 
-def _quarantine_actions(quarantines: list[QuarantineFacts]) -> list[Action]:
-    chair = _needs_chair_initiatives(quarantines)
+def _quarantine_actions(quarantines: list[QuarantineFacts], approved: set[tuple[str, str]]) -> list[Action]:
+    kinds = [(q, _recovery(q, approved)) for q in quarantines]
+    chair = {q["initiative"] for q, kind in kinds if kind == "needs_chair"}
     return [
-        _quarantine_action(q)
-        for q in quarantines
-        if _recovery(q) == "needs_chair" or q["initiative"] not in chair
+        _quarantine_action(q, kind)
+        for q, kind in kinds
+        if kind != "none" and (kind == "needs_chair" or q["initiative"] not in chair)
     ]
 
 
@@ -61,11 +65,14 @@ def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> 
 def plan_recover(facts: Facts) -> list[Action]:
     """Quarantine actions in input order, then relaunch pairs. An open quarantine blocks its initiative's relaunch.
 
-    A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a rescue failed.
+    A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
+    rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
+    `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
     """
     quarantines = facts["quarantines"]
+    approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     blocked = {q["initiative"] for q in quarantines}
-    return _quarantine_actions(quarantines) + _relaunch_actions(facts["initiatives"], blocked)
+    return _quarantine_actions(quarantines, approved) + _relaunch_actions(facts["initiatives"], blocked)
 
 
 def plan_lost_runs(facts: Facts) -> list[Action]:
