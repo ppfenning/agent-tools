@@ -8,10 +8,9 @@ from pathlib import Path
 from agent_tools import route
 
 
-def undecomposed_oldest_first(entries: Sequence[tuple[Mapping, float]]) -> list[str]:
-    """Paths of `route.intake_entries` rows not `done`, oldest mtime first; equal mtimes fall back to path."""
-    pending = [(mtime, row["path"]) for row, mtime in entries if not row["done"]]
-    return [path for _, path in sorted(pending)]
+def queued_oldest_first(groups: Mapping[str, Sequence[Mapping]], mtimes: Mapping[str, float]) -> list[str]:
+    """Paths of the `queued` group of `route.intake_groups`, oldest mtime first; equal mtimes fall back to path."""
+    return [path for _, path in sorted((mtimes[row["path"]], row["path"]) for row in groups["queued"])]
 
 
 def has_sources(sources: Sequence[str]) -> bool:
@@ -19,18 +18,20 @@ def has_sources(sources: Sequence[str]) -> bool:
 
 
 def read_intake(ws: Path) -> list[str]:
-    """Edge. Undecomposed intake paths under `ws/intake`, oldest first; none when the directory is absent."""
+    """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent."""
     root = ws / "intake"
     paths = sorted(root.glob("*.md")) + sorted((root / "done").glob("*.md"))
     files = {str(p.relative_to(root)): p.read_text(encoding="utf-8") for p in paths}
-    mtimes = {name: (root / name).stat().st_mtime for name in files}
-    return undecomposed_oldest_first([(row, mtimes[_filename(row)]) for row in route.intake_entries(files)])
+    groups = route.intake_groups(route.intake_entries(files), _initiatives(ws))
+    return queued_oldest_first(groups, {row["path"]: (ws / row["path"]).stat().st_mtime for row in groups["queued"]})
 
 
-def _filename(row: Mapping) -> str:
-    """Relative name a row was listed under: `intake/x.md` is `x.md`, and a done row lives under `done/`."""
-    name = row["path"].removeprefix("intake/")
-    return f"done/{name}" if row["done"] else name
+def _initiatives(ws: Path) -> list[dict]:
+    """Initiative rows as `route.intake_groups` reads them. `done` is False: it never decides membership of `queued`."""
+    return [
+        {"id": p.parent.name, "done": False, "text": p.read_text(encoding="utf-8")}
+        for p in sorted((ws / "work").glob("*/initiative.md"))
+    ]
 
 
 def read_sources_configured(profile_path: Path) -> bool:

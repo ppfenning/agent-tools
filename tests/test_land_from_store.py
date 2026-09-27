@@ -191,6 +191,7 @@ def test_the_lease_is_held_until_mark_done_has_finished_then_released(repo, tmp_
 
 def test_exit_3_at_mark_done_stops_with_the_landed_elsewhere_reason(repo, tmp_path, monkeypatch, store, capsys):
     real_run, harness = sp.run, []
+    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)
 
     def fake_run(argv, **kwargs):
         if argv[0] != str(_HARNESS):
