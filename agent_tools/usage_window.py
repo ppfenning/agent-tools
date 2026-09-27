@@ -211,9 +211,12 @@ def _read_usage_files(
     return usage_files + store_only
 
 
-def read_usage(runs_dir: Path | str, now: datetime) -> list[tuple[datetime, dict[str, Any]]]:
-    """Every run's usage that can fall in the last 7 days, the widest window read."""
-    return _read_usage_files(runs_dir, now, since=now - timedelta(days=7))
+def read_usage(
+    runs_dir: Path | str, now: datetime, reset: WeeklyReset | None = None,
+) -> list[tuple[datetime, dict[str, Any]]]:
+    """Every run's usage that can fall inside the weekly window anchored at
+    `reset` (rolling 7 days with none), the widest window read."""
+    return _read_usage_files(runs_dir, now, since=weekly_window_start(now, reset))
 
 
 def _cached_blocks(cached: object, now: datetime) -> dict[str, Any] | None:
@@ -294,10 +297,12 @@ def weekly_window_from(
     usage_files: list[tuple[datetime, dict[str, Any]]],
     now: datetime,
     ceiling_usd: float | None = None,
+    reset: WeeklyReset | None = None,
 ) -> Window:
-    """Pure. Same reader as `window_from`'s fallback path, a rolling 7-day
-    cutoff instead of the block start."""
-    start = now - timedelta(days=7)
+    """Pure. Same reader as `window_from`'s fallback path, the weekly window
+    anchored at `reset` (a rolling 7-day cutoff with none) instead of the
+    block start."""
+    start = weekly_window_start(now, reset)
     in_window = [usage for ts, usage in usage_files if start <= ts <= now]
     spent_usd = sum(usage_cost_usd(u) for u in in_window)
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
@@ -308,9 +313,12 @@ def weekly_window_from(
     )
 
 
-def weekly_window_from_spend(spent_usd: float, now: datetime, ceiling_usd: float | None) -> Window:
-    """Pure. The rolling 7-day `Window` for a spend already summed; `runs_in_flight` is 0, the store does not count runs."""
-    start = now - timedelta(days=7)
+def weekly_window_from_spend(
+    spent_usd: float, now: datetime, ceiling_usd: float | None, reset: WeeklyReset | None = None,
+) -> Window:
+    """Pure. The `Window` anchored at `reset` for a spend already summed;
+    `runs_in_flight` is 0, the store does not count runs."""
+    start = weekly_window_start(now, reset)
     elapsed_hours = max((now - start).total_seconds() / 3600, 1e-9)
     return Window(
         start=start, end=now,
@@ -325,11 +333,16 @@ def gather_weekly(
     weekly_ceiling_usd: float | None = None,
     usage: list[tuple[datetime, dict[str, Any]]] | None = None,
     store_spend: Callable[[str], float | None] | None = None,
+    reset: WeeklyReset | None = None,
 ) -> Window:
-    """Impure edge. The store wins when `store_spend`, given the ISO text of `now - 7 days`, returns a
-    number; otherwise the usage files win, the same reader as `gather` (or the given `usage`),
-    folded through `weekly_window_from`."""
-    spent = None if store_spend is None else store_spend((now - timedelta(days=7)).isoformat())
+    """Impure edge. The store wins when `store_spend`, given the ISO text of the anchored
+    window start, returns a number; otherwise the usage files win, the same reader as
+    `gather` (or the given `usage`), folded through `weekly_window_from`. Either path's
+    `Window.start` reflects `reset`."""
+    since = weekly_window_start(now, reset)
+    spent = None if store_spend is None else store_spend(since.isoformat())
     if spent is not None:
-        return weekly_window_from_spend(spent, now, weekly_ceiling_usd)
-    return weekly_window_from(read_usage(runs_dir, now) if usage is None else usage, now, weekly_ceiling_usd)
+        return weekly_window_from_spend(spent, now, weekly_ceiling_usd, reset)
+    return weekly_window_from(
+        read_usage(runs_dir, now, reset) if usage is None else usage, now, weekly_ceiling_usd, reset,
+    )
