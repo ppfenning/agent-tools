@@ -1700,6 +1700,26 @@ def test_a_task_lands_checks_find_the_repos_venv_in_the_land_worktree(repo, tmp_
     assert (tmp_path / "ran-in").read_text().strip() == str(cli._land_worktree(repo, "pr/seams-task"))
 
 
+# --- cli._land_worktree: the pid keeps two lands apart ---
+
+
+def test_land_worktree_is_stable_within_one_process(tmp_path):
+    assert cli._land_worktree(tmp_path, "pr/seams-task") == cli._land_worktree(tmp_path, "pr/seams-task")
+
+
+def test_land_worktree_differs_between_two_pids(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.os, "getpid", lambda: 111)
+    first = cli._land_worktree(tmp_path, "pr/seams-task")
+    monkeypatch.setattr(cli.os, "getpid", lambda: 222)
+    second = cli._land_worktree(tmp_path, "pr/seams-task")
+    assert first != second
+
+
+def test_land_worktree_name_still_starts_with_repo_and_branch(tmp_path):
+    wt = cli._land_worktree(tmp_path, "pr/seams-task")
+    assert wt.name.startswith(f"cox-land-{tmp_path.resolve().name}-pr-seams-task-")
+
+
 # --- resolve_add_add_conflicts: pure diff3 add/add hunk resolver ---
 
 
