@@ -53,6 +53,10 @@ class FactsDeps:
         A missing repository is reported once, in the status line, and never becomes a needs_chair fact.
     remote_unfetched: initiative id to run id, for each initiative whose newest run carries a remote
         record and no local run directory or log. Optional, and absent means no initiative counts.
+    history: the newest housekeeping action's ISO timestamp (`chair_read_housekeeping.read_last_housekeeping`).
+        Optional, and absent means no history, i.e. housekeeping is due.
+    housekeeping_hours: the raw profile value at `chair.housekeeping_hours`, resolved by `resolve_housekeeping_hours`.
+        Optional, and absent means 24 hours.
     """
 
     lease: Callable[[], Row]
@@ -78,6 +82,8 @@ class FactsDeps:
     reported_repos: Callable[[], set[str]] | None = None
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
     remote_unfetched: Callable[[], Mapping[str, str]] | None = None
+    history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
+    housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -237,6 +243,18 @@ def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> li
     return sorted({p for p in missing if p not in reported})
 
 
+DEFAULT_HOUSEKEEPING_HOURS = 24.0
+
+
+def resolve_housekeeping_hours(value: object) -> float:
+    """The profile's raw `chair.housekeeping_hours`, or 24 when it is missing, non-numeric, or not positive."""
+    try:
+        hours = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_HOUSEKEEPING_HOURS
+    return hours if hours > 0 else DEFAULT_HOUSEKEEPING_HOURS
+
+
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     policy = deps.policy()
     weekly = deps.weekly()
@@ -265,4 +283,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
+        "last_housekeeping_at": deps.history() if deps.history is not None else None,
+        "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
+        if deps.housekeeping_hours is not None
+        else DEFAULT_HOUSEKEEPING_HOURS,
     }
