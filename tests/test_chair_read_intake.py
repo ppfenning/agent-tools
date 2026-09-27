@@ -12,6 +12,36 @@ def _entry(path, initiative=None, done=False):
     return {"id": path, "title": path, "initiative": initiative, "done": done, "path": path}
 
 
+def _intake_row(task_id, initiative=None, state="queued"):
+    return {
+        "kind": "intake",
+        "initiative": "intake",
+        "task_id": task_id,
+        "phase": "",
+        "state": state,
+        "needs": [],
+        "title": task_id,
+        "surfaces": [],
+        "body": "",
+        "extra": {"initiative": initiative} if initiative is not None else {},
+    }
+
+
+def _task_row(task_id, state, initiative):
+    return {
+        "kind": "task",
+        "initiative": initiative,
+        "task_id": task_id,
+        "phase": "p1",
+        "state": state,
+        "needs": [],
+        "title": task_id,
+        "surfaces": [],
+        "body": "",
+        "extra": {},
+    }
+
+
 def test_queued_files_sort_oldest_first():
     groups = _groups([_entry("intake/new.md"), _entry("intake/old.md")])
     mtimes = {"intake/new.md": 200.0, "intake/old.md": 100.0}
@@ -65,6 +95,43 @@ def test_the_edge_drops_a_root_file_whose_initiative_is_done(tmp_path):
     assert cri.read_intake(tmp_path) == []
     (tmp_path / "intake" / "b.md").write_text("body\n", encoding="utf-8")
     assert cri.read_intake(tmp_path) == ["intake/b.md"]
+
+
+def test_a_queued_row_with_no_initiative_is_returned():
+    rows = [_intake_row("a")]
+    assert cri.intake_from_rows(rows) == rows
+
+
+def test_a_queued_row_whose_initiative_has_an_undone_task_row_is_withheld():
+    rows = [_intake_row("a", initiative="x"), _task_row("t1", "todo", "x")]
+    assert cri.intake_from_rows(rows) == []
+
+
+def test_a_queued_row_whose_initiative_items_are_all_done_is_withheld():
+    rows = [_intake_row("a", initiative="x"), _task_row("t1", "done", "x")]
+    assert cri.intake_from_rows(rows) == []
+
+
+def test_a_non_queued_intake_row_is_never_returned():
+    rows = [_intake_row("a", state="done")]
+    assert cri.intake_from_rows(rows) == []
+
+
+def _stems(paths):
+    return {p.rsplit("/", 1)[-1].removesuffix(".md") for p in paths}
+
+
+def test_parity_the_same_board_as_rows_and_as_files_agrees(tmp_path):
+    (tmp_path / "intake").mkdir()
+    (tmp_path / "intake" / "a.md").write_text("---\ninitiative: x\n---\nbody\n", encoding="utf-8")
+    (tmp_path / "intake" / "b.md").write_text("body\n", encoding="utf-8")
+    (tmp_path / "work" / "x" / "p1").mkdir(parents=True)
+    (tmp_path / "work" / "x" / "initiative.md").write_text("# x\n", encoding="utf-8")
+    task = tmp_path / "work" / "x" / "p1" / "t.md"
+    for state in ("todo", "done"):
+        task.write_text(f"---\nstate: {state}\n---\n", encoding="utf-8")
+        rows = [_intake_row("a", initiative="x"), _intake_row("b"), _task_row("t", state, "x")]
+        assert {r["task_id"] for r in cri.intake_from_rows(rows)} == _stems(cri.read_intake(tmp_path)) == {"b"}
 
 
 def test_the_edge_reads_sources_from_the_profile(tmp_path):

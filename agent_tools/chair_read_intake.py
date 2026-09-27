@@ -17,6 +17,14 @@ def has_sources(sources: Sequence[str]) -> bool:
     return len(sources) > 0
 
 
+def intake_from_rows(rows: Sequence[Mapping]) -> list[Mapping]:
+    """Queued intake rows naming no initiative. `route.intake_groups` never queues one that names an initiative, done or not.
+
+    unknown: an `initiative.md` whose `intake:` field names the entry also unqueues it; rows carry no initiative.md, so that is not checked.
+    """
+    return [r for r in rows if r["kind"] == "intake" and r["state"] == "queued" and r["extra"].get("initiative") is None]
+
+
 def read_intake(ws: Path) -> list[str]:
     """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent."""
     root = ws / "intake"

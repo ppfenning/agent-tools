@@ -48,6 +48,25 @@ def work_store_ready(docket: Row) -> bool:
     return any(i["ready_tasks"] for i in docket["initiatives"])
 
 
+def _claimed(row: Row, now: str) -> bool:
+    return bool(row["holder"]) and row["expires_at"] > now
+
+
+def _item_of(row: Row) -> dict[str, Any]:
+    return {"id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"], "needs": list(row["needs"])}
+
+
+def docket_from_rows(rows: Sequence[Row], now: str) -> list[dict[str, Any]]:
+    """The builder's `initiatives` over the task rows, less each task a live lease holds (`holder` set, `expires_at` after ISO `now`)."""
+    tasks = [r for r in rows if r["kind"] == "task"]
+    items = [_item_of(r) for r in tasks]
+    claimed = {(r["initiative"], r["task_id"]) for r in tasks if _claimed(r, now)}
+    return [
+        {**i, "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed]}
+        for i in (_initiative_row(s, items) for s in route.initiative_summaries(items))
+    ]
+
+
 def _text(p: Path) -> str | None:
     try:
         return p.read_text()
