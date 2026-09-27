@@ -22,7 +22,7 @@ __all__ = [
 ]
 
 Status = Literal[
-    "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated",
+    "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated", "busy",
 ]
 
 Run = Callable[[list[str]], tuple[int, str]]
@@ -63,6 +63,15 @@ LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue"
 _UNFENCED = ("standby", "take_lease")  # not writes, so a stale or missing epoch does not stop them
 _REASON_CAP = 600
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
+# Every `cox runs land` refusal starts "land: refusing, ": a dirty repo, a branch conflict, a forge mismatch.
+# Only the repo-lease line also says "<pid> on <host> is landing in <repo>", and only that one is worth retrying.
+_REFUSAL_PREFIX = "land: refusing, "
+_BUSY_MARK = " is landing in "
+
+
+def _repo_busy(output: str) -> bool:
+    """True when a line of the land's output is the repo-lease refusal: another land holds this repository."""
+    return any(line.startswith(_REFUSAL_PREFIX) and _BUSY_MARK in line for line in output.splitlines())
 
 
 def landed(code: int, output: str) -> bool:
@@ -170,6 +179,8 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
+    if _repo_busy(output):
+        return _result(action, "busy", output)
     return _result(action, "landed" if landed(code, output) else "not_landed", output)
 
 
@@ -363,7 +374,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             uncleared[initiative] = result["status"]
         deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") == "land" and result["status"] not in ("landed", "fenced"):
+        if action.get("kind") == "land" and result["status"] not in ("landed", "fenced", "busy"):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
