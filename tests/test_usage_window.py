@@ -3,20 +3,24 @@ import os
 import sqlite3
 import subprocess
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from agent_tools import cli, home_screen
 from agent_tools.pacing import Window, assess
 from agent_tools.usage_window import (
     DEFAULT_POLICY,
+    WeeklyReset,
     _read_usage_files,
     _usage_started,
     block_remaining,
     ceiling_remaining,
     gather,
     gather_weekly,
+    parse_weekly_reset,
     read_usage,
     usage_cost_usd,
     weekly_window_from,
+    weekly_window_start,
     window_from,
 )
 
@@ -441,3 +445,44 @@ def test_gather_weekly_asks_the_store_from_seven_days_before_now_as_iso_text(tmp
     seen = []
     gather_weekly(tmp_path, _NOW, store_spend=lambda since: seen.append(since) or 1.0)
     assert seen == ["2026-08-29T12:00:00+00:00"]
+
+
+def test_weekly_window_start_with_no_reset_is_the_rolling_7_day_start():
+    assert weekly_window_start(_NOW, None) == _NOW - timedelta(days=7)
+
+
+def test_weekly_window_start_reset_earlier_today_starts_today():
+    # _NOW is Saturday 2026-09-05 12:00 UTC; a Saturday 04:00 reset already
+    # passed today, so the window starts at today's occurrence.
+    reset = WeeklyReset(weekday=_NOW.weekday(), hour=4, minute=0, tz="UTC")
+    assert weekly_window_start(_NOW, reset) == datetime(2026, 9, 5, 4, 0, tzinfo=UTC)
+
+
+def test_weekly_window_start_reset_later_today_starts_last_week():
+    # A Saturday 18:00 reset has not happened yet today, so the most recent
+    # occurrence is last Saturday, not today.
+    reset = WeeklyReset(weekday=_NOW.weekday(), hour=18, minute=0, tz="UTC")
+    assert weekly_window_start(_NOW, reset) == datetime(2026, 8, 29, 18, 0, tzinfo=UTC)
+
+
+def test_weekly_window_start_holds_wall_clock_hour_across_dst():
+    # US clocks fall back Sunday 2026-11-01: Saturday 2026-10-31 23:00 is
+    # still EDT (UTC-4). A naive fixed-offset computation using `now`'s own
+    # EST (UTC-5) would land an hour off, at 04:00 UTC instead of 03:00.
+    reset = WeeklyReset(weekday=5, hour=23, minute=0, tz="America/New_York")
+    now = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)  # Monday, after the fall back
+    start = weekly_window_start(now, reset)
+    assert start == datetime(2026, 11, 1, 3, 0, tzinfo=UTC)
+    local_start = start.astimezone(ZoneInfo("America/New_York"))
+    assert (local_start.weekday(), local_start.hour, local_start.minute) == (5, 23, 0)
+
+
+def test_parse_weekly_reset_parses_dow_time_zone():
+    assert parse_weekly_reset("Sun 04:00 America/New_York") == WeeklyReset(
+        weekday=6, hour=4, minute=0, tz="America/New_York",
+    )
+
+
+def test_parse_weekly_reset_returns_none_for_absent_or_bad_input():
+    assert parse_weekly_reset(None) is None
+    assert parse_weekly_reset("not a reset") is None
