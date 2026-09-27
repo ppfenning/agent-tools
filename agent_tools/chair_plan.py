@@ -1,7 +1,9 @@
 """Compose one chair tick: the lease first, then lands, recovery and fill under the limits gate.
 
-Pure. Takes the facts, returns actions each stamped with the lease epoch. No I/O, no clock.
+Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
+from datetime import datetime, timedelta
+
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_recover
@@ -77,8 +79,27 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
     return [*lands, *fetch_exits, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
 
 
-def plan_tick(facts: Facts) -> list[Action]:
+def _parse_utc(ts: str | None) -> datetime | None:
+    """None for an absent, unparseable or naive timestamp."""
+    try:
+        parsed = datetime.fromisoformat(ts) if ts else None
+    except ValueError:
+        return None
+    return parsed if parsed is not None and parsed.tzinfo is not None else None
+
+
+def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
+    """One housekeeping action when none is recorded or the last is at least housekeeping_hours old."""
+    last = _parse_utc(facts["last_housekeeping_at"])
+    if last is not None and now - last < timedelta(hours=facts["housekeeping_hours"]):
+        return []
+    return [{"kind": "housekeeping", "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
+
+
+def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
+    """now is the tick's clock; without it no housekeeping is planned."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
-    actions = _plan_as_holder(facts) if gated is None else gated
+    housekeeping = plan_housekeeping(facts, now) if now is not None else []
+    actions = [*_plan_as_holder(facts), *housekeeping] if gated is None else gated
     return [stamp(a, lease["epoch"]) for a in actions]

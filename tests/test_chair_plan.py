@@ -1,7 +1,10 @@
 import copy
+from datetime import UTC, datetime
 
 from agent_tools.chair_plan import _free_lanes, plan_tick
 from agent_tools.chair_types import Facts
+
+_NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
 
 _SCOPE_QUARANTINE = {"task_id": "p", "initiative": "m", "cause": "scope", "harness_failures": 0}
 
@@ -18,6 +21,8 @@ def _facts(**overrides) -> Facts:
         "work_store_ready": True,
         "sources_configured": True,
         "remote_unfetched": {},
+        "last_housekeeping_at": None,
+        "housekeeping_hours": 24.0,
     }
     return {**base, **overrides}  # type: ignore[return-value]
 
@@ -307,3 +312,23 @@ def test_an_initiative_absent_from_remote_unfetched_still_relaunches_as_today():
         {"kind": "clear_branches", "initiative": "b", "epoch": 7},
         {"kind": "relaunch", "initiative": "b", "epoch": 7},
     ]
+def test_absent_housekeeping_history_emits_one_housekeeping_action():
+    assert plan_tick(_facts(), _NOW) == [{"kind": "housekeeping", "reason": "housekeeping due: last never", "epoch": 7}]
+
+
+def test_housekeeping_one_hour_old_with_a_24_hour_period_is_not_due():
+    assert plan_tick(_facts(last_housekeeping_at="2026-09-27T11:00:00+00:00"), _NOW) == []
+
+
+def test_housekeeping_25_hours_old_is_due():
+    last = "2026-09-26T11:00:00+00:00"
+    assert plan_tick(_facts(last_housekeeping_at=last), _NOW) == [{"kind": "housekeeping", "reason": f"housekeeping due: last {last}", "epoch": 7}]
+
+
+def test_a_standby_tick_plans_no_housekeeping():
+    assert _kinds(plan_tick(_facts(lease=_lease()), _NOW)) == ["standby"]
+
+
+def test_a_tick_that_would_emit_two_housekeeping_actions_is_capped_at_one_and_last():
+    kinds = _kinds(plan_tick(_facts(approved=[_approved("t1")], initiatives=[_initiative("i")]), _NOW))
+    assert (kinds.count("housekeeping"), kinds[-1], "land" in kinds) == (1, "housekeeping", True)
