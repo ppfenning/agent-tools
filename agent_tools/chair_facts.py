@@ -278,6 +278,7 @@ def intake_paths_from_rows(rows: Sequence[Row]) -> list[str]:
 
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
+DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default; no source gathers stale_candidates or resolves the profile yet
 
 
 def resolve_housekeeping_hours(value: object) -> float:
@@ -330,4 +331,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
         if deps.housekeeping_hours is not None
         else DEFAULT_HOUSEKEEPING_HOURS,
+        # No source gathers stale candidates or resolves chair.stale_days yet: a later task wires both from real evidence.
+        "stale_candidates": [],
+        "stale_days": DEFAULT_STALE_DAYS,
     }

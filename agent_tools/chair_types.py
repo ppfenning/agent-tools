@@ -1,7 +1,8 @@
 """The contract every chair-loop planner reads: the facts a tick takes and the actions it returns.
 
 Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
-the facts and executes the actions; the planners in between are pure.
+the facts and executes the actions; the planners in between are pure. `stale_candidates` is
+filled in by the facts edge and consumed by the stale planner.
 """
 from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
@@ -79,13 +80,27 @@ class QuarantineFacts(TypedDict):
     rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
 
 
+class StaleCandidate(TypedDict):
+    """One task the edge has gathered evidence for; matches chair_stale.stale_reason's parameters exactly."""
+
+    initiative: str
+    task_id: str
+    state: str
+    last_file_change: str | None  # ISO timestamp of the newest file touch under the task, or None
+    last_run: str | None  # ISO timestamp of the newest run for the task, or None
+    last_chair_action: str | None  # ISO timestamp of the newest chair action recorded for the task, or None
+    quarantine_non_harness_count: int  # count of non-harness quarantine causes recorded for the task
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
+    stale_days: int  # resolved chair.stale_days profile value, default 7; filled in by the edge
     dispatch: DispatchFacts
     approved: list[ApprovedTask]
     initiatives: list[InitiativeFacts]
     quarantines: list[QuarantineFacts]
+    stale_candidates: list[StaleCandidate]  # gathered by the facts edge, consumed by the stale planner
     intake: list[str]  # oldest first
     work_store_ready: bool
     sources_configured: bool
@@ -115,6 +130,7 @@ ActionKind = Literal[
     "launch_decompose",
     "pull",
     "housekeeping",
+    "stale_to_draft",
 ]
 
 
@@ -124,13 +140,15 @@ class Action(TypedDict, total=False):
     task_id: str
     repo: str
     run: str  # a land or fetch names the run that holds the approved record; a fetch_exit names the run still pending fetch
-    initiative: str  # retry and rescue carry initiative and task_id
+    initiative: str  # retry and rescue carry initiative and task_id; a stale_to_draft names the initiative it drafts
     cause: str
     intake_ids: list[str]
     holder: str
     host: str
     until: str  # a standby names when the holder's takeover window ends
-    reason: str  # a take_lease over an expired takeover says so
+    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string
+    stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
+    since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
 
 
 class PlanLands(Protocol):
