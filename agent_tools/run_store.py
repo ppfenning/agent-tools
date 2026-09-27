@@ -39,7 +39,7 @@ except ImportError:
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "harness_python", "hosts", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
 
@@ -263,6 +263,23 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
     finally:
         conn.close()
     return [Lane(r["run_id"], r["host"], r["launched_at"], beat) for r, beat in joined if r is not None]
+
+
+def hosts(runs_dir: Path) -> list[dict]:
+    """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
+    try:
+        opened = _open(runs_dir)
+    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        return []
+    if opened is None:
+        return []
+    conn, _ = opened
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()]
+    except _DB_ERRORS:
+        return []
+    finally:
+        conn.close()
 
 
 def remote_lanes(lanes: Sequence[Lane], local_runs: Collection[str]) -> list[Lane]:

@@ -191,12 +191,18 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
     ]
 
 
-def dispatch_facts(docket: Row, lane_hosts: Sequence[str], live_by_host: Mapping[str, int]) -> DispatchFacts:
-    """live_by_host maps a host name to its live lanes; the local machine is under the empty name."""
+def dispatch_facts(
+    docket: Row, lane_hosts: Sequence[str], live_by_host: Mapping[str, int], capacity: Mapping[str, int] | None = None
+) -> DispatchFacts:
+    """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity` carries its own cap."""
+    caps = capacity or {}
     return {
         "max_in_flight": int(docket["max_in_flight"]),
         "live_runs": live_by_host.get("", 0),
-        "hosts": [{"name": name, "live_runs": live_by_host.get(name, 0)} for name in lane_hosts],
+        "hosts": [
+            {"name": name, "live_runs": live_by_host.get(name, 0), **({"capacity": caps[name]} if name in caps else {})}
+            for name in lane_hosts
+        ],
     }
 
 

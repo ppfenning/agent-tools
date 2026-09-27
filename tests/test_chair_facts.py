@@ -181,6 +181,11 @@ def test_dispatch_facts_split_the_local_lanes_from_each_lane_hosts():
     assert facts["hosts"] == [{"name": "jarvis", "live_runs": 1}]
 
 
+def test_dispatch_facts_carry_a_hosts_own_capacity_only_when_it_has_one():
+    facts = dispatch_facts({"max_in_flight": 4}, ["jarvis", "pi"], {}, {"jarvis": 8})
+    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 0, "capacity": 8}, {"name": "pi", "live_runs": 0}]
+
+
 def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
     def mine(**record: object) -> bool:
         return lease_facts({"epoch": 4, **record}, "s", 7, "h")["mine"]

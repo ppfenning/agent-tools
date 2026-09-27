@@ -126,6 +126,12 @@ def test_epics_past_the_local_lanes_fill_a_host_after_the_local_ones():
     ]
 
 
+def test_a_hosts_own_capacity_replaces_max_in_flight_in_its_free_count():
+    dispatch = {"max_in_flight": 1, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 3}]}
+    facts = _facts(dispatch=dispatch, initiatives=[_init("a"), _init("b"), _init("c")])
+    assert [a.get("host") for a in plan_fill(facts, 1)] == [None, "jarvis", "jarvis"]
+
+
 def test_a_host_with_a_free_lane_launches_an_epic_when_no_local_lane_is_free():
     assert plan_fill(_hosted(1, initiatives=[_init("a")]), 0) == [
         {"kind": "launch_epic", "initiative": "a", "host": "jarvis"}

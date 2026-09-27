@@ -59,6 +59,7 @@ from agent_tools import (
     forge,
     forge_github,
     generate,
+    host_cmd,
     install,
     install_exec,
     lake_config,
@@ -3061,7 +3062,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
-    host, host_rc = _lane_host_or_refuse(a)
+    host, host_rc = _lane_host_or_refuse(a, profile)
     if host_rc is not None:
         return host_rc
     harness_dir = profile.get("harness_dir", "")
@@ -3265,7 +3266,22 @@ def _remote_edge(cwd: Path) -> tuple[Callable[[list[str]], int], Callable[[str],
     return run, None
 
 
-def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | None, int | None]:
+def _lane_host_candidates(profile_text: str, rows: Sequence[Mapping]) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
+    """The table's active hosts when the table has rows, else the profile's `lane_hosts`."""
+    parsed = _profile_lane_hosts(profile_text)
+    if not rows:
+        return parsed
+    return host_cmd.host_rows_to_lane_hosts(rows, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed)
+
+
+def _shadowed_note(profile_text: str, table_names: Sequence[str]) -> str | None:
+    """One line naming the profile lane hosts the table overrides, or None when the table is empty or overrides none."""
+    parsed = _profile_lane_hosts(profile_text)
+    names = [] if not table_names or isinstance(parsed, lane_hosts.LaneHostError) else host_cmd.shadowed(parsed, table_names)
+    return f"profile lane_hosts not in the hosts table are not lane hosts while it has rows: {', '.join(names)}; add them with `cox host add`" if names else None
+
+
+def _lane_host_or_refuse(a: argparse.Namespace, profile: Mapping) -> tuple[lane_hosts.LaneHost | None, int | None]:
     """Exit code 2 after printing the refusal; no host when `--on` is absent."""
     name = getattr(a, "on", None)
     if name is None:
@@ -3279,7 +3295,9 @@ def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | N
     if dropped:
         print(f"routing: --on does not carry {', '.join(dropped)} to the host; launch without them")
         return None, 2
-    hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    rows = run_store.hosts(Path(profile.get("workspace_dir", "")).expanduser() / "runs")
+    profile_text = _read_text_or_none(_profile_path(a)) or ""
+    hosts = _lane_host_candidates(profile_text, rows)
     if isinstance(hosts, lane_hosts.LaneHostError):
         print(f"routing: {hosts.message}")
         return None, 2
@@ -3287,6 +3305,12 @@ def _lane_host_or_refuse(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost | N
     if host is None:
         print(f"routing: unknown lane host: {name}")
         print(f"configured: {', '.join(h.name for h in hosts) or 'none'}")
+        note = _shadowed_note(profile_text, [str(r["name"]) for r in rows])
+        if note:
+            print(note)
+        return None, 2
+    if not host.workspace_dir:
+        print(f"routing: host {name} has no workspace_dir: run `cox host beat {name}` on it, or list it under lane_hosts in the profile")
         return None, 2
     return host, None
 
@@ -4943,6 +4967,9 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("chair")
     commands.build_parser(rows, [group], sub)
 
+    group, rows = _table_entry("host")
+    commands.build_parser(rows, [group], sub)
+
     group, rows = _table_entry("courier")
     commands.build_parser(rows, [group], sub)
 
@@ -5496,16 +5523,30 @@ def _chair_run_deps(
             return ""
         return route.parse_frontmatter(text)[0].get("repo") or ""
 
-    parsed_hosts = _profile_lane_hosts(_read_text_or_none(profile_path) or "")  # the `profile` dict never carries lane_hosts
+    profile_text = _read_text_or_none(profile_path) or ""  # the `profile` dict never carries lane_hosts
+    parsed_hosts = _profile_lane_hosts(profile_text)
     if isinstance(parsed_hosts, lane_hosts.LaneHostError):
         echo(f"chair run: lane_hosts ignored: {parsed_hosts.message}")
-    host_names = [] if isinstance(parsed_hosts, lane_hosts.LaneHostError) else [h.name for h in parsed_hosts]
+    startup_rows = run_store.hosts(runs_dir)
+    startup_hosts = _lane_host_candidates(profile_text, startup_rows)
+    unreachable = [] if isinstance(startup_hosts, lane_hosts.LaneHostError) else host_cmd.dispatchable(startup_hosts)[1]
+    if unreachable:
+        echo(f"chair run: not dispatching to {', '.join(unreachable)}: no workspace_dir; run `cox host beat` on each")
+    shadow = _shadowed_note(profile_text, [str(r["name"]) for r in startup_rows])
+    if shadow:
+        echo(f"chair run: {shadow}")
 
     def dispatch(row: dict) -> chair_facts.DispatchFacts:
         stamp = now_text()
         pidfile_live, pidfiled = chair_read_docket.local_runs(runs_dir, stamp)
         lanes = run_store.remote_lanes(run_store.live_lanes(runs_dir, stamp), pidfiled)
-        return chair_facts.dispatch_facts(row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live))
+        host_rows = run_store.hosts(runs_dir)  # per tick: a drain takes effect without a restart
+        candidates = _lane_host_candidates(profile_text, host_rows)
+        # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
+        host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
+        return chair_facts.dispatch_facts(
+            row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows)
+        )
 
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
@@ -5716,6 +5757,160 @@ STEWARD_COMMANDS = [
     ),
 ]
 
+
+def _run_local(argv: list[str]) -> tuple[int, str]:
+    """Edge: an argv's exit code and stdout; a tool that is missing, hangs or cannot run is code 127."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    return done.returncode, done.stdout
+
+
+def _host_store_write(a: argparse.Namespace, argv: list[str]) -> int:
+    """Runs `store_cli <argv>` against the store and prints what it answers; non-zero when it refuses."""
+    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    code, output = store_cli.runner(runs_dir)(argv)
+    print(output.strip() if code == 0 else f"host: store_cli exit {code}: {output.strip()}")
+    return 0 if code == 0 else 1
+
+
+def _host_add(a: argparse.Namespace) -> int:
+    """After the write, names the profile lane hosts the table now overrides, since they stop being lane hosts."""
+    code = _host_store_write(a, host_cmd.add_argv(a.name, a.ssh, a.capacity, _holder_label(a)))
+    if code != 0:
+        return code
+    _, runs_dir, _ = _leader_runs_dir_or_refuse(a)
+    names = [a.name, *(str(r["name"]) for r in run_store.hosts(runs_dir))]
+    note = _shadowed_note(_read_text_or_none(_profile_path(a)) or "", names)
+    if note:
+        print(f"note: {note}")
+    return 0
+
+
+def _host_drain(a: argparse.Namespace) -> int:
+    return _host_store_write(a, host_cmd.set_state_argv(a.name, "draining", _holder_label(a)))
+
+
+def _host_activate(a: argparse.Namespace) -> int:
+    return _host_store_write(a, host_cmd.set_state_argv(a.name, "active", _holder_label(a)))
+
+
+def _host_list(a: argparse.Namespace) -> int:
+    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    rows = run_store.hosts(runs_dir)
+    print("\n".join(host_cmd.format_host_list(rows, datetime.datetime.now(datetime.UTC))) if rows else "no hosts")
+    return 0
+
+
+def _cartridges_checkout(profile: Mapping) -> str:
+    """The checkout that holds `provider_profile`; `cartridges_dir` when the profile names no provider profile."""
+    provider, cartridges = profile.get("provider_profile"), profile.get("cartridges_dir")
+    if provider:
+        return str(Path(provider).expanduser().parent)
+    return str(Path(cartridges).expanduser()) if cartridges else ""
+
+
+def _host_repos(profile: Mapping) -> list[str]:
+    """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from."""
+    harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
+    return [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+
+
+def _package_version() -> str | None:
+    try:
+        return importlib.metadata.version("coxswain-tools")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _host_beat(a: argparse.Namespace) -> int:
+    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else None
+    workspace = str(Path(profile["workspace_dir"]).expanduser()) if profile.get("workspace_dir") else None
+    versions = host_cmd.beat_versions(
+        _run_local, _package_version(), harness, _cartridges_checkout(profile) or None, workspace, _host_repos(profile),
+    )
+    return _host_store_write(a, host_cmd.beat_argv(a.name or socket.gethostname(), versions))
+
+
+def _host_ssh(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> lane_hosts.LaneHost | None:
+    """The named host from the table (any state), else from the profile's `lane_hosts`."""
+    row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.name), None)
+    if row is not None:
+        return lane_hosts.LaneHost(str(row["name"]), str(row["ssh"]), "")
+    parsed = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
+    return None if isinstance(parsed, lane_hosts.LaneHostError) else lane_hosts.find_lane_host(parsed, a.name)
+
+
+def _host_doctor(a: argparse.Namespace) -> int:
+    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.name), None)
+    print(host_cmd.doctor_line(row, datetime.datetime.now(datetime.UTC)))
+    host = _host_ssh(a, profile, runs_dir)
+    if host is None:
+        print(f"unknown host: {a.name}")
+        return 1
+    code, rows = remote_doctor.doctor_on_host(host, _run_ssh)
+    print(f"doctor on {host.name} ({host.ssh})")
+    print("\n".join(rows))
+    return code
+
+
+def _host_sync(a: argparse.Namespace) -> int:
+    profile, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    host = _host_ssh(a, profile, runs_dir)
+    if host is None:
+        print(f"unknown host: {a.name}")
+        return 1
+    row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.name), None)
+    repos = host_cmd.recorded_repos(row)
+    if not repos:
+        print(f"paths: this machine's, since {a.name} has not beaten with its own; run `cox host beat {a.name}` there")
+    code, lines = host_cmd.sync_host(host.ssh, repos or _host_repos(profile), _run_ssh)
+    print("\n".join(lines))
+    return code
+
+
+HOST_GROUP = commands.Group(
+    name="host", help="the hosts table: lane hosts, their capacity, versions and login",
+    description="The hosts table: lane hosts, their capacity, versions and login.",
+    epilog="examples:\n  cox host add jarvis --ssh jarvis --capacity 8\n  cox host list\n  cox host beat\n  cox host sync jarvis",
+    args=(commands.Arg(("--profile",)),),
+)
+HOST_COMMANDS = [
+    commands.Command(
+        "add", "host", "add or update a host in the table",
+        (
+            commands.Arg(("name",)), commands.Arg(("--ssh",), {"required": True}),
+            commands.Arg(("--capacity",), {"type": int, "required": True, "help": "lanes the host may run at once"}),
+        ),
+        _host_add, False, (),
+    ),
+    commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), _host_list, False, ()),
+    commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), _host_drain, False, ()),
+    commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), _host_activate, False, ()),
+    commands.Command(
+        "beat", "host", "record this machine's versions and claude login in the table",
+        (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), _host_beat, False, (),
+    ),
+    commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), _host_doctor, False, ()),
+    commands.Command(
+        "sync", "host", "git pull --ff-only in the harness, cartridges and tools checkouts on a host",
+        (commands.Arg(("name",)),), _host_sync, False, (),
+    ),
+]
+
 COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
@@ -5730,6 +5925,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (EPIC_GROUP, EPIC_COMMANDS),
     (ROUTE_GROUP, ROUTE_COMMANDS),
     (CHAIR_GROUP, CHAIR_COMMANDS),
+    (HOST_GROUP, HOST_COMMANDS),
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
