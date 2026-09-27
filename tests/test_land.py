@@ -1725,3 +1725,92 @@ def test_resolve_add_add_conflicts_refuses_the_whole_file_when_one_hunk_has_a_ba
         "<<<<<<< HEAD\nours two\n||||||| base\nbase two\n=======\ntheirs two\n>>>>>>> theirs\n"
     )
     assert land.resolve_add_add_conflicts(text) is None
+
+
+# --- _cherry_pick_generated: auto-resolves add/add conflicts via resolve_add_add_conflicts ---
+
+
+def _init_diverging_branches(root, ours_text, theirs_text, base_text="base\n"):
+    """A repo at `root` with `f` at `base_text` on `main`, then `main` and `theirs` each committing
+    their own text over it. Returns the sha of the `theirs` commit, with `main` left checked out."""
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    (root / "f").write_text(base_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "add", "-A"], check=True)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "base"], check=True)
+    sp.run(["git", "-C", str(root), "checkout", "-qb", "theirs"], check=True)
+    (root / "f").write_text(theirs_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-aqm", "theirs"], check=True)
+    sha = sp.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    sp.run(["git", "-C", str(root), "checkout", "-q", "main"], check=True)
+    (root / "f").write_text(ours_text)
+    sp.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-aqm", "ours"], check=True)
+    return sha
+
+
+def test_cherry_pick_generated_resolves_an_append_append_conflict_to_hold_both_lines(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_diverging_branches(root, ours_text="base\nours line\n", theirs_text="base\ntheirs line\n")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert ok, detail
+    text = (root / "f").read_text()
+    assert "ours line" in text and "theirs line" in text
+
+
+def test_cherry_pick_generated_leaves_a_same_line_conflict_unresolved_and_the_tree_clean(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_diverging_branches(root, ours_text="ours value\n", theirs_text="theirs value\n")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert not ok
+    assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+def _init_both_adding(root, name, ours_bytes, theirs_bytes):
+    """A repo at `root` whose `main` and `theirs` each create `name`, absent from their common base, with
+    different bytes. Returns the sha of the `theirs` commit, with `main` left checked out."""
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@e"]
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run([*git, "commit", "--allow-empty", "-qm", "base"], check=True)
+    sp.run([*git, "checkout", "-qb", "theirs"], check=True)
+    (root / name).write_bytes(theirs_bytes)
+    sp.run([*git, "add", "-A"], check=True)
+    sp.run([*git, "commit", "-qm", "theirs"], check=True)
+    sha = sp.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    sp.run([*git, "checkout", "-q", "main"], check=True)
+    (root / name).write_bytes(ours_bytes)
+    sp.run([*git, "add", "-A"], check=True)
+    sp.run([*git, "commit", "-qm", "ours"], check=True)
+    return sha
+
+
+def test_cherry_pick_generated_resolves_a_both_added_file_whose_path_holds_a_space(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_both_adding(root, "new file.txt", b"ours line\n", b"theirs line\n")
+    sp.run(["git", "-C", str(root), "cherry-pick", sha], capture_output=True)
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain", "-z"], capture_output=True, text=True).stdout
+    assert status.split("\0")[0] == "AA new file.txt"
+    sp.run(["git", "-C", str(root), "cherry-pick", "--abort"], check=True)
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    echoed = []
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=echoed.append)
+    assert ok, detail
+    assert (root / "new file.txt").read_text() == "ours line\ntheirs line\n"
+    assert echoed == ["resolved add/add: new file.txt"]
+
+
+def test_cherry_pick_generated_refuses_a_binary_add_add_without_raising(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    sha = _init_both_adding(root, "blob", b"\x00\xffours", b"\x00\xfetheirs")
+    monkeypatch.setattr(cli, "_generate_and_amend", lambda wt, umbrella, echo: (True, ""))
+    ok, detail = cli._cherry_pick_generated(root, sha, None, echo=lambda _: None)
+    assert not ok and detail
+    assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
+    status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert status.strip() == ""
