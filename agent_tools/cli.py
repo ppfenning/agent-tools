@@ -1219,34 +1219,16 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
 _LAUNCH_ERROR = land.LAUNCH_ERROR
 
 
-def _build_check_env(parent_env: Mapping[str, str], tmp_dir: str) -> dict[str, str]:
-    """`parent_env` with `TMPDIR` pointed at `tmp_dir` and `--basetemp=<tmp_dir>/pytest`
-    folded into `PYTEST_ADDOPTS`, so a check's own temp files and pytest's basetemp
-    never collide with another concurrent check's."""
-    basetemp_flag = f"--basetemp={tmp_dir}/pytest"
-    existing_addopts = parent_env.get("PYTEST_ADDOPTS")
-    addopts = f"{existing_addopts} {basetemp_flag}" if existing_addopts else basetemp_flag
-    return {**parent_env, "TMPDIR": tmp_dir, "PYTEST_ADDOPTS": addopts}
-
-
 def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
     """Each `(name, argv)` pair in order, stopping at the first launch error
-    or failure and naming it by `name`, never by its argv or shell command.
-
-    Each check runs with its own `TMPDIR` (see `_build_check_env`), so two
-    checks racing in concurrent lanes never collide on a fixed-name temp path."""
+    or failure and naming it by `name`, never by its argv or shell command."""
     for name, argv in checks:
-        check_tmp = tempfile.mkdtemp(prefix="cox-check-")
         try:
-            env = _build_check_env(os.environ, check_tmp)
-            try:
-                r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
-            except OSError as exc:
-                return False, f"{_LAUNCH_ERROR}{name}: {exc}"
-            if r.returncode != 0:
-                return False, f"{name}: {(r.stderr or r.stdout).strip()}"
-        finally:
-            shutil.rmtree(check_tmp, ignore_errors=True)
+            r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        except OSError as exc:
+            return False, f"{_LAUNCH_ERROR}{name}: {exc}"
+        if r.returncode != 0:
+            return False, f"{name}: {(r.stderr or r.stdout).strip()}"
     return True, f"{len(checks)} checks passed"
 
 
