@@ -3,24 +3,80 @@ from __future__ import annotations
 import dataclasses
 import json
 import sqlite3
+from datetime import UTC, datetime
 
-from agent_tools import chair_run, cli
+from agent_tools import chair_facts, chair_run, cli
 
-TWELVE = {
-    "lease", "docket", "approved", "quarantined", "stranded", "attempts",
-    "live_initiatives", "intake", "work_store_ready", "sources_configured", "run_id", "record",
-}
+# Fields the dataclass carries as plain metadata, not as wired sources: never callable, never unwired.
+_FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
+
+# `chair_facts.gather_facts` reads every optional field through an `is not None` (or truthy) guard before
+# falling back, `queue` and `stranded_records` included (chair_facts.py:300,303,308,322-331) — that guard shape
+# is shared and does not by itself distinguish this pair. What distinguishes them is what `_chair_run_deps`
+# (agent_tools/cli.py:5747-5776) actually wires: `queue` and `stranded_records` are the only two `FactsDeps`
+# keywords it never passes there, so they sit at the dataclass's own `None` default, while every other optional
+# field is passed a real callable, e.g. `missing_repos=missing_repos` (line 5760) and
+# `history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir)` (line 5774). That is a fact about
+# what `_chair_run_deps` wires today, not an assumption: if a future change starts passing `queue=` or
+# `stranded_records=`, the assertion below fails and names the field to drop from this set.
+_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records"})
 
 
-def test_the_real_deps_hold_no_unwired_source_for_any_of_the_twelve_names(tmp_path) -> None:
+def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> None:
+    """Iterates `FactsDeps`' own fields, so a fact added later is checked with no edit here.
+
+    This replaces a hand-kept set of field names that let `remote_unfetched` and housekeeping ship unwired:
+    a name missing from a hand-copied list is a name never checked.
+    """
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
-    fields = {
-        f.name: getattr(bundle, f.name)
-        for bundle in (deps.facts_deps, deps.exec_deps)
-        for f in dataclasses.fields(bundle)
-    }
-    assert fields.keys() >= TWELVE
-    assert [name for name in TWELVE if isinstance(fields[name], cli._ChairUnwired)] == []
+    for f in dataclasses.fields(chair_facts.FactsDeps):
+        value = getattr(deps.facts_deps, f.name)
+        if f.name in _FACTS_DEPS_METADATA_FIELDS:
+            continue
+        if f.name in _FACTS_DEPS_NONE_GUARDED_FIELDS:
+            # Checked, not skipped: today's real deps leave these `None`, which `gather_facts` guards for.
+            assert value is None, f"{f.name} is no longer None; drop it from _FACTS_DEPS_NONE_GUARDED_FIELDS"
+            continue
+        assert callable(value), f"{f.name} is not callable: {value!r}"
+        assert value is not None, f"{f.name} is None"
+        assert not isinstance(value, cli._ChairUnwired), f"{f.name} is unwired: {value!r}"
+    # `_ChairUnwired` is one sentinel shared by both bundles: `_chair_unwired_sources` (agent_tools/cli.py:5545-5552)
+    # refuses to start while either `deps.facts_deps` or `deps.exec_deps` holds one. The replaced `TWELVE` set
+    # named "run_id" and "record", both `exec_deps` fields, so checking `exec_deps` here too keeps that coverage
+    # rather than narrowing it to `FactsDeps` alone.
+    for f in dataclasses.fields(cli.chair_exec.Deps):
+        exec_value = getattr(deps.exec_deps, f.name)
+        assert not isinstance(exec_value, cli._ChairUnwired), f"exec_deps.{f.name} is unwired: {exec_value!r}"
+
+
+def test_tick_calls_plan_with_the_tick_s_own_now() -> None:
+    """`tick` takes `now` as its own argument and must hand that exact value to `plan`, not re-derive one."""
+    calls: list[tuple] = []
+
+    def fake_plan(facts, now):
+        calls.append((facts, now))
+        return []
+
+    known_now = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    deps = chair_run.RunDeps(
+        facts_deps=object(),  # type: ignore[arg-type]
+        exec_deps=object(),  # type: ignore[arg-type]
+        report_deps=object(),  # type: ignore[arg-type]
+        beat=lambda: None,
+        current_epoch=lambda: 0,
+        holds=lambda: False,
+        release=lambda: None,
+        sleep=lambda _seconds: None,
+        now=lambda: known_now,
+        gather=lambda facts_deps, now: {},  # type: ignore[arg-type,return-value]
+        plan=fake_plan,
+        perform=lambda actions, exec_deps, current_epoch, dry_run: [],
+    )
+
+    chair_run.tick(deps, False, known_now)
+
+    assert len(calls) == 1
+    assert calls[0][1] == known_now
 
 
 def test_the_recorder_is_built_with_a_store_runner_and_the_lease_holder(tmp_path, monkeypatch) -> None:
