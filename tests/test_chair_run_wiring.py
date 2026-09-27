@@ -31,6 +31,56 @@ def test_the_recorder_is_built_with_a_store_runner_and_the_lease_holder(tmp_path
     assert callable(seen["store"])
 
 
+def test_remote_unfetched_history_and_housekeeping_hours_are_wired_not_none(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert callable(deps.facts_deps.remote_unfetched)
+    assert callable(deps.facts_deps.history)
+    assert callable(deps.facts_deps.housekeeping_hours)
+
+
+def test_remote_unfetched_is_wired_to_the_docket_s_initiative_ids(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda *a, **k: {"initiatives": [{"id": "alpha"}, {"id": "beta"}]})
+    seen: dict = {}
+
+    def fake_read(runs_dir, initiatives):
+        seen["runs_dir"] = runs_dir
+        seen["initiatives"] = list(initiatives)
+        return {"alpha": "run-1"}
+
+    monkeypatch.setattr(cli.chair_read_remote_unfetched, "read_remote_unfetched", fake_read)
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.remote_unfetched() == {"alpha": "run-1"}
+    assert seen == {"runs_dir": runs, "initiatives": ["alpha", "beta"]}
+
+
+def test_history_is_wired_to_read_last_housekeeping_at_runs_dir(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_history(runs_dir):
+        seen["runs_dir"] = runs_dir
+        return "2026-09-27T00:00:00Z"
+
+    monkeypatch.setattr(cli.chair_read_housekeeping, "read_last_housekeeping", fake_history)
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.history() == "2026-09-27T00:00:00Z"
+    assert seen == {"runs_dir": runs}
+
+
+def test_housekeeping_hours_reads_the_profile_s_chair_namespace(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    profile = {"chair": {"housekeeping_hours": 6}}
+    deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.housekeeping_hours() == 6
+
+
+def test_housekeeping_hours_is_none_with_no_chair_namespace_in_the_profile(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.housekeeping_hours() is None
+
+
 def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: jarvis\n    ssh: jarvis\n    workspace_dir: /w\n", encoding="utf-8")
