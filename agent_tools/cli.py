@@ -2147,7 +2147,7 @@ def _route_context(a: argparse.Namespace) -> int:
     usage_reason = (
         _usage_assessment(
             Path(profile["workspace_dir"]).expanduser() / "runs",
-            profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"),
+            profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
         ).reason
         if not reason and profile is not None else None
     )
@@ -3148,7 +3148,9 @@ def _route_launch(a: argparse.Namespace) -> int:
     if guard_rc is not None:
         return guard_rc
     usage_code, usage_lines = route.launch_gate(
-        _usage_assessment(runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")), a.force
+        _usage_assessment(
+            runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
+        ), a.force
     )
     for line in usage_lines:
         print(line)
@@ -4369,16 +4371,18 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
 
 
 def _usage_assessment(
-    runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None
+    runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None,
+    weekly_reset: str | None = None,
 ) -> pacing.Assessment:
     """Computed once via the gatherer and shared by every surface that
     narrates it: `usage assess`, `route context`'s docket line, and `route
     launch`'s gate all call this so the same window yields the same reason.
     """
     now = datetime.datetime.now(datetime.UTC)
-    usage = usage_window.read_usage(runs_dir, now)
+    reset = usage_window.parse_weekly_reset(weekly_reset)
+    usage = usage_window.read_usage(runs_dir, now, reset)
     window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd, usage=usage)
-    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd, usage=usage)
+    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd, usage=usage, reset=reset)
     policy = _resolved_pacing_policy(Path(runs_dir))
     return pacing.assess(window, policy, now, weekly=weekly)
 
@@ -4391,7 +4395,9 @@ def _usage_assess(a: argparse.Namespace) -> int:
         profile = route.parse_profile(text) if text is not None else {}
     except route.ProfileError:
         profile = {}
-    result = _usage_assessment(a.runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"))
+    result = _usage_assessment(
+        a.runs_dir, profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd"), profile.get("weekly_reset"),
+    )
     if a.json:
         d = dataclasses.asdict(result)
         d["hold_until"] = result.hold_until.isoformat() if result.hold_until else None
@@ -5708,12 +5714,14 @@ def _chair_run_deps(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows)
         )
 
+    weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
         weekly=lambda: usage_window.gather_weekly(
             runs_dir, now(), profile.get("weekly_ceiling_usd"),
             store_spend=lambda since: run_store.cost_since(runs_dir, since),
+            reset=weekly_reset,
         ),
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,

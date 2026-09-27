@@ -119,6 +119,18 @@ def test_the_deps_weekly_reader_passes_a_store_spend_that_reads_the_store_from_s
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     deps.facts_deps.weekly()
     assert seen["store_spend"]("2026-08-29") == (runs, "2026-08-29")
+    assert seen["reset"] is None
+
+
+def test_the_deps_weekly_reader_passes_the_profiles_parsed_weekly_reset(tmp_path, monkeypatch) -> None:
+    seen: dict = {}
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *args, **kwargs: seen.update(kwargs))
+    monkeypatch.setattr(cli.run_store, "cost_since", lambda runs_dir, since: (runs_dir, since))
+    runs = tmp_path / "runs"
+    profile = {"weekly_reset": "Sun 04:00 America/New_York"}
+    deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    deps.facts_deps.weekly()
+    assert seen["reset"] == cli.usage_window.parse_weekly_reset("Sun 04:00 America/New_York")
 
 
 class _FakeStore:
