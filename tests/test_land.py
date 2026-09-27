@@ -91,6 +91,13 @@ def test_step_order():
     assert [s["kind"] for s in steps] == _STEP_ORDER
 
 
+def test_build_check_env_sets_tmpdir_and_appends_basetemp_while_keeping_existing_addopts():
+    env = cli._build_check_env({"PYTEST_ADDOPTS": "-x"}, "/tmp/xyz")
+    assert env["TMPDIR"] == "/tmp/xyz"
+    assert "--basetemp=/tmp/xyz/pytest" in env["PYTEST_ADDOPTS"]
+    assert "-x" in env["PYTEST_ADDOPTS"]
+
+
 def test_a_record_silent_on_initiative_still_lands_off_the_scratch_branch():
     branches = {"agents/epic-x-5/seams-task": ["Add seams module"]}
     steps = land.land_plan(_record(initiative=None), branches, "main")
