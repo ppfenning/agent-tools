@@ -15,7 +15,7 @@ from agent_tools.chair_types import Action, Facts
 from agent_tools.notify import Notification
 
 __all__ = [
-    "Deps", "failed_items", "format_status", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items",
+    "Deps", "echo_line", "failed_items", "format_status", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items",
     "write_status",
 ]
 
@@ -110,6 +110,11 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",
     ]
     return " | ".join(parts)
+
+
+def echo_line(line: str) -> None:
+    """Edge. Flushes, because stdout redirected to a file is block-buffered and a service log would stay empty."""
+    print(line, flush=True)
 
 
 def write_status(line: str, deps: Deps) -> None:
