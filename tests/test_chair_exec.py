@@ -135,9 +135,10 @@ def test_clear_branches_deletes_its_own_glob_in_the_resolved_repo() -> None:
     assert "epic/alpha/t1" in results[0]["reason"]
 
 
-def test_clear_branches_that_deletes_nothing_is_not_done() -> None:
+def test_clear_branches_that_finds_nothing_to_delete_is_done() -> None:
     results = perform([_clear("alpha")], _deps([], deleted=()), lambda: 1, False)
-    assert [r["status"] for r in results] == ["failed"]
+    assert [r["status"] for r in results] == ["done"]
+    assert results[0]["reason"].startswith("nothing to clear")
 
 
 def test_delete_branches_runs_git_in_the_named_repo_and_reports_what_it_deleted() -> None:
