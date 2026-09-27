@@ -107,6 +107,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"would: {', '.join(would)}"] if would else []),
         *([f"launched: {', '.join(launched)}"] if launched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
+        *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",
     ]
     return " | ".join(parts)

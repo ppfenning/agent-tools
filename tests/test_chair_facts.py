@@ -10,6 +10,7 @@ from agent_tools.chair_facts import (
     harness_failures,
     lease_facts,
     limits_facts,
+    new_missing_repos,
 )
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_attempts import with_stored_rescues
@@ -212,3 +213,22 @@ def test_a_fake_drafts_callable_returning_3_gives_drafts_3():
 
 def test_no_drafts_callable_gives_drafts_0():
     assert gather_facts(_deps(), NOW)["drafts"] == 0
+
+
+def test_new_missing_repos_drops_paths_already_reported():
+    assert new_missing_repos(["/b", "/a", "/a"], {"/b"}) == ["/a"]
+
+
+def test_a_fake_missing_repos_callable_returning_one_path_gives_facts_holding_it():
+    assert gather_facts(replace(_deps(), missing_repos=lambda: ["/x"]), NOW)["missing_repos"] == ["/x"]
+
+
+def test_absent_missing_and_reported_callables_give_an_empty_list():
+    assert gather_facts(_deps(), NOW)["missing_repos"] == []
+
+
+def test_a_reported_path_leaves_the_facts_empty_and_raises_no_quarantine():
+    deps = replace(_deps(), missing_repos=lambda: ["/x"], reported_repos=lambda: {"/x"})
+    facts = gather_facts(deps, NOW)
+    assert facts["missing_repos"] == []
+    assert facts["quarantines"] == gather_facts(_deps(), NOW)["quarantines"]

@@ -89,6 +89,7 @@ class Facts(TypedDict):
     # directory with no local run directory or log for that run id. Maps the initiative id to
     # that run id. Absent when the newest run is local, is a fetched remote run, or there is no run.
     remote_unfetched: dict[str, str]
+    missing_repos: NotRequired[list[str]]  # sorted repository paths newly seen missing this tick
 
 
 ActionKind = Literal[
