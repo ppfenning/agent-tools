@@ -22,6 +22,14 @@ def test_a_rescue_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     assert (is_fenced(rescue, 3), is_fenced(rescue, 4)) == (False, True)
 
 
+def test_a_stale_to_draft_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    stale_to_draft = stamp(
+        {"kind": "stale_to_draft", "initiative": "i", "stale_tasks": ["t3"], "reason": "no file change in 7 days", "since": "2026-09-20T00:00:00Z"},
+        3,
+    )
+    assert (is_fenced(stale_to_draft, 3), is_fenced(stale_to_draft, 4)) == (False, True)
+
+
 def test_a_full_facts_literal_has_the_keys_the_planners_read():
     facts: Facts = {
         "lease": {"holder": "a", "host": "h", "epoch": 3, "mine": True, "released": False, "stale": False},
