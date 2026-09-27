@@ -82,6 +82,7 @@ _KNOWN_KEYS = {
 _JSON_KEYS = {"sources", "repo_map"}
 
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
+_SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset
 
 
 class ProfileError(Exception):
@@ -100,7 +101,7 @@ def parse_profile(text: str) -> dict:
     """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
     plus one nested block: a bare `spend:` line followed by indented
     `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
-    floats onto the flat result.
+    floats onto the flat result, and a `weekly_reset:` line kept as text, quotes stripped.
 
     A nested key outside a `spend:` block, an unrecognized key inside one,
     or a key outside the known set raises ProfileError naming the offending
@@ -125,6 +126,12 @@ def parse_profile(text: str) -> dict:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             key, _, value = content.partition(":")
             key, value = key.strip(), value.strip()
+            if key in _SPEND_TEXT_KEYS:
+                text_value = value.strip("\"'")
+                if not text_value:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                result[key] = text_value
+                continue
             if key not in _SPEND_KEYS:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             try:
