@@ -862,14 +862,23 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
         for item in _work_items(ws)
     ]
-    rows = runs_stranded.stranded(task_records, items)
+    rows = runs_stranded.stranded(task_records, items, os.path.isdir)
+    missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
+
+    def report_missing() -> None:
+        if missing:
+            print(f"skipped missing repo: {', '.join(missing)}", file=sys.stderr)
+
     if a.json:
         print(json.dumps(rows))
+        report_missing()
         return 0
     if not rows:
         print("no stranded work")
+        report_missing()
         return 0
     print(records.format_table(rows, ["run", "task", "phase", "branch", "remedy"]))
+    report_missing()
     return 0
 
 
@@ -5505,6 +5514,20 @@ def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]
     return task_records, items
 
 
+def _chair_reported_repos_path(runs_dir: Path) -> Path:
+    """Beside `chair.lease.json`: the persisted set of repo paths already reported missing."""
+    return runs_dir / "chair.reported_repos.json"
+
+
+def _read_reported_repos(runs_dir: Path) -> set[str]:
+    raw = _json_or(_read_text_or_none(_chair_reported_repos_path(runs_dir)), [])
+    return set(raw) if isinstance(raw, list) else set()
+
+
+def _write_reported_repos(runs_dir: Path, repos: list[str]) -> None:
+    _chair_reported_repos_path(runs_dir).write_text(json.dumps(sorted(set(repos))), encoding="utf-8")
+
+
 def _live_by_host(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:
     """Live lanes per host name; a lane with no host, or on `local`, counts under the empty name."""
     names = [("" if lane.host in (None, local) else lane.host) for lane in lanes]
@@ -5562,6 +5585,21 @@ def _chair_run_deps(
         stranded = chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode))
         facts = chair_read_approved.read_fetch_facts(runs_dir, stranded)
         return chair_read_approved.with_runs(chair_read_approved.read_approved(ws, mode), stranded, facts)
+
+    last_missing_repos: list[str] = []  # edge state: the current tick's `missing_repos()` result, read back by `reported_repos()`
+
+    def missing_repos() -> list[str]:
+        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*_chair_stranded_inputs(ws, mode), os.path.isdir)
+        return last_missing_repos
+
+    def reported_repos() -> set[str]:
+        """Returns the set reported as of the *previous* tick, then persists this tick's `missing_repos()`
+        as the new reported set, so a still-missing repo is not reported again and one that reappears
+        as present is dropped. A dry run never persists, matching `beat`'s own rule."""
+        previous = _read_reported_repos(runs_dir)
+        if not dry_run:
+            _write_reported_repos(runs_dir, last_missing_repos)
+        return previous
 
     def epoch() -> int:
         lease = chair._read_lease(runs_dir, holder)
@@ -5622,6 +5660,8 @@ def _chair_run_deps(
         approved=approved,
         quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode),
         stranded=lambda: chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode)),
+        missing_repos=missing_repos,
+        reported_repos=reported_repos,
         attempts=lambda: chair_read_attempts.read_attempts(ws),
         has_patch=has_patch,
         live_initiatives=live_initiatives,

@@ -122,17 +122,18 @@ def test_missing_repos_omits_a_dropped_items_repo():
     assert runs_stranded.missing_repos([record], [_item("dropped")], lambda p: False) == []
 
 
-def _workspace(tmp_path, with_stranded):
+def _workspace(tmp_path, with_stranded, item_state="ready", record_repo=None):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
     ws = tmp_path / "ws"
     if with_stranded:
         tasks = ws / "runs" / "r1" / "tasks" / "p1"
         tasks.mkdir(parents=True)
-        (tasks / "t1.json").write_text(json.dumps(_record()), encoding="utf-8")
+        record = _record(repo=record_repo) if record_repo is not None else _record()
+        (tasks / "t1.json").write_text(json.dumps(record), encoding="utf-8")
         work = ws / "work" / "acme" / "p1"
         work.mkdir(parents=True)
-        (work / "t1.md").write_text("---\nid: t1\nstate: ready\n---\nbody\n", encoding="utf-8")
+        (work / "t1.md").write_text(f"---\nid: t1\nstate: {item_state}\n---\nbody\n", encoding="utf-8")
         (ws / "work" / "acme" / "initiative.md").write_text("---\nrepo: /repo/acme\n---\nbody\n", encoding="utf-8")
     else:
         (ws / "runs").mkdir(parents=True)
@@ -159,3 +160,22 @@ def test_cli_prints_no_stranded_work_and_exits_zero_on_an_empty_workspace(tmp_pa
 def test_cli_exits_two_when_the_profile_is_unreadable(tmp_path):
     rc = cli._runs_stranded(argparse.Namespace(profile=str(tmp_path / "absent.yaml"), runs_dir=None, json=False))
     assert rc == 2
+
+
+def test_cli_prints_no_stranded_work_when_the_items_state_is_dropped(tmp_path, capsys):
+    profile = _workspace(tmp_path, with_stranded=True, item_state="dropped")
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=False))
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert out.strip() == "no stranded work"
+    assert err == ""
+
+
+def test_cli_skips_a_missing_repo_and_names_it_on_stderr(tmp_path, capsys):
+    missing_repo = str(tmp_path / "gone")
+    profile = _workspace(tmp_path, with_stranded=True, record_repo=missing_repo)
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=False))
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert out.strip() == "no stranded work"
+    assert err.strip() == f"skipped missing repo: {missing_repo}"
