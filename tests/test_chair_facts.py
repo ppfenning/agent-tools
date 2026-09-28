@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from agent_tools import pacing
+from agent_tools import pacing, queue_rows
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import (
     FactsDeps,
@@ -219,12 +219,38 @@ def test_a_failed_retry_reads_two_and_the_planner_hands_it_to_the_chair():
 def test_dispatch_facts_split_the_local_lanes_from_each_lane_hosts():
     facts = dispatch_facts({"max_in_flight": 4}, ["jarvis"], {"": 3, "jarvis": 1})
     assert facts["live_runs"] == 3
-    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 1}]
+    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 1, "weight": 1, "capabilities": []}]
 
 
 def test_dispatch_facts_carry_a_hosts_own_capacity_only_when_it_has_one():
     facts = dispatch_facts({"max_in_flight": 4}, ["jarvis", "pi"], {}, {"jarvis": 8})
-    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 0, "capacity": 8}, {"name": "pi", "live_runs": 0}]
+    assert facts["hosts"] == [
+        {"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []},
+        {"name": "pi", "live_runs": 0, "weight": 1, "capabilities": []},
+    ]
+
+
+def test_dispatch_facts_carries_weight_and_capabilities_from_a_hosts_row():
+    facts = dispatch_facts({"max_in_flight": 4}, ["h1"], {}, weight={"h1": 2}, capabilities={"h1": ["go"]})
+    assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "weight": 2, "capabilities": ["go"]}]
+
+
+def test_dispatch_facts_defaults_weight_and_capabilities_with_no_row():
+    facts = dispatch_facts({"max_in_flight": 4}, ["h1"], {})
+    assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "weight": 1, "capabilities": []}]
+
+
+def test_a_ready_tasks_requires_frontmatter_reaches_the_facts():
+    def row(task: str, frontmatter: str) -> dict:
+        parsed = queue_rows.parse_item("task", ("i", "p1", f"{task}.md"), f"---\n{frontmatter}---\n")
+        assert parsed is not None
+        return {**parsed, "holder": None, "epoch": 0, "expires_at": None}
+
+    rows = [row("a", "state: ready\nrequires: [go]\n"), row("b", "state: ready\n")]
+    facts = gather_facts(replace(_deps(), queue=lambda: rows), NOW)
+    assert facts["initiatives"][0]["ready_tasks"] == [
+        {"id": "a", "needs": [], "requires": ["go"]}, {"id": "b", "needs": [], "requires": []},
+    ]
 
 
 def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
@@ -323,7 +349,9 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     facts = gather_facts(deps, NOW)
     # "j" also appears (its quarantined-state row leaves it unlaunchable): the fixed point is "i"'s own facts.
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
-    assert initiative_i == {"id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": []}], "landed": set()}
+    assert initiative_i == {
+        "id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": [], "requires": []}], "landed": set(),
+    }
     assert facts["intake"] == ["q1.md"]
     assert facts["quarantines"] == [
         {"task_id": "b", "initiative": "j", "cause": "code", "harness_failures": 0, "has_patch": False, "rescue_failed": False},

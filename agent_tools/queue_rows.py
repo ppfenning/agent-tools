@@ -8,6 +8,7 @@ route.parse_frontmatter: `yes`, `1.10` and `2026-02-30` are never coerced to a b
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import yaml
@@ -37,6 +38,17 @@ def _strs(value: Any) -> list[str]:
     if value is None or value == "":
         return []
     return [str(v) for v in value] if isinstance(value, list) else [str(value)]
+
+
+def requires_of(fields: Any) -> list[str]:
+    """A work item's `requires:` capabilities, read the way `needs` is; [] when it names none."""
+    return _strs(fields.get("requires")) if isinstance(fields, Mapping) else []
+
+
+def row_requires(row: Row) -> list[str]:
+    """`requires:` from a parsed or stored row. It stays in `extra`, not a lifted field: the store's work_items
+    table has no requires column, so a lifted key would never persist and every import would read as changed."""
+    return requires_of(row.get("extra"))
 
 
 def _identity(kind: str, path_parts: tuple[str, ...]) -> tuple[str, str, str, str | None] | None:

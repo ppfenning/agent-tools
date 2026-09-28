@@ -5787,7 +5787,8 @@ def _chair_run_deps(
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
         return chair_facts.dispatch_facts(
-            row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows)
+            row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
+            weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows),
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
@@ -6033,7 +6034,7 @@ def _host_store_write(a: argparse.Namespace, argv: list[str]) -> int:
 
 def _host_add(a: argparse.Namespace) -> int:
     """After the write, names the profile lane hosts the table now overrides, since they stop being lane hosts."""
-    code = _host_store_write(a, host_cmd.add_argv(a.name, a.ssh, a.capacity, _holder_label(a)))
+    code = _host_store_write(a, host_cmd.add_argv(a.name, a.ssh, a.capacity, a.weight, a.capabilities, _holder_label(a)))
     if code != 0:
         return code
     _, runs_dir, _ = _leader_runs_dir_or_refuse(a)
@@ -6150,6 +6151,8 @@ HOST_COMMANDS = [
         (
             commands.Arg(("name",)), commands.Arg(("--ssh",), {"required": True}),
             commands.Arg(("--capacity",), {"type": int, "required": True, "help": "lanes the host may run at once"}),
+            commands.Arg(("--weight",), {"type": int, "default": 1, "help": "share of new placements"}),
+            commands.Arg(("--capabilities",), {"default": "", "help": "comma-separated, e.g. go,rust"}),
         ),
         _host_add, False, (),
     ),

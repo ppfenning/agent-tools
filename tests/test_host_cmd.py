@@ -20,6 +20,29 @@ def test_the_host_list_line_has_state_capacity_beat_age_and_login():
     assert host_cmd.format_host_list([JARVIS], NOW) == ["jarvis  active  cap 8  beat 2m ago  login ok"]
 
 
+def test_row_weights_and_capabilities_read_active_rows_that_carry_them():
+    rows = [
+        {**JARVIS, "weight": 2, "capabilities": ["go"]},
+        {**JARVIS, "name": "pi", "weight": 3, "capabilities": "go,rust"},
+        {**JARVIS, "name": "old", "capabilities": '["go"]'},
+        {**JARVIS, "name": "gone", "state": "draining", "weight": 5, "capabilities": ["go"]},
+    ]
+    assert host_cmd.row_weights(rows) == {"jarvis": 2, "pi": 3}
+    assert host_cmd.row_capabilities(rows) == {"jarvis": ["go"], "pi": ["go", "rust"], "old": ["go"]}
+
+
+def test_a_row_from_a_store_with_no_weight_or_capabilities_column_yields_neither():
+    assert (host_cmd.row_weights([JARVIS]), host_cmd.row_capabilities([JARVIS])) == ({}, {})
+
+
+def test_add_argv_carries_weight_and_capabilities_the_same_way_capacity_does():
+    argv = host_cmd.add_argv("jarvis", "jarvis", 8, 2, "go,rust", "chair")
+    assert argv == [
+        "host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8",
+        "--weight", "2", "--capabilities", "go,rust", "--by", "chair",
+    ]
+
+
 def test_a_host_that_never_beat_reads_never_and_login_unknown():
     row = {**JARVIS, "beat_at": None, "versions_json": None}
     assert host_cmd.format_host_list([row], NOW) == ["jarvis  active  cap 8  beat never  login ?"]
@@ -135,9 +158,12 @@ def test_cox_host_add_runs_store_cli_host_upsert_with_the_holder_label(tmp_path,
 
     monkeypatch.setattr(cli.store_cli, "runner", fake_runner)
     monkeypatch.setenv("COX_SESSION_LABEL", "chair")
-    args = argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8)
+    args = argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8, weight=1, capabilities="")
     assert cli._host_add(args) == 0
-    assert seen == [["host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8", "--by", "chair"]]
+    assert seen == [[
+        "host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8",
+        "--weight", "1", "--capabilities", "", "--by", "chair",
+    ]]
     assert capsys.readouterr().out == '{"name": "jarvis"}\n'
 
 
@@ -148,7 +174,8 @@ def test_cox_host_add_names_the_profile_lane_hosts_the_table_now_overrides(tmp_p
         f"workspace_dir: {tmp_path / 'ws'}\nlane_hosts:\n  - name: pi\n    ssh: pi\n    workspace_dir: /w\n", encoding="utf-8",
     )
     monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: lambda argv: (0, "{}"))
-    assert cli._host_add(argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8)) == 0
+    args = argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8, weight=1, capabilities="")
+    assert cli._host_add(args) == 0
     assert capsys.readouterr().out.splitlines()[-1] == (
         "note: profile lane_hosts not in the hosts table are not lane hosts while it has rows: pi; add them with `cox host add`"
     )
