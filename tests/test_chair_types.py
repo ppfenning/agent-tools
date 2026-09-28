@@ -27,6 +27,11 @@ def test_a_mark_lost_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     assert (is_fenced(mark_lost, 3), is_fenced(mark_lost, 4)) == (False, True)
 
 
+def test_a_check_login_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    check_login = stamp({"kind": "check_login", "host": "h1"}, 3)
+    assert (is_fenced(check_login, 3), is_fenced(check_login, 4)) == (False, True)
+
+
 def test_a_stale_to_draft_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     stale_to_draft = stamp(
         {"kind": "stale_to_draft", "initiative": "i", "stale_tasks": ["t3"], "reason": "no file change in 7 days", "since": "2026-09-20T00:00:00Z"},
