@@ -54,26 +54,19 @@ def planned_tasks(approved: list[ApprovedTask], initiatives: list[InitiativeFact
     return _schedule(_first_of_each_id([t for t in approved if t["phase_done"]]), landed)
 
 
-def _run_suffix(run: str) -> int:
-    """The integer after a run id's last '-'; a carried phase's newest run has the highest one."""
-    return int(run.rsplit("-", 1)[-1])
-
-
 def plan_lands(facts: Facts) -> list[Action]:
-    """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one."""
+    """A land per planned task; a task whose run needs a fetch has one fetch of that run planned before its first land."""
     tasks = planned_tasks(facts["approved"], facts["initiatives"])
-    groups: dict[tuple[str, str], list[ApprovedTask]] = {}
-    for t in tasks:
-        groups.setdefault((t["initiative"], t["phase"]), []).append(t)
-    fetched: set[str] = set()
-    actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
-    for (initiative, phase), group in groups.items():
-        repo = group[0]["repo"]
-        runs = list({t["run"] for t in group})
-        run = runs[0] if len(runs) == 1 else max(runs, key=_run_suffix)
-        # The fetch follows the run the land names: fetching an older run of a carried phase leaves the land's run absent.
-        if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
-            actions.append({"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None})
-            fetched.add(run)
-        actions.append({"kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None})
-    return actions
+    first_of_run = {t["run"]: t["id"] for t in reversed(tasks) if t["needs_fetch"]}
+    return [
+        action
+        for t in tasks
+        for action in (
+            *(
+                [{"kind": "fetch", "run": t["run"], "repo": t["repo"], "initiative": t["initiative"], "epoch": None}]  # type: ignore[list-item]  # plan_tick stamps it
+                if first_of_run.get(t["run"]) == t["id"]
+                else []
+            ),
+            {"kind": "land", "task_id": t["id"], "repo": t["repo"], "run": t["run"], "initiative": t["initiative"], "epoch": None},  # type: ignore[typeddict-item]  # plan_tick stamps it
+        )
+    ]

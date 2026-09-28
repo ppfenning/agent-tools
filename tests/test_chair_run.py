@@ -2,8 +2,6 @@ import copy
 from dataclasses import replace
 from datetime import UTC, datetime
 
-import pytest
-
 from agent_tools import chair_exec, chair_report
 from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, run
@@ -19,12 +17,7 @@ def _facts(lease):
         "lease": lease,
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": []},
-        "approved": [
-            {
-                "id": "t1", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [],
-                "run": "x-1", "needs_fetch": False,
-            }
-        ],
+        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": True, "needs": [], "run": "x-1", "needs_fetch": False}],
         "initiatives": [],
         "quarantines": [],
         "intake": [],
@@ -86,11 +79,6 @@ class Rig:
         )
 
 
-@pytest.mark.xfail(
-    reason="plan_lands now plans land_phase; chair_exec performs it only once exec-land-phase lands "
-    "alongside this ticket in the same phase",
-    strict=True,
-)
 def test_once_runs_one_tick_that_lands_through_the_planner_and_never_sleeps():
     rig = Rig()
     assert run(True, 60, False, rig.deps()) is None
@@ -135,7 +123,7 @@ def _dry_run_plan(lease, **over):
 
 def test_a_dry_run_on_a_released_lease_plans_the_land_the_holder_would():
     kinds, rig = _dry_run_plan(FREE)
-    assert kinds == ["land_phase"]
+    assert kinds == ["land"]
     assert rig.acquired == [] and rig.commands == []
 
 
