@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from agent_tools.lane_hosts import LaneHost
-from agent_tools.remote_argv import launch_argv, ssh_argv
+from agent_tools.remote_argv import launch_argv, ssh_argv, sync_argv
 from agent_tools.remote_lane import remote_record
 from agent_tools.remote_launch import LaunchError, launch_on_host, launch_plan
 
@@ -65,6 +65,22 @@ def test_a_failing_ssh_names_the_ssh_step(tmp_path, monkeypatch):
     assert [c[0] for c in calls] == ["rsync", "ssh"]
 
 
+def test_a_failing_sync_stops_before_the_launch_argv_runs():
+    host, calls = LaneHost("box2", "me@box2", "/ws"), []
+    codes = iter([0, 1])
+
+    def run(argv):
+        calls.append(argv)
+        return next(codes)
+
+    result = launch_on_host(host, "init-x", "init-x-1", "l", "t", run, repo="/r")
+    assert result == LaunchError("sync", "updating /r on box2 exited 1: the lane would build on a stale main")
+    assert calls == [
+        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ssh_argv("me@box2", sync_argv("/r")),
+    ]
+
+
 def test_the_default_location_is_the_ssh_destination_and_path(tmp_path, monkeypatch):
     host, calls = _setup(tmp_path, monkeypatch), []
     launch_on_host(host, "init", "r1", "lbl", "t", _fake_run(calls, {"rsync": 0}))
@@ -75,6 +91,25 @@ def test_launch_plan_is_the_rsync_argv_then_the_ssh_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l") == [
         ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [
+            "ssh",
+            "me@box2",
+            "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
+        ],
+    ]
+
+
+def test_launch_plan_without_a_repo_returns_todays_two_argv():
+    host = LaneHost("box2", "me@box2", "/ws")
+    assert launch_plan(host, "init-x", "init-x-1", "l", repo=None) == launch_plan(host, "init-x", "init-x-1", "l")
+    assert len(launch_plan(host, "init-x", "init-x-1", "l", repo=None)) == 2
+
+
+def test_launch_plan_with_a_repo_returns_three_argv():
+    host = LaneHost("box2", "me@box2", "/ws")
+    assert launch_plan(host, "init-x", "init-x-1", "l", repo="/r") == [
+        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ssh_argv("me@box2", sync_argv("/r")),
         [
             "ssh",
             "me@box2",
