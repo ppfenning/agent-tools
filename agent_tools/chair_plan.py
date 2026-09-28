@@ -45,6 +45,11 @@ def _needs_chair_only(actions: list[Action]) -> list[Action]:
     return [a for a in actions if a["kind"] == "needs_chair"]
 
 
+def _dispatch_room(dispatch: DispatchFacts) -> int:
+    """The lanes this machine has free before any launch this tick."""
+    return max(0, dispatch["max_in_flight"] - dispatch["live_runs"])
+
+
 def _free_lanes(cap: int, kept: int, dispatch: DispatchFacts) -> int:
     return max(0, min(cap - kept, dispatch["max_in_flight"] - dispatch["live_runs"] - kept))
 
@@ -110,7 +115,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     if facts["limits"]["hard_stop"]:
         return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered)]
     cap = _launch_cap(facts["limits"])
-    capped = _cap_launches(recovered, cap)
+    capped = _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
