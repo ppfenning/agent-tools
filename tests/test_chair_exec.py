@@ -428,6 +428,32 @@ def test_a_mark_lost_action_is_recorded_without_running_anything() -> None:
     assert calls == [("record", "mark_lost")]
 
 
+def test_a_check_login_action_calls_the_injected_edge_with_its_host_and_is_recorded() -> None:
+    hosts_seen: list = []
+
+    def fake_check_login(host: str) -> dict:
+        hosts_seen.append(host)
+        return {"name": host, "versions_json": {"login_ok": True}}
+
+    deps = replace(_deps([]), check_login=fake_check_login)
+    results = perform([{"kind": "check_login", "host": "shed", "epoch": 1}], deps, lambda: 1, False)
+    assert hosts_seen == ["shed"]
+    assert [r["status"] for r in results] == ["recorded"]
+
+
+def test_a_fenced_check_login_action_calls_nothing() -> None:
+    hosts_seen: list = []
+
+    def fake_check_login(host: str) -> dict:
+        hosts_seen.append(host)
+        return {}
+
+    deps = replace(_deps([]), check_login=fake_check_login)
+    results = perform([{"kind": "check_login", "host": "shed", "epoch": 0}], deps, lambda: 1, False)
+    assert hosts_seen == []
+    assert [r["status"] for r in results] == ["fenced"]
+
+
 def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:
     recorded: list = []
     deps = Deps(

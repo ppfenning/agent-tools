@@ -5,6 +5,7 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -18,12 +19,15 @@ from agent_tools import (
     chair,
     chair_apply_fetch,
     chair_housekeeping,
+    chair_login_check,
+    chair_login_watch,
     chair_plan_prune,
     courier,
     remote_lane,
     route,
     run_store,
     stale_draft,
+    store_cli,
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
@@ -79,6 +83,7 @@ class Deps:
     # inbox to the human at start. A session label such as "chair-2026-09-27" would reach only that
     # one session, so the generic label is used here.
     note_to: str = "chair"
+    check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -403,6 +408,17 @@ def _stale_to_draft(action: Action, deps: Deps) -> Result:
     return _result(action, "done", f"drafted {initiative}: stale tasks {stale_tasks}")
 
 
+def _check_login(action: Action, deps: Deps) -> Result:
+    """Runs the injected check_login edge against the action's host; the row it prints becomes the reason.
+    Never touches the attempts table, so its outcome is always "recorded", the same status standby and
+    mark_lost carry."""
+    host = action.get("host", "")
+    if not host or deps.check_login is None:
+        return _result(action, "refused", "check_login needs a host and a wired check_login edge")
+    row = deps.check_login(host)
+    return _result(action, "recorded", json.dumps(row, sort_keys=True))
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
@@ -411,6 +427,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _clear(action, deps, blocked)
     if kind == "take_lease":
         return _lease(action, deps)
+    if kind == "check_login":
+        return _check_login(action, deps)
     if kind in ("standby", "needs_chair", "mark_lost"):
         return _result(action, "recorded")
     if kind == "fetch_exit":
@@ -503,6 +521,32 @@ def read_intake_id(workspace: Path, path: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _host_row(runs_dir: Path, host: str) -> dict:
+    """Edge. The hosts-table row named `host`; an empty row when the table has none by that name."""
+    return next((row for row in run_store.hosts(runs_dir) if str(row.get("name")) == host), {})
+
+
+def _cli_run(runs_dir: Path, argv: list[str]) -> dict:
+    """Edge. Runs `argv` through `store_cli.runner(runs_dir)` and parses its stdout as the row it printed;
+    an unparseable or non-object reply reads as an empty row, never an exception."""
+    _, output = store_cli.runner(runs_dir)(argv)
+    try:
+        parsed = json.loads(output)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _check_login_edge(runs_dir: Path, ssh_run: Run, host: str) -> dict:
+    """Edge. `check_login_on_host` for `host`, its ssh and versions read from the hosts table, "now" read
+    from the clock at call time -- never at `edge_deps` construction time."""
+    row = _host_row(runs_dir, host)
+    ssh = str(row.get("ssh", ""))
+    current_versions = chair_login_watch._versions(row)
+    now = datetime.now(UTC).isoformat()
+    return chair_login_check.check_login_on_host(host, ssh, current_versions, now, ssh_run, partial(_cli_run, runs_dir))
+
+
 def edge_deps(
     runs_dir: Path,
     workspace: Path,
@@ -529,4 +573,5 @@ def edge_deps(
         intake_id=partial(read_intake_id, workspace),
         runs_dir=runs_dir,
         work_dir=workspace,
+        check_login=partial(_check_login_edge, runs_dir, run),
     )
