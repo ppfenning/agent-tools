@@ -13,8 +13,8 @@ def sync_argv() -> list[str]:
     return ["cox", "lake", "sync"]
 
 
-def prune_argv(traces_root: str) -> list[str]:
-    return ["python", "-m", "harness.store_backfill_traces", "prune", traces_root, "--older-than", "7"]
+def prune_argv(traces_root: str, days: int = 7) -> list[str]:
+    return ["python", "-m", "harness.store_backfill_traces", "prune", traces_root, "--older-than", str(days)]
 
 
 def clean_argv() -> list[str] | None:
@@ -49,11 +49,12 @@ def run_housekeeping(
     run: Callable[[list[str]], tuple[int, str]],
     traces_root: str,
     prune_available: Callable[[], bool],
+    retention_days: int = 7,
 ) -> tuple[str, str]:
     clean = clean_argv()
     lines = [
         _attempt(run, "lake sync", sync_argv()),
-        _attempt(run, "prune", prune_argv(traces_root)) if prune_available() else PRUNE_SKIPPED,
+        _attempt(run, "prune", prune_argv(traces_root, retention_days)) if prune_available() else PRUNE_SKIPPED,
         _attempt(run, "clean", clean) if clean is not None else f"clean skipped: {CLEAN_MISSING}",
     ]
     failed = any(": FAILED" in line for line in lines)

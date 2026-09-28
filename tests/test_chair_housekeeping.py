@@ -63,3 +63,7 @@ def test_join_reason_keeps_failed_names():
     reason = hk.join_reason(lines)
     assert len(reason) <= 200
     assert all(f"{n}: FAILED" in reason for n in ("lake sync", "prune", "clean"))
+
+
+def test_the_trace_prune_keeps_the_configured_number_of_days():
+    assert hk.prune_argv("/t", 14)[-2:] == ["--older-than", "14"]
