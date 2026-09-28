@@ -1,6 +1,7 @@
 import copy
 
 from agent_tools.chair_plan_recover import plan_recover
+from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_types import ApprovedTask, Facts, InitiativeFacts, QuarantineFacts
 
 
@@ -92,6 +93,11 @@ def test_two_harness_failures_with_a_patch_are_not_rescued():
 def test_a_non_harness_cause_with_a_patch_is_not_rescued():
     facts = _facts([], [_quarantine(cause="verify", has_patch=True)])
     assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "verify"}]
+
+
+def test_a_runaway_cause_always_needs_the_chair_even_with_zero_failures():
+    facts = _facts([], [_quarantine(cause=RUNAWAY_CAUSE, failures=0)])
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "runaway"}]
 
 
 def test_a_rescued_initiative_is_not_relaunched_this_tick():

@@ -4,6 +4,7 @@ Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 """
 from typing import Literal
 
+from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts
 
 Recovery = Literal["rescue", "retry", "needs_chair", "none"]
@@ -12,6 +13,10 @@ STRANDED_CAUSE = "stranded"
 
 
 def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]]) -> Recovery:
+    # A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: no harness_failures
+    # count, retry count or approval state ever turns it into a retry or a rescue.
+    if q["cause"] == RUNAWAY_CAUSE:
+        return "needs_chair"
     # A stranded task that is also an approved, unlanded row waits for its own phase to land as a whole: no
     # lone land, and not the chair either. The match is (initiative, task id), not the bare id. It cannot
     # include phase: a task id repeats across phases and QuarantineFacts carries no phase, so a same-id task in
@@ -66,6 +71,8 @@ def plan_recover(facts: Facts) -> list[Action]:
     """Quarantine actions in input order, then relaunch pairs.
 
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
+    A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
+    rescued, whatever its harness_failures, retry count or approval state.
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
     rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.

@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
 
+from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_report import (
     Deps,
     echo_line,
     format_status,
     housekeeping_fragment,
     lands_this_tick,
+    needs_chair_items,
     write_status,
 )
 from agent_tools.notify import Notification
@@ -34,6 +36,15 @@ def test_holding_line_carries_lanes_lands_limits_and_needs():
         "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% weekly 61%/90% | holding"
         " | needs chair: epic-a:harness | housekeeping never"
     )
+
+
+def test_needs_chair_items_puts_runaway_entries_first_and_bare():
+    actions = [
+        {"kind": "needs_chair", "initiative": "a", "cause": "budget"},
+        {"kind": "needs_chair", "initiative": "b", "cause": RUNAWAY_CAUSE},
+        {"kind": "needs_chair", "initiative": "c", "cause": "scope"},
+    ]
+    assert needs_chair_items(actions) == ["RUNAWAY b", "needs chair: a:budget", "needs chair: c:scope"]
 
 
 def test_standby_line_names_the_holder_and_host():
