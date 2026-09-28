@@ -699,7 +699,10 @@ def test_a_take_lease_over_an_expired_takeover_steals_and_a_plain_one_does_not()
 def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_none(monkeypatch, tmp_path) -> None:
     taken: list = []
     monkeypatch.setattr(chair_exec.chair, "acquire_lease", lambda runs_dir, session, pid, host, steal=False: taken.append((session, pid, host)) or "")
-    deps = chair_exec.edge_deps(tmp_path, tmp_path, "chair-loop", 42, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None, host="omarchy")
+    deps = chair_exec.edge_deps(
+        tmp_path, tmp_path, "chair-loop", 42, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
+        host="omarchy", harness_python="/venv/bin/python",
+    )
     perform([{"kind": "take_lease", "epoch": 1, "reason": "takeover expired at 2026-09-27T23:00:00+00:00"}], deps, lambda: 1, False)
     assert taken == [("chair-loop", 42, "omarchy")]
 
@@ -818,8 +821,20 @@ def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
     assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea", "--no-claim"])]
 
 
-_HK_PROBE = ["python", "-m", "harness.store_backfill_traces", "prune", "--help"]
-_HK_PRUNE = ["python", "-m", "harness.store_backfill_traces", "prune", "t/traces", "--older-than", "7"]
+def test_prune_available_probes_the_harness_python() -> None:
+    seen: list = []
+
+    def run(argv: list) -> tuple[int, str]:
+        seen.append(argv)
+        return (0, "")
+
+    assert chair_exec._prune_available(run, "/venv/bin/python") is True
+    assert seen[0][0] == "/venv/bin/python"
+
+
+_HK_PYTHON = "/venv/bin/python"
+_HK_PROBE = [_HK_PYTHON, "-m", "harness.store_backfill_traces", "prune", "--help"]
+_HK_PRUNE = [_HK_PYTHON, "-m", "harness.store_backfill_traces", "prune", "t/traces", "--older-than", "7"]
 _HK_SYNC = ["cox", "lake", "sync"]
 
 
@@ -833,6 +848,7 @@ def _hk_deps(monkeypatch, calls: list, fail: tuple = ()) -> Deps:
     return Deps(
         run=run, delete_branches=lambda repo, pattern: ([], ""), acquire_lease=lambda holder, host: "",
         record=lambda action: None, run_id=lambda action: "", repo_for=lambda action: "",
+        harness_python=_HK_PYTHON,
     )
 
 

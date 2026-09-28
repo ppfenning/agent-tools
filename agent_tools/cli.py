@@ -5905,6 +5905,8 @@ def _chair_run_deps(
     """Every source has an edge reader; `_ChairUnwired` stays for a source that loses one. A dry run never beats the lease."""
     holder = chair.lease_holder(session, pid, host)
     ws = runs_dir.parent
+    harness_dir = profile.get("harness_dir", "")
+    harness_python = str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
 
     def now() -> datetime.datetime:
         return datetime.datetime.now(datetime.UTC)
@@ -6053,6 +6055,7 @@ def _chair_run_deps(
         run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
         record=chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder),
         host=host,
+        harness_python=harness_python,
         log_retention_days=run_logs.retention_days(profile),
     )
     return chair_run.RunDeps(

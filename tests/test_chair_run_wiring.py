@@ -4,6 +4,7 @@ import dataclasses
 import json
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 from agent_tools import chair_facts, chair_run, cli
 
@@ -135,6 +136,19 @@ def test_housekeeping_hours_is_none_with_no_chair_namespace_in_the_profile(tmp_p
     runs = tmp_path / "runs"
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     assert deps.facts_deps.housekeeping_hours() is None
+
+
+def test_harness_python_is_the_configured_harness_venv(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    profile = {"harness_dir": str(tmp_path / "harness")}
+    deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.exec_deps.harness_python == str(Path(profile["harness_dir"]) / ".venv" / "bin" / "python")
+
+
+def test_harness_python_falls_back_to_the_bare_interpreter_with_no_harness_dir(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.exec_deps.harness_python == "python"
 
 
 def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_path) -> None:
