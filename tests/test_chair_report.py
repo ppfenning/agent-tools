@@ -123,6 +123,10 @@ def test_a_land_counts_only_when_landed():
     assert lands_this_tick([_landed(), _landed(status="not_landed"), _landed("clear_branches", "done")]) == 1
 
 
+def test_a_land_phase_counts_the_same_as_a_land():
+    assert lands_this_tick([_landed("land_phase"), _landed("land_phase", status="not_landed")]) == 1
+
+
 def test_write_status_notifies_only_when_given():
     printed, sent = [], []
     write_status("line", Deps(echo=printed.append))

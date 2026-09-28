@@ -45,7 +45,10 @@ def _blocked(id: str) -> dict:
 
 
 def _approved(id: str) -> dict:
-    return {"id": id, "initiative": "x", "repo": "r", "phase_done": True, "needs": [], "run": "x-1", "needs_fetch": False}
+    return {
+        "id": id, "initiative": "x", "repo": "r", "phase": "p", "phase_done": True, "needs": [], "run": "x-1",
+        "needs_fetch": False,
+    }
 
 
 def _kinds(actions: list[dict]) -> list[str]:
@@ -87,7 +90,7 @@ def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
         intake=["n1", "n2"],
     )
     assert plan_tick(facts) == [
-        {"kind": "land", "task_id": "t1", "repo": "r", "run": "x-1", "initiative": "x", "epoch": 7},
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7},
         {"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7},
     ]
 
@@ -100,7 +103,7 @@ def test_go_degraded_blocks_every_launch_but_keeps_lands_and_needs_chair():
         quarantines=[{"task_id": "p", "initiative": "m", "cause": "scope", "harness_failures": 0}],
         intake=["n1", "n2"],
     )
-    assert _kinds(plan_tick(facts)) == ["land", "needs_chair"]
+    assert _kinds(plan_tick(facts)) == ["land_phase", "needs_chair"]
 
 
 def test_launch_cap_keeps_the_first_relaunches_in_order_and_drops_the_paired_clear_of_the_rest():
@@ -322,7 +325,7 @@ def _mixed() -> Facts:
 
 def test_every_action_carries_the_lease_epoch():
     assert [(a["kind"], a["epoch"]) for a in plan_tick(_mixed())] == [
-        ("land", 42),
+        ("land_phase", 42),
         ("needs_chair", 42),
         ("clear_branches", 42),
         ("relaunch", 42),
@@ -497,4 +500,4 @@ def test_a_standby_tick_plans_no_housekeeping():
 
 def test_a_tick_that_would_emit_two_housekeeping_actions_is_capped_at_one_and_last():
     kinds = _kinds(plan_tick(_facts(approved=[_approved("t1")], initiatives=[_initiative("i")]), _NOW))
-    assert (kinds.count("housekeeping"), kinds[-1], "land" in kinds) == (1, "housekeeping", True)
+    assert (kinds.count("housekeeping"), kinds[-1], "land_phase" in kinds) == (1, "housekeeping", True)
