@@ -118,6 +118,14 @@ def test_file_changed_at_of_a_git_tracked_file_is_its_commit_instant(tmp_path):
     assert datetime.fromisoformat(changed) == datetime(2026, 9, 20, 8, 0, tzinfo=UTC)
 
 
+def test_file_changed_at_of_an_uncommitted_ticket_on_disk_is_its_modification_time(tmp_path):
+    repo = _git_repo_with_committed_file(tmp_path)
+    fresh = repo / "work" / "a" / "p1" / "fresh.md"
+    fresh.write_text("new ticket\n", encoding="utf-8")
+    os.utime(fresh, (1790000000, 1790000000))
+    assert file_changed_at(repo, "a", "p1", "fresh") == datetime.fromtimestamp(1790000000, UTC).isoformat()
+
+
 def test_file_changed_at_of_a_file_with_no_commit_history_is_none(tmp_path):
     assert file_changed_at(_git_repo_with_committed_file(tmp_path), "a", "p1", "never-committed") is None
 
@@ -137,8 +145,12 @@ def test_read_stale_candidates_gives_one_row_per_open_task_and_keeps_phases_apar
     _write_task(repo, "p2", "t1", "blocked")
     _write_task(repo, "p1", "done-task", "done")
     rows = read_stale_candidates(repo, datetime(2026, 9, 27, tzinfo=UTC))
-    blank = {"initiative": "a", "task_id": "t1", "last_file_change": None, "last_chair_action": None}
+    blank = {"initiative": "a", "task_id": "t1", "last_chair_action": None}
+
+    def mtime(phase: str) -> str:
+        return datetime.fromtimestamp((repo / "work" / "a" / phase / "t1.md").stat().st_mtime, UTC).isoformat()
+
     assert rows == [
-        {**blank, "state": "ready", "last_run": "2026-09-23T00:00:00+00:00", "quarantine_non_harness_count": 2},
-        {**blank, "state": "blocked", "last_run": None, "quarantine_non_harness_count": 0},
+        {**blank, "state": "ready", "last_file_change": mtime("p1"), "last_run": "2026-09-23T00:00:00+00:00", "quarantine_non_harness_count": 2},
+        {**blank, "state": "blocked", "last_file_change": mtime("p2"), "last_run": None, "quarantine_non_harness_count": 0},
     ]
