@@ -2769,18 +2769,38 @@ def _resolve_profile_or_refuse(a: argparse.Namespace):
     return profile, None
 
 
+def _item_shape(rel: str) -> tuple[str, tuple[str, ...]] | None:
+    """(`kind`, `path_parts`) `queue_rows.parse_item` wants for one `_write_mapping` key, or `None` for a
+    path with no queue row of its own — an `initiative.md`, or anything outside `work/`/`intake/` — the same
+    split `_sync_filed_items` already draws between a synced item and the initiative doc beside it."""
+    parts = Path(rel).parts
+    if len(parts) == 4 and parts[0] == "work":
+        return "task", parts[1:]
+    if len(parts) in (2, 3) and parts[0] == "intake":
+        return "intake", parts[1:]
+    return None
+
+
 def _write_mapping(mapping: dict, ws: Path, by: str = _UNLABELED):
     """Write `mapping` (relative path -> text) under `ws`; `None` on success, else the refusal to print.
-    Each `work/<initiative>/<phase>/<task>.md` written with a `state:` is mirrored to the store, one call per file."""
+    A `work/<initiative>/<phase>/<task>.md` or `intake/...md` path is filed store-first through
+    `route.write_filed_item`, which prints its own warning or error; anything else (an `initiative.md`) is
+    written directly, as it always was. Each `work/<initiative>/<phase>/<task>.md` written with a `state:`
+    is then mirrored to the store the same as today, one call per file."""
     targets = {rel: ws / rel for rel in mapping}
     existing = [str(path) for path in targets.values() if path.exists()]
     if existing:
         return f"routing: refusing to overwrite existing path(s): {', '.join(existing)}"
+    runs_dir = ws / "runs"
     for rel, path in targets.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(mapping[rel], encoding="utf-8")
+        shape = _item_shape(rel)
+        if shape is None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(mapping[rel], encoding="utf-8")
+        elif route.write_filed_item(runs_dir, path, *shape, mapping[rel]) != 0:
+            return f"routing: {path} was recorded in the store but its own file did not write; see above"
         print(str(path))
-        _mirror_filed_state(rel, mapping[rel], ws / "runs", by)
+        _mirror_filed_state(rel, mapping[rel], runs_dir, by)
     return None
 
 

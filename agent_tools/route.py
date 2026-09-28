@@ -1,6 +1,8 @@
-"""Pure core for the routing layer: profile parsing and naming. No file
-reads, no env access — every function here takes plain arguments and
-returns plain values."""
+"""Pure core for the routing layer: profile parsing and naming, plus the one thin edge `cox route file`
+writes a file through. Every function here but `write_filed_item` takes plain arguments and returns plain
+values, with no file reads and no env access. `write_filed_item` is the exception the name says it is: it
+decides through two pure helpers (`_unrecorded_row_warning`, `_filed_write_error`) what to print, and does
+no more I/O than the one store call and the one file write the ticket asks it to order."""
 
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import chair, run_store
+from agent_tools import chair, queue_rows, run_store
 from agent_tools.pacing import Assessment
 
 __all__ = [
@@ -51,6 +53,7 @@ __all__ = [
     "status_rows",
     "surface_candidates",
     "work_item",
+    "write_filed_item",
 ]
 
 _PROFILE_FIELDS = (
@@ -1204,6 +1207,43 @@ def run_under_claim[T](
             run_store.release_row(runs_dir, initiative, task_id, holder)
         raise
     return None, lines, value
+
+
+def _unrecorded_row_warning(path: Path, row: queue_rows.Row | None) -> str:
+    """Pure: why `write_filed_item` is about to write `path` with no store row behind it yet."""
+    if row is None:
+        return f"routing: no store row for {path} (an unrecognized item shape); filing it without one"
+    return f"routing: store unavailable, filing {path} without it"
+
+
+def _filed_write_error(path: Path, stored: bool, exc: OSError) -> str:
+    """Pure: the one line `write_filed_item` prints when the file write itself fails, naming which side —
+    the store, the file, or both — is now out of step."""
+    if stored:
+        return f"routing: store recorded {path} but the file write failed: {exc}"
+    return f"routing: store unavailable and the file write for {path} failed too: {exc}"
+
+
+def write_filed_item(runs_dir: Path, path: Path, kind: str, path_parts: tuple[str, ...], text: str) -> int:
+    """The store first, the file second, for one file `cox route file` is about to write. `queue_rows.parse_item`
+    is the codec that turns `(kind, path_parts, text)` into the row; `run_store.upsert_row` is the seam that
+    takes it. A store that cannot take it — down, or a shape the codec does not recognize — is one warning, not
+    a refusal, and the file is written the same as today, so a machine without a harness still files the work;
+    the next `route import` or chair export reconciles it. A file write that then fails is one printed line and
+    a non-zero return either way, since a store row already taken makes the row the record a chair export
+    recreates the file from, and a store that never took one leaves nothing else to fall back on. Returns 0 on
+    the ordinary, no-surprise path."""
+    row = queue_rows.parse_item(kind, path_parts, text)
+    stored = row is not None and run_store.upsert_row(runs_dir, row)
+    if not stored:
+        print(_unrecorded_row_warning(path, row))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        print(_filed_write_error(path, stored, exc))
+        return 1
+    return 0
 
 
 def status_rows(entries) -> list:
