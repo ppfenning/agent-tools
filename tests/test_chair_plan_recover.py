@@ -157,3 +157,27 @@ def test_plan_recover_leaves_the_facts_unchanged():
     before = copy.deepcopy(facts)
     plan_recover(facts)
     assert facts == before
+
+
+def test_a_stranded_approved_quarantine_does_not_block_relaunch_when_ready():
+    facts = _facts([_initiative()], [_quarantine(cause="stranded", task_id="q1")], approved=[_approved(task_id="q1")])
+    assert plan_recover(facts) == [
+        {"kind": "clear_branches", "initiative": "i"},
+        {"kind": "relaunch", "initiative": "i"},
+    ]
+
+
+def test_a_second_non_none_quarantine_on_the_same_initiative_still_blocks_relaunch():
+    facts = _facts(
+        [_initiative()],
+        [_quarantine(cause="stranded", task_id="q1"), _quarantine(cause="verify", task_id="q2")],
+        approved=[_approved(task_id="q1")],
+    )
+    assert plan_recover(facts) == [{"kind": "needs_chair", "initiative": "i", "cause": "verify"}]
+
+
+def test_a_stranded_approved_quarantine_alone_does_not_relaunch_without_ready_tasks():
+    facts = _facts(
+        [_initiative(ready=[])], [_quarantine(cause="stranded", task_id="q1")], approved=[_approved(task_id="q1")]
+    )
+    assert plan_recover(facts) == []

@@ -63,15 +63,16 @@ def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> 
 
 
 def plan_recover(facts: Facts) -> list[Action]:
-    """Quarantine actions in input order, then relaunch pairs. An open quarantine blocks its initiative's relaunch.
+    """Quarantine actions in input order, then relaunch pairs.
 
+    Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
     rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
     """
     quarantines = facts["quarantines"]
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
-    blocked = {q["initiative"] for q in quarantines}
+    blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"}
     return _quarantine_actions(quarantines, approved) + _relaunch_actions(facts["initiatives"], blocked)
 
 
