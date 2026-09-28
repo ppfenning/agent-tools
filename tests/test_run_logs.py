@@ -2,6 +2,8 @@ import gzip
 import os
 from datetime import UTC, datetime
 
+import pytest
+
 from agent_tools import route, run_logs
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
@@ -32,7 +34,7 @@ def test_logs_are_archived_beside_the_traces_by_month():
 
 
 def test_a_due_log_is_archived_readably_and_then_removed_locally(tmp_path):
-    from pyiceberg.io import load_file_io
+    load_file_io = pytest.importorskip("pyiceberg.io").load_file_io  # the `lake` extra; the extras job runs this
 
     runs = tmp_path / "runs"
     runs.mkdir()
