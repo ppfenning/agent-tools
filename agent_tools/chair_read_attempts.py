@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent_tools import run_store
 from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, Key, run_initiative
-from agent_tools.chair_read_quarantined import attempts_on_current_body, item_body
+from agent_tools.chair_read_quarantined import attempts_on_current_body, body_sha, item_body
 from agent_tools.stats_chair import frontmatter_item
 
 
@@ -19,8 +19,13 @@ def path_parts(path: str) -> tuple[str | None, str | None, str | None]:
     return (tail[0], tail[1], tail[2]) if len(tail) == 3 else (None, None, None)
 
 
-def attempt_rows(items: Iterable[tuple[str, Iterable[Mapping] | None]]) -> list[dict]:
-    """One row per attempt, sorted by `ts` oldest first; a row without `ts` sorts first. The attempt's own fields win over the path's."""
+def attempt_rows(
+    items: Iterable[tuple[str, Iterable[Mapping] | None] | tuple[str, Iterable[Mapping] | None, str | None]],
+) -> list[dict]:
+    """One row per attempt, sorted by `ts` oldest first; a row without `ts` sorts first. The attempt's own fields win
+    over the path's. An item may carry its current body as a third element; `on_current_body` is True when the
+    attempt has no `body_sha` or its `body_sha` equals that body's, else False."""
+    triples = [(path, attempts, (rest[0] if rest else None)) for path, attempts, *rest in items]
     rows = [
         {
             **attempt,
@@ -30,8 +35,9 @@ def attempt_rows(items: Iterable[tuple[str, Iterable[Mapping] | None]]) -> list[
             "phase": attempt.get("phase") or path_parts(path)[1],
             "run": attempt.get("run"),
             "cause": attempt.get("cause"),
+            "on_current_body": not attempt.get("body_sha") or attempt.get("body_sha") == body_sha(body or ""),
         }
-        for path, attempts in items
+        for path, attempts, body in triples
         for attempt in (attempts or [])
         if isinstance(attempt, Mapping)
     ]
@@ -71,6 +77,7 @@ def with_stored_rescues(rows: Iterable[Mapping], store_rows: Iterable[Mapping], 
             "ts": s["ts"],
             "kind": "rescue_failed",
             "cause": RESCUE_FAILED_CAUSE,
+            "on_current_body": True,
         }
         for s in store_rows
     ]
@@ -87,11 +94,12 @@ def read_attempts(root: Path) -> list[dict]:
 
     The store's rescue_failed rows are added, since a failed rescue leaves no attempt in any file."""
     texts = {path: path.read_text(encoding="utf-8") for path in sorted((root / "work").glob("*/*/*.md"))}
-    pairs = [(str(p.relative_to(root)), frontmatter_item(t, p.stem).get("attempts")) for p, t in texts.items()]
-    starts = current_body_starts(
-        (rel, item_body(text), attempts) for (rel, attempts), text in zip(pairs, texts.values(), strict=True)
-    )
-    rows = attempt_rows(pairs)
+    items = [
+        (str(p.relative_to(root)), item_body(text), frontmatter_item(text, p.stem).get("attempts"))
+        for p, text in texts.items()
+    ]
+    starts = current_body_starts(items)
+    rows = attempt_rows((rel, attempts, body) for rel, body, attempts in items)
     runs = sorted({str(r["run"]) for r in rows if r["run"] and not r["cause"]})
     filled = fill_causes(rows, run_store.attempt_causes_for(root / "runs", runs))
     return with_stored_rescues(filled, run_store.rescue_failures(root / "runs"), starts)
