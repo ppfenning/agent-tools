@@ -2317,8 +2317,15 @@ def _route_drift(a: argparse.Namespace) -> int:
 
 
 def _route_import_files(ws: Path) -> list[tuple[tuple[str, ...], str]]:
-    """Edge: `(path_parts, text)` for every intake and task file under `ws`, `path_parts` relative to `ws`."""
-    paths = sorted(ws.glob("intake/*.md")) + sorted(ws.glob("intake/done/*.md")) + sorted(ws.glob("work/*/*/*.md"))
+    """Edge: `(path_parts, text)` for every intake file, task file, and `initiative.md` under `ws`,
+    `path_parts` relative to `ws`. `plan_import` still writes no row for an `initiative.md`; it reads
+    the file's text only to derive an intake row's `queued`/`decomposed`/`landed` state."""
+    paths = (
+        sorted(ws.glob("intake/*.md"))
+        + sorted(ws.glob("intake/done/*.md"))
+        + sorted(ws.glob("work/*/*/*.md"))
+        + sorted(ws.glob("work/*/initiative.md"))
+    )
     return [(p.relative_to(ws).parts, t) for p in paths if (t := _read_text_or_none(p)) is not None]
 
 

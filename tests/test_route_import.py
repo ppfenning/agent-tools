@@ -50,6 +50,35 @@ def test_files_sharing_a_store_key_import_the_first_and_skip_the_rest_on_every_r
     assert (list(second.to_write), second.unchanged, second.skipped) == ([], 1, 1)
 
 
+def test_an_intake_file_named_by_an_initiatives_intake_field_imports_as_decomposed():
+    files = [
+        (("work", "demo", "initiative.md"), "---\nintake: intake/idea.md\n---\n\nAbout demo\n"),
+        (("work", "demo", "1-build", "task.md"), _TASK_TEXT),
+        (("intake", "idea.md"), "---\ntitle: An idea\n---\n\nBody\n"),
+    ]
+    plan = route_import.plan_import(files, [])
+    intake_row = next(r for r in plan.to_write if r["kind"] == "intake")
+    assert intake_row["state"] == "decomposed"
+
+
+def test_an_intake_file_named_by_a_done_initiatives_intake_field_imports_as_landed():
+    done_task_text = "---\nstate: done\ntitle: Do the task\n---\n\nDo the task\n"
+    files = [
+        (("work", "demo", "initiative.md"), "---\nintake: intake/idea.md\n---\n\nAbout demo\n"),
+        (("work", "demo", "1-build", "task.md"), done_task_text),
+        (("intake", "idea.md"), "---\ntitle: An idea\n---\n\nBody\n"),
+    ]
+    plan = route_import.plan_import(files, [])
+    intake_row = next(r for r in plan.to_write if r["kind"] == "intake")
+    assert intake_row["state"] == "landed"
+
+
+def test_an_intake_file_named_by_no_initiative_still_imports_as_queued():
+    files = [(("intake", "idea.md"), "---\ntitle: An idea\n---\n\nBody\n")]
+    plan = route_import.plan_import(files, [])
+    assert plan.to_write[0]["state"] == "queued"
+
+
 def test_format_summary_reports_all_three_counts():
     plan = route_import.plan_import([(_TASK_PARTS, _TASK_TEXT)], [])
     assert route_import.format_summary(1, plan) == "written 1, unchanged 0, skipped 0"
@@ -90,8 +119,26 @@ def test_edge_second_run_writes_nothing(tmp_path, monkeypatch, capsys):
     second = capsys.readouterr().out.strip()
 
     assert (rc1, rc2) == (0, 0)
-    assert first == "written 3, unchanged 0, skipped 0"
-    assert second == "written 0, unchanged 3, skipped 0"
+    assert first == "written 3, unchanged 0, skipped 1"  # skipped: work/demo/initiative.md, a row for no kind
+    assert second == "written 0, unchanged 3, skipped 1"
+
+
+def test_edge_derives_decomposed_state_from_the_real_walk(tmp_path, monkeypatch):
+    # Proves `_route_import_files` itself reads `work/<id>/initiative.md`, not just a hand-built `files` list:
+    # the 27-vs-3 mismatch this ticket fixes only closes if the real walker feeds that text to plan_import.
+    ws = tmp_path / "workspace"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "intake").mkdir()
+    (ws / "intake" / "idea.md").write_text("---\ntitle: An idea\n---\n\nBody\n")
+    (ws / "work" / "demo" / "1-build").mkdir(parents=True)
+    (ws / "work" / "demo" / "1-build" / "task.md").write_text(_TASK_TEXT)  # state: ready, keeps demo not done
+    (ws / "work" / "demo" / "initiative.md").write_text("---\nintake: intake/idea.md\n---\n\nAbout demo\n")
+    written = _fake_store(monkeypatch)
+
+    rc = main(["route", "import", "--workspace", str(ws)])
+
+    assert rc == 0
+    assert written[("intake", "idea")]["state"] == "decomposed"
 
 
 def test_edge_without_workspace_falls_back_to_the_profile_workspace_dir(tmp_path, monkeypatch, capsys):
@@ -103,7 +150,7 @@ def test_edge_without_workspace_falls_back_to_the_profile_workspace_dir(tmp_path
 
     rc = main(["route", "import", "--profile", str(profile)])
 
-    assert (rc, capsys.readouterr().out.strip()) == (0, "written 3, unchanged 0, skipped 0")
+    assert (rc, capsys.readouterr().out.strip()) == (0, "written 3, unchanged 0, skipped 1")
 
 
 def test_edge_refuses_a_workspace_with_no_work_or_intake_dir(tmp_path, monkeypatch, capsys):
@@ -131,7 +178,7 @@ def test_edge_exits_2_and_reports_the_partial_count_when_the_store_refuses(tmp_p
     out = capsys.readouterr().out.strip()
 
     assert rc == 2
-    assert out.splitlines()[-1] == "written 1, unchanged 0, skipped 0"
+    assert out.splitlines()[-1] == "written 1, unchanged 0, skipped 1"
 
 
 def test_edge_prints_the_failing_rows_key_and_the_store_detail_before_the_summary(tmp_path, monkeypatch, capsys):
@@ -152,4 +199,4 @@ def test_edge_prints_the_failing_rows_key_and_the_store_detail_before_the_summar
     key = f"{failing['initiative']}/{failing['task_id']}"
     assert rc == 2
     assert lines[0] == f"route import: store refused {key}: No module named harness.store_queue"
-    assert lines[1] == "written 1, unchanged 0, skipped 0"
+    assert lines[1] == "written 1, unchanged 0, skipped 1"
