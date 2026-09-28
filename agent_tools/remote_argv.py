@@ -1,5 +1,6 @@
 """Pure argv builders for ssh, rsync and git fetch; a location is a caller-formed string."""
 
+import re
 import shlex
 
 
@@ -37,5 +38,8 @@ def rsync_pull_argv(src_location: str, dest: str) -> list[str]:
 
 
 def git_fetch_argv(repo_location: str, run: str) -> list[str]:
-    refspec = f"refs/heads/agents/{run}/*:refs/heads/agents/{run}/*"
-    return ["git", "fetch", repo_location, refspec]
+    """The initiative is `run` without a trailing `-<digits>` phase/attempt suffix."""
+    initiative = re.sub(r"-\d+$", "", run)
+    run_refspec = f"refs/heads/agents/{run}/*:refs/heads/agents/{run}/*"
+    phase_refspec = f"+refs/heads/epic/{initiative}/*:refs/heads/epic/{initiative}/*"
+    return ["git", "fetch", repo_location, run_refspec, phase_refspec]
