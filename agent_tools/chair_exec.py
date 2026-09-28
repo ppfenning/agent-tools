@@ -491,12 +491,17 @@ def _escalate(land: Action, result: Result) -> Result:
     return _result(raised, "escalated", f"land {land.get('task_id', '')} {result['status']}")
 
 
-def run_argv(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
-    """Edge. A missing binary is exit 127 with its message, never an exception out of perform."""
+_LOGIN_CHECK_TIMEOUT_S = 60  # an unreachable lane host must not stall a tick
+
+
+def run_argv(argv: list[str], cwd: Path | None = None, timeout: float | None = None) -> tuple[int, str]:
+    """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform."""
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd)
+        done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd, timeout=timeout)
     except OSError as error:
         return 127, f"{argv[0] if argv else '<empty argv>'}: {error}"
+    except subprocess.TimeoutExpired:
+        return 124, f"{argv[0] if argv else '<empty argv>'}: timed out after {timeout}s"
     return done.returncode, done.stdout + done.stderr
 
 
@@ -573,5 +578,5 @@ def edge_deps(
         intake_id=partial(read_intake_id, workspace),
         runs_dir=runs_dir,
         work_dir=workspace,
-        check_login=partial(_check_login_edge, runs_dir, run),
+        check_login=partial(_check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S)),
     )

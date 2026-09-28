@@ -5826,6 +5826,7 @@ def _chair_run_deps(
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n),
+        hosts=lambda: run_store.hosts(runs_dir),
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,

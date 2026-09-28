@@ -40,6 +40,13 @@ def test_the_real_bundle_names_no_source_it_cannot_read(tmp_path) -> None:
     assert cli._chair_unwired_sources(deps) == []
 
 
+def test_the_real_bundle_reads_the_hosts_table_for_the_login_watch(monkeypatch, tmp_path) -> None:
+    row = {"name": "jarvis", "ssh": "jarvis", "capacity": 1, "state": "active", "beat_at": "", "versions_json": {}}
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [row])
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
+    assert deps.facts_deps.hosts() == [row]
+
+
 def test_wired_fact_readers_alone_do_not_lift_the_refusal(monkeypatch, tmp_path, capsys) -> None:
     real = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
     readers = {f.name: (lambda: None) for f in dataclasses.fields(real.facts_deps) if callable(getattr(real.facts_deps, f.name))}
