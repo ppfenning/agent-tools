@@ -552,10 +552,16 @@ def test_phase_landable_all_done():
     assert land.phase_landable(items, records) is None
 
 
+def test_phase_landable_all_approved():
+    items = [_item("a", "approved"), _item("b", "approved")]
+    records = {"a": _record(task="a"), "b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+
+
 def test_phase_landable_one_item_not_ready():
     items = [_item("a", "in_progress"), _item("b", "done")]
     records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) == "a is 'in_progress', not done or dropped"
+    assert land.phase_landable(items, records) == "a is 'in_progress', not approved, done or dropped"
 
 
 def test_phase_landable_one_dropped_rest_done():
@@ -598,7 +604,7 @@ def test_phase_plan_refuses_on_an_unlandable_item():
     phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
     items = [{"id": "seams-task", "status": "in_progress"}]
     steps = land.land_plan(phase_record, {}, "main", items=items, task_records=[])
-    assert steps == [{"kind": "refuse", "reason": "seams-task is 'in_progress', not done or dropped"}]
+    assert steps == [{"kind": "refuse", "reason": "seams-task is 'in_progress', not approved, done or dropped"}]
 
 
 # --- land_plan: --task mode's clean step is narrowed to its own branch (§7) ---
