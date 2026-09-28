@@ -38,6 +38,8 @@ class HostLanes(TypedDict):
     name: str
     live_runs: int
     capacity: NotRequired[int]
+    weight: NotRequired[int]  # a host's share of new placements; absent means 1
+    capabilities: NotRequired[list[str]]  # what the host can run, for example ["go"]; absent means none
 
 
 class DispatchFacts(TypedDict):
@@ -62,6 +64,7 @@ class ApprovedTask(TypedDict):
 class ReadyTask(TypedDict):
     id: str
     needs: list[str]
+    requires: list[str]  # capabilities the ticket's own `requires:` frontmatter field names; empty when it names none
 
 
 class InitiativeFacts(TypedDict):
@@ -113,6 +116,8 @@ class Facts(TypedDict):
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
     run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
+    # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
+    lost_runs: dict[str, str]
 
 
 ActionKind = Literal[
@@ -131,16 +136,21 @@ ActionKind = Literal[
     "pull",
     "housekeeping",
     "stale_to_draft",
+    "mark_lost",
 ]
 
 
 class Action(TypedDict, total=False):
+    """mark_lost only records the loss to the chair's own action log: it is never an attempt against a
+    task, and by construction never touches the attempts table, so it never counts toward
+    harness_failures or any retry cap."""
+
     kind: ActionKind
     epoch: int
     task_id: str
     repo: str
-    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit names the run still pending fetch
-    initiative: str  # retry and rescue carry initiative and task_id; a stale_to_draft names the initiative it drafts
+    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run
+    initiative: str  # retry and rescue carry initiative and task_id; a stale_to_draft or mark_lost names the initiative
     cause: str
     intake_ids: list[str]
     holder: str

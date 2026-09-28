@@ -239,8 +239,9 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 
 def test_gather_facts_fills_every_key_from_the_fakes():
     # remote_unfetched has no producer yet; a later task wires gather_facts to fill it from real runs.
+    # lost_runs likewise has no producer yet; a later task wires gather_facts to fill it from real host and run data.
     facts = gather_facts(_deps(), NOW)
-    assert set(facts) == set(Facts.__annotations__)
+    assert set(facts) == set(Facts.__annotations__) - {"lost_runs"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
