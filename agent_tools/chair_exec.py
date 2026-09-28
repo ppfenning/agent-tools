@@ -337,7 +337,7 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _clear(action, deps, blocked)
     if kind == "take_lease":
         return _lease(action, deps)
-    if kind in ("standby", "needs_chair"):
+    if kind in ("standby", "needs_chair", "mark_lost"):
         return _result(action, "recorded")
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
