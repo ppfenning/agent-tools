@@ -2301,12 +2301,17 @@ def _route_drift(a: argparse.Namespace) -> int:
         print(f"routing: workspace_dir not set in profile {profile_path}")
         return 2
     ws = Path(workspace).expanduser()
-    rows = run_store.work_items(ws / "runs")
+    rows = run_store.read_queue(ws / "runs")
     if not rows:
         print("store has no work_items")
         return 0
-    files = [(item["initiative"], item["id"], item["state"]) for item in _work_items(ws)]
-    found = route_drift.drift(files, rows)
+    items = _work_items(ws)
+    files = [(item["initiative"], item["id"], item["state"]) for item in items]
+    groups = _intake_groups_for(ws, items) or {}
+    intake_files = [(entry["path"], name) for name, entries in groups.items() for entry in entries]
+    task_rows = [r for r in rows if r.get("kind") == "task"]
+    intake_rows = [r for r in rows if r.get("kind") == "intake"]
+    found = route_drift.drift(files, task_rows, intake_files, intake_rows)
     print(route_drift.format_json(found) if a.json else route_drift.format_text(found))
     return 0
 
