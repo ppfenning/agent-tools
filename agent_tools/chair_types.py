@@ -40,6 +40,11 @@ class HostLanes(TypedDict):
     capacity: NotRequired[int]
     weight: NotRequired[int]  # a host's share of new placements; absent means 1
     capabilities: NotRequired[list[str]]  # what the host can run, for example ["go"]; absent means none
+    # login_ok and login_checked_at mirror the host row's own login state, read from the store's
+    # `hosts` table; on the real row they live inside that row's `versions_json`, never as new
+    # `hosts` columns, since that table's own columns belong to a different repository.
+    login_ok: NotRequired[bool | None]  # None when never checked
+    login_checked_at: NotRequired[str]  # ISO UTC of the last check_login attempt; absent means never
 
 
 class DispatchFacts(TypedDict):
@@ -138,13 +143,17 @@ ActionKind = Literal[
     "housekeeping",
     "stale_to_draft",
     "mark_lost",
+    "check_login",
 ]
 
 
 class Action(TypedDict, total=False):
     """mark_lost only records the loss to the chair's own action log: it is never an attempt against a
     task, and by construction never touches the attempts table, so it never counts toward
-    harness_failures or any retry cap."""
+    harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
+    write, and like mark_lost never touches the attempts table. needs_chair carries either
+    initiative and cause, or host and cause when the entry names a lane host rather than an
+    initiative; when host is present cause is "login_lapsed" and there is no initiative key."""
 
     kind: ActionKind
     epoch: int
