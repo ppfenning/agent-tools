@@ -4,6 +4,7 @@ Pure. Takes the facts and the tick's clock, returns actions each stamped with th
 """
 from datetime import datetime, timedelta
 
+from agent_tools import chair_login_watch
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
@@ -100,9 +101,22 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
     ]
 
 
+def _login_needs_chair_actions(facts: Facts) -> list[Action]:
+    return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
+
+
+def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
+    """One check_login per due host; requires the tick's clock, like housekeeping."""
+    if now is None:
+        return []
+    login_hosts = facts.get("login_hosts", [])
+    return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
+
+
 def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
+    login_needs_chair = _login_needs_chair_actions(facts)
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
@@ -113,7 +127,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
     if facts["limits"]["hard_stop"]:
-        return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered)]
+        return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered), *login_needs_chair]
     cap = _launch_cap(facts["limits"])
     capped = _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
@@ -125,7 +139,8 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         | not_exited
         | lost
     )
-    return [*lands, *fetch_exits, *stale, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
+    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)
+    return [*lands, *fetch_exits, *stale, *capped, *filled, *login_needs_chair]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -146,9 +161,10 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
 
 
 def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
-    """now is the tick's clock; without it no housekeeping is planned."""
+    """now is the tick's clock; without it no housekeeping or check_login is planned."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
-    actions = [*_plan_as_holder(facts, now), *housekeeping] if gated is None else gated
+    login_checks = _login_check_actions(facts, now)
+    actions = [*_plan_as_holder(facts, now), *housekeeping, *login_checks] if gated is None else gated
     return [stamp(a, lease["epoch"]) for a in actions]
