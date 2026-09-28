@@ -37,3 +37,10 @@ def test_remote_record_with_a_local_log_and_no_run_dir_is_absent(tmp_path):
 def test_no_remote_record_is_absent(tmp_path):
     _runs_table(tmp_path, "i-1")
     assert read_remote_unfetched(tmp_path, ["i"]) == {}
+
+
+def test_an_older_remote_unfetched_run_is_reported_despite_a_newer_local_run(tmp_path):
+    _runs_table(tmp_path, "i-2", "i-3")
+    (tmp_path / "i-2.remote.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "i-3").mkdir()
+    assert read_remote_unfetched(tmp_path, ["i"]) == {"i": "i-2"}
