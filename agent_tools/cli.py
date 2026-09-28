@@ -6000,6 +6000,32 @@ def _chair_service_host_install(a: argparse.Namespace, profile: Mapping, runs_di
     return _chair_service_host_apply(steps)
 
 
+def _chair_service_host_ssh_line(ssh: str, cmd: str) -> str | None:
+    """The stdout of `ssh ssh cmd`, or None on a non-zero exit or a 30s timeout. Never raises."""
+    try:
+        done = subprocess.run(["ssh", ssh, cmd], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _chair_service_host_status(a: argparse.Namespace, runs_dir: Path) -> int:
+    """Prints `chair_service_host.status_line` for `a.host`; an unknown name prints one line and exits 2."""
+    row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.host), None)
+    if row is None:
+        print(f"unknown host: {a.host}")
+        return 2
+    ssh = str(row["ssh"])
+    unit = _chair_service_host_ssh_line(ssh, "systemctl --user is-active coxswain-chair.service")
+    unit_state = unit.strip() if unit is not None else None
+    runs_top = _chair_service_host_ssh_line(ssh, "cox runs top --once")
+    chair_line = runs_top.splitlines()[0] if runs_top else None
+    tick = _chair_service_host_ssh_line(ssh, "tail -1 repos/workspace/runs/chair-loop.log")
+    last_tick = tick.strip() if tick else None
+    print(chair_service_host.status_line(a.host, unit_state, chair_line, last_tick))
+    return 0
+
+
 def _chair_service(a: argparse.Namespace) -> int:
     """Edge for the unit text in `chair_service`. Never runs systemctl; `--install` wins when both flags are given."""
     path = chair_service.unit_path(Path.home())
@@ -6011,6 +6037,11 @@ def _chair_service(a: argparse.Namespace) -> int:
         return _chair_service_host_install(a, profile, runs_dir)
     if a.install:
         return _chair_service_install(a, path)
+    if a.status and host:
+        _profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+        if refuse_rc is not None:
+            return refuse_rc
+        return _chair_service_host_status(a, runs_dir)
     if a.status:
         text = _read_text_or_none(path)
         if text is None:
