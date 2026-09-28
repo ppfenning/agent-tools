@@ -102,6 +102,33 @@ def test_parse_profile_non_numeric_spend_value_names_the_line():
     assert "window_ceiling_usd: 300 USD" in message
 
 
+def test_parse_profile_reads_the_chair_housekeeping_hours():
+    text = VALID_PROFILE + "chair:\n  housekeeping_hours: 6\n"
+    profile = route.parse_profile(text)
+    assert profile["chair"] == {"housekeeping_hours": 6.0}
+
+
+def test_parse_profile_unknown_key_inside_chair_names_the_line():
+    text = VALID_PROFILE + "chair:\n  bogus: 1\n"
+    with pytest.raises(route.ProfileError) as exc_info:
+        route.parse_profile(text)
+    assert "bogus: 1" in str(exc_info.value)
+
+
+def test_parse_profile_has_no_chair_key_when_the_block_is_absent():
+    profile = route.parse_profile(VALID_PROFILE)
+    assert "chair" not in profile
+    assert profile == {
+        "team": "acme",
+        "cartridges_dir": "/opt/cartridges",
+        "skills_roots": ["/opt/skills-a", "/opt/skills-b"],
+        "provider_profile": "/opt/providers/acme.yaml",
+        "harness_dir": "/opt/coxswain-graphs",
+        "workspace_dir": "/home/acme/workspace",
+        "assume": "y",
+    }
+
+
 def test_slugify_handles_punctuation_unicode_and_whitespace():
     assert route.slugify("  Fix the Bug!! ") == "fix-the-bug"
     assert route.slugify("Café Résumé — draft") == "caf-r-sum-draft"

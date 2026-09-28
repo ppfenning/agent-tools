@@ -89,6 +89,8 @@ _JSON_KEYS = {"sources", "repo_map"}
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset
 
+_CHAIR_KEYS = {"housekeeping_hours", "stale_days"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
+
 
 class ProfileError(Exception):
     """A profile file line is nested, unknown, or otherwise unparsable."""
@@ -104,16 +106,21 @@ def _stripped_content(line: str) -> str:
 
 def parse_profile(text: str) -> dict:
     """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
-    plus one nested block: a bare `spend:` line followed by indented
+    plus two nested blocks: a bare `spend:` line followed by indented
     `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
-    floats onto the flat result, and a `weekly_reset:` line kept as text, quotes stripped.
+    floats onto the flat result, and a `weekly_reset:` line kept as text, quotes stripped;
+    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:` lines,
+    all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
+    reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
+    these).
 
-    A nested key outside a `spend:` block, an unrecognized key inside one,
+    A nested key outside a `spend:` or `chair:` block, an unrecognized key inside one,
     or a key outside the known set raises ProfileError naming the offending
     line (number + text). `assume` defaults to 'a' when absent.
     """
     result: dict = {}
     in_spend = False
+    in_chair = False
     in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.rstrip("\n")
@@ -124,6 +131,19 @@ def parse_profile(text: str) -> dict:
         if in_hosts and line != line.lstrip():
             continue
         if line != line.lstrip():
+            if in_chair:
+                content = _stripped_content(line)
+                if ":" not in content:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                key, _, value = content.partition(":")
+                key, value = key.strip(), value.strip()
+                if key not in _CHAIR_KEYS:
+                    raise ProfileError(f"line {lineno}: {raw_line}")
+                try:
+                    result.setdefault("chair", {})[key] = float(value)
+                except ValueError:
+                    raise ProfileError(f"line {lineno}: {raw_line}") from None
+                continue
             if not in_spend:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             content = _stripped_content(line)
@@ -145,6 +165,7 @@ def parse_profile(text: str) -> dict:
                 raise ProfileError(f"line {lineno}: {raw_line}") from None
             continue
         in_spend = False
+        in_chair = False
         in_hosts = False
         content = _stripped_content(line)
         if ":" not in content:
@@ -156,6 +177,11 @@ def parse_profile(text: str) -> dict:
             if value:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             in_spend = True
+            continue
+        if key == "chair":
+            if value:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            in_chair = True
             continue
         if key == "lane_hosts":
             if value:
