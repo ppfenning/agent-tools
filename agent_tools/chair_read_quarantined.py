@@ -83,14 +83,21 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
     return facts
 
 
-def read_quarantined(root: Path, mode: str) -> list[Row]:
-    """Edge. The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does."""
+def read_work_items(root: Path, mode: str) -> list[tuple[Path, str, dict]]:
+    """Edge. Every `work/<initiative>/<phase>/<task>.md` under `root` as (path, text, work item), in path order.
+
+    The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does."""
     texts = {p: p.read_text() for p in sorted(root.glob("work/*/*/*.md"))}
     items = [
         route.work_item(route.parse_frontmatter(text)[0], initiative=p.parts[-3], phase_dir=p.parts[-2], stem=p.stem)
         for p, text in texts.items()
     ]
     stored = route.with_store_states(items, run_store.work_items(root / "runs") if mode == "store" else [], mode)
+    return [(p, text, item) for (p, text), item in zip(texts.items(), stored, strict=True)]
+
+
+def read_quarantined(root: Path, mode: str) -> list[Row]:
+    """Edge. The open quarantines among `read_work_items(root, mode)`."""
     return quarantined_rows(
         (
             f"work/{item['initiative']}/{item['file']}",
@@ -98,5 +105,5 @@ def read_quarantined(root: Path, mode: str) -> list[Row]:
             item_body(text),
             frontmatter_item(text, p.stem).get("attempts"),
         )
-        for (p, text), item in zip(texts.items(), stored, strict=True)
+        for p, text, item in read_work_items(root, mode)
     )
