@@ -388,6 +388,22 @@ def test_a_dry_run_rescue_performs_nothing() -> None:
     assert calls == []
 
 
+def test_a_mark_lost_action_under_a_stale_epoch_is_fenced_and_calls_nothing() -> None:
+    calls: list = []
+    action = {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1}
+    results = perform([action], _deps(calls), lambda: 2, False)
+    assert [r["status"] for r in results] == ["fenced"]
+    assert _touched(calls) == []
+
+
+def test_a_dry_run_mark_lost_performs_nothing() -> None:
+    calls: list = []
+    action = {"kind": "mark_lost", "initiative": "i", "run": "r1", "epoch": 1}
+    results = perform([action], _deps(calls), lambda: 1, True)
+    assert [r["status"] for r in results] == ["dry_run"]
+    assert calls == []
+
+
 def test_an_unlisted_kind_is_refused() -> None:
     calls: list = []
     results = perform([{"kind": "cut_release", "epoch": 1}], _deps(calls), lambda: 1, False)  # type: ignore[list-item]
@@ -401,6 +417,14 @@ def test_standby_and_needs_chair_are_recorded_without_running_anything() -> None
     results = perform(actions, _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["recorded", "recorded"]
     assert calls == [("record", "standby"), ("record", "needs_chair")]
+
+
+def test_a_mark_lost_action_is_recorded_without_running_anything() -> None:
+    calls: list = []
+    action = {"kind": "mark_lost", "epoch": 1, "initiative": "i", "run": "r1"}
+    results = perform([action], _deps(calls), lambda: 1, False)
+    assert [r["status"] for r in results] == ["recorded"]
+    assert calls == [("record", "mark_lost")]
 
 
 def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:
