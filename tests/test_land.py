@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from test_run_store import phases_table, run_row, runs_table, with_record
 
-from agent_tools import chair, cleanup, cli, forge_github, land
+from agent_tools import chair, cleanup, cli, forge_github, land, store_cli
 
 _STEP_ORDER = ["pick_branch", "cherry_pick", "checks", "push", "pr_create", "wait_checks", "merge", "clean", "mark_done"]
 _ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
@@ -1001,6 +1001,65 @@ def test_cli_apply_at_full_level_merges_and_exits_0(repo, tmp_path, capsys, monk
     assert rc == 0
     assert ran == _PRESYNCED + ["route_sync"]
     assert "left open" not in capsys.readouterr().out
+
+
+def _apply_with_repo_lease(repo, tmp_path, monkeypatch, acquire_result, walked_result=None):
+    """Sets up a task ready to land, then stubs the repo lease and `_land_walked` so these tests exercise
+    only the lease wiring in `_runs_land`, not the step machinery covered above. `_repo_is_dirty` and
+    `_sync_default_branch` still run for real against the clean, synced `repo` fixture ahead of the lease;
+    they are not stubbed, only silent because the fixture never gives them a reason to refuse."""
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
+    (tmp_path / "runs/policy.tracker.json").write_text('{"tracker": "github-projects"}', encoding="utf-8")
+    calls = {"acquire": [], "release": [], "walked": 0}
+
+    def fake_acquire(runs_dir, repo_str, holder, ttl):
+        calls["acquire"].append((runs_dir, repo_str, holder, ttl))
+        return acquire_result
+
+    def fake_release(runs_dir, repo_str, holder, epoch):
+        calls["release"].append((runs_dir, repo_str, holder, epoch))
+        return store_cli.LeaseReleased()
+
+    def fake_land_walked(*_args, **_kwargs):
+        calls["walked"] += 1
+        if walked_result == "raise":
+            raise RuntimeError("boom")
+        return walked_result
+
+    monkeypatch.setattr(cli.land_repo_lease, "acquire", fake_acquire)
+    monkeypatch.setattr(cli.land_repo_lease, "release", fake_release)
+    monkeypatch.setattr(cli, "_land_walked", fake_land_walked)
+    return calls
+
+
+def test_cli_apply_refuses_when_the_repo_lease_is_held_by_another_land(repo, tmp_path, monkeypatch, capsys):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseRefused(epoch=3, holder="other@host:1"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert calls["walked"] == 0
+    assert f"land: refusing, other@host:1 is landing in {repo}" in out
+
+
+def test_cli_apply_releases_the_repo_lease_by_its_epoch_even_when_the_walk_raises(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(epoch=7, holder="me@host:2"),
+                                    walked_result="raise")
+    with pytest.raises(RuntimeError):
+        cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert calls["walked"] == 1
+    [(runs_dir, repo_str, holder, epoch)] = calls["release"]
+    assert (repo_str, epoch) == (str(repo), 7)
+    assert holder == calls["acquire"][0][2]
+
+
+def test_cli_apply_walks_without_a_lease_when_the_store_is_not_available(repo, tmp_path, monkeypatch):
+    calls = _apply_with_repo_lease(repo, tmp_path, monkeypatch, store_cli.NotAvailable(),
+                                    walked_result=(0, ["mark_done"], "https://x/pull/7"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), "--apply", "--runs-dir", str(tmp_path / "runs")])
+    assert rc == 0
+    assert calls["walked"] == 1
+    assert calls["release"] == []
 
 
 def _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue):

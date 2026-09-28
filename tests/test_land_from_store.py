@@ -47,6 +47,11 @@ def store(monkeypatch):
     `states` is read in turn, the last one repeating."""
     fake = SimpleNamespace(
         calls=[], states=["approved"], acquire=store_cli.LeaseGranted(7, "me"), renew=store_cli.LeaseGranted(7, "me"),
+        # `cli._runs_land`'s own repo-scoped lease (ticket one-land-per-repository-at-a-time) calls the same
+        # store_cli.lease_acquire/lease_release this fixture fakes; its lease name is `land:<repo path>`, always
+        # an absolute path, so `land:/` distinguishes it from the task/phase names below ("land:seams-task",
+        # "land:phase:x/seams") without needing the `repo` fixture wired into this one.
+        repo_acquire=store_cli.LeaseGranted(1, "repo-holder"), repo_release=store_cli.LeaseReleased(),
         item=None, seen_at_release=None, set_result=store_cli.StateSet({"state": "done"}), real_set_state=store_cli.set_state,
     )
 
@@ -56,7 +61,7 @@ def store(monkeypatch):
 
     def acquire(runs_dir, name, holder, ttl):
         fake.calls.append(("acquire", name))
-        return fake.acquire
+        return fake.repo_acquire if name.startswith("land:/") else fake.acquire
 
     def renew(runs_dir, name, holder, epoch, ttl):
         fake.calls.append(("renew", name, epoch))
@@ -65,7 +70,7 @@ def store(monkeypatch):
     def release(runs_dir, name, holder, epoch):
         fake.calls.append(("release", name, epoch))
         fake.seen_at_release = fake.item.read_text(encoding="utf-8") if fake.item.exists() else None
-        return store_cli.LeaseReleased()
+        return fake.repo_release if name.startswith("land:/") else store_cli.LeaseReleased()
 
     def set_state(runs_dir, initiative, task, state, by, expected=None):
         fake.calls.append(("set_state", initiative, task, state, expected))
@@ -132,7 +137,9 @@ def test_the_approved_check_is_read_again_under_the_lease(repo, tmp_path, monkey
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert (rc, ran) == (2, [])
     assert "another machine landed it" in capsys.readouterr().out
-    assert [c[0] for c in store.calls] == ["task_state", "acquire", "task_state", "release"]
+    # The repo-scoped lease (ticket one-land-per-repository-at-a-time) wraps the task-scoped one: an extra
+    # acquire before it and an extra release after, both named `land:<repo path>`.
+    assert [c[0] for c in store.calls] == ["task_state", "acquire", "acquire", "task_state", "release", "release"]
 
 
 def test_a_store_with_no_row_falls_back_to_the_file_and_says_why(repo, tmp_path, monkeypatch, store, capsys):
@@ -147,7 +154,8 @@ def test_a_refused_lease_stops_the_land_naming_the_holder_before_any_step(repo, 
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert (rc, ran) == (2, [])
     assert "seams-task is being landed by other@host:99 (lease epoch 4)" in capsys.readouterr().out
-    assert [c[0] for c in store.calls] == ["task_state", "acquire"]
+    # The repo-scoped lease acquires and releases around the refused task-scoped acquire.
+    assert [c[0] for c in store.calls] == ["task_state", "acquire", "acquire", "release"]
     rows = [json.loads(line) for line in (tmp_path / "runs/land.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(r["task"], r["steps_reached"], r["exit"]) for r in rows] == [("seams-task", [], 2)]
 
@@ -164,13 +172,13 @@ def test_a_lease_lost_before_the_merge_stops_the_land_before_the_merge(repo, tmp
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert rc == 2 and "merge" not in ran
     assert "refusing merge, the land lease for seams-task could not be renewed: held by other@host:1 at epoch 9" in capsys.readouterr().out
-    assert store.calls[-2:] == [("renew", "land:seams-task", 7), ("release", "land:seams-task", 7)]
+    assert store.calls[-3:] == [("renew", "land:seams-task", 7), ("release", "land:seams-task", 7), ("release", f"land:{repo}", 1)]
 
 
 def test_the_lease_is_released_after_a_merge_step_fails(repo, tmp_path, monkeypatch, store):
     rc, ran = _land(repo, tmp_path, monkeypatch, store, fail_at="merge")
     assert (rc, ran[-1]) == (1, "merge")
-    assert store.calls[-1] == ("release", "land:seams-task", 7)
+    assert store.calls[-2:] == [("release", "land:seams-task", 7), ("release", f"land:{repo}", 1)]
     assert store.item.read_text(encoding="utf-8") == _APPROVED
 
 
@@ -178,14 +186,15 @@ def test_the_lease_is_released_when_a_step_raises(repo, tmp_path, monkeypatch, s
     with pytest.raises(RuntimeError, match="step blew up"):
         _land(repo, tmp_path, monkeypatch, store, raise_at="merge")
     assert store.ran[-1] == "merge"
-    assert store.calls[-1] == ("release", "land:seams-task", 7)
+    assert store.calls[-2:] == [("release", "land:seams-task", 7), ("release", f"land:{repo}", 1)]
 
 
 def test_the_lease_is_held_until_mark_done_has_finished_then_released(repo, tmp_path, monkeypatch, store):
     rc, ran = _land(repo, tmp_path, monkeypatch, store)
     assert (rc, ran[-1]) == (0, "mark_done")
-    assert [c[0] for c in store.calls] == ["task_state", "acquire", "task_state", "renew", "renew", "set_state", "release"]
-    assert store.calls[5] == ("set_state", "x", "seams-task", "done", "approved")
+    assert [c[0] for c in store.calls] == ["task_state", "acquire", "acquire", "task_state", "renew", "renew", "set_state",
+                                            "release", "release"]
+    assert store.calls[6] == ("set_state", "x", "seams-task", "done", "approved")
     assert "state: done" in store.seen_at_release
 
 
@@ -217,15 +226,16 @@ def test_exit_3_at_mark_done_stops_with_the_landed_elsewhere_reason(repo, tmp_pa
 def test_a_store_that_says_approved_is_set_done_whatever_the_local_file_holds(repo, tmp_path, monkeypatch, store, item_text):
     rc, ran = _land(repo, tmp_path, monkeypatch, store, item_text=item_text)
     assert (rc, ran[-1]) == (0, "mark_done")
-    assert store.calls[5] == ("set_state", "x", "seams-task", "done", "approved")
+    assert store.calls[6] == ("set_state", "x", "seams-task", "done", "approved")
     assert (store.item.read_text(encoding="utf-8") if store.item.exists() else None) == item_text
 
 
 def test_a_phase_land_under_store_takes_one_phase_lease_and_reads_no_task_state(repo, tmp_path, monkeypatch, store, capsys):
     rc, ran = _land(repo, tmp_path, monkeypatch, store, extra=("--phase", "seams"), phase=True)
     assert (rc, ran[-1]) == (0, "mark_done")
-    assert store.calls == [("acquire", "land:phase:x/seams"), ("renew", "land:phase:x/seams", 7),
-                           ("renew", "land:phase:x/seams", 7), ("release", "land:phase:x/seams", 7)]
+    # The repo-scoped lease (acquired first, released last) wraps the one phase-scoped lease this test names.
+    assert store.calls == [("acquire", f"land:{repo}"), ("acquire", "land:phase:x/seams"), ("renew", "land:phase:x/seams", 7),
+                           ("renew", "land:phase:x/seams", 7), ("release", "land:phase:x/seams", 7), ("release", f"land:{repo}", 1)]
     assert "leases the phase as phase:x/seams; its items are already done, so there is no approved check" in capsys.readouterr().out
 
 
@@ -239,7 +249,9 @@ def test_a_phase_lease_refused_stops_the_phase_land_before_any_step(repo, tmp_pa
 def test_files_mode_reads_no_task_state_and_takes_no_lease_and_sets_no_expectation(repo, tmp_path, monkeypatch, store, capsys):
     rc, ran = _land(repo, tmp_path, monkeypatch, store, work_state=None)
     assert (rc, ran[-1]) == (0, "mark_done")
-    assert store.calls == [("set_state", "x", "seams-task", "done", None)]  # the existing unconditional mirror, no --expect
+    # No task-scoped lease under files mode; the repo-scoped lease still wraps the run regardless of mode.
+    assert store.calls == [("acquire", f"land:{repo}"), ("set_state", "x", "seams-task", "done", None),
+                           ("release", f"land:{repo}", 1)]  # the existing unconditional mirror, no --expect
     assert "state: done" in store.item.read_text(encoding="utf-8")
     assert "land: state from" not in capsys.readouterr().err
 

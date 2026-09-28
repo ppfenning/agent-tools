@@ -69,6 +69,7 @@ from agent_tools import (
     lake_lease,
     land,
     land_lease,
+    land_repo_lease,
     lane_hosts,
     leader_chat,
     notify,
@@ -1809,7 +1810,21 @@ def _runs_land(a: argparse.Namespace) -> int:
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
                              mode=land_mode, guard=guard)
 
-    walked = _land_walked(a, runs_dir, land_mode, lease_task, lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
+    repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
+    got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, 1200)
+    if isinstance(got, store_cli.LeaseRefused):
+        print(land_repo_lease.refusal_message(str(repo), got.holder or "another land"))
+        walked = None
+    elif isinstance(got, store_cli.LeaseGranted):
+        try:
+            walked = _land_walked(a, runs_dir, land_mode, lease_task,
+                                   lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
+        finally:
+            land_repo_lease.release(runs_dir, str(repo), repo_holder, got.epoch)
+    else:
+        # A store outage (NotAvailable/LeaseError) must not block a land: walk without the repo lease.
+        walked = _land_walked(a, runs_dir, land_mode, lease_task,
+                               lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
     rc, reached, pr = walked if walked is not None else (2, [], "")  # a refused lease stops before any step, and is logged too
     task = record["task"] if record else None
     _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
