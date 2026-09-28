@@ -45,11 +45,11 @@ def pytest_configure(config):
 @pytest.fixture(autouse=True)
 def _fresh_store_url():
     """run_store caches the store URL per process; each test starts without it."""
-    from agent_tools import run_store
+    from agent_tools import console_screen, run_store
 
     caches = (run_store._store_url_for, run_store._lease_table, run_store._traces_root_for,
               run_store._harness_python_for, run_store._harness_dump, run_store._found_parquet_rows,
-              run_store._store_ids_by_trace)
+              run_store._store_ids_by_trace, console_screen._work_items_snapshot)
     for cache in caches:
         cache.cache_clear()
     yield
