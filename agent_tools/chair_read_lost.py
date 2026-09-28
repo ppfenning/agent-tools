@@ -27,22 +27,30 @@ def _parsed(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _quiet(beat_at: object, now: str, threshold_s: int) -> bool:
+    """A beat more than `threshold_s` seconds before `now`, blank, missing, or unparsable."""
+    beat = _parsed(beat_at) if beat_at else None
+    now_parsed = _parsed(now) or datetime.min.replace(tzinfo=UTC)
+    return beat is None or (now_parsed - beat).total_seconds() > threshold_s
+
+
 def stale_hosts(hosts: Sequence[Row], now: str, threshold_s: int = DEFAULT_THRESHOLD_S) -> set[str]:
     """The name of every host row whose `beat_at` is more than `threshold_s` seconds before `now`, blank,
     missing, or unparsable. Never beaten counts as stale."""
-    now_parsed = _parsed(now) or datetime.min.replace(tzinfo=UTC)
-    stale = set()
-    for row in hosts:
-        beat = _parsed(row.get("beat_at")) if row.get("beat_at") else None
-        if beat is None or (now_parsed - beat).total_seconds() > threshold_s:
-            stale.add(str(row.get("name") or ""))
-    return stale
+    return {str(row.get("name") or "") for row in hosts if _quiet(row.get("beat_at"), now, threshold_s)}
 
 
-def lost_runs_of(lanes: Sequence[run_store.Lane], stale: set[str], exited: Mapping[str, bool]) -> dict[str, str]:
-    """Pure. A lane whose host is in `stale` and whose run does not read `True` in `exited` (a run missing
-    from `exited` counts as not exited) contributes its initiative, mapped onto that lane's run."""
-    return {run_initiative(lane.run): lane.run for lane in lanes if lane.host in stale and exited.get(lane.run) is not True}
+def lost_runs_of(
+    lanes: Sequence[run_store.Lane], stale: set[str], exited: Mapping[str, bool], now: str, threshold_s: int = DEFAULT_THRESHOLD_S
+) -> dict[str, str]:
+    """Pure. A lane whose host is in `stale`, whose own lease heartbeat is quiet, and whose run does not read `True`
+    in `exited` (a run missing from `exited` counts as not exited) contributes its initiative, mapped onto that
+    lane's run. A lane still renewing its lease is alive whatever its host row says: hosts are beaten far less often."""
+    return {
+        run_initiative(lane.run): lane.run
+        for lane in lanes
+        if lane.host in stale and _quiet(lane.heartbeat_at, now, threshold_s) and exited.get(lane.run) is not True
+    }
 
 
 def read_lost_runs(runs_dir: Path, now: str) -> dict[str, str]:
@@ -50,4 +58,4 @@ def read_lost_runs(runs_dir: Path, now: str) -> dict[str, str]:
     gone stale (`stale_hosts`) and whose run carries no exit record in the store's `runs` table."""
     stale = stale_hosts(run_store.hosts(runs_dir), now)
     exited = {str(row.get("run_id") or ""): row_exited(row) for row in exit_rows(runs_dir)}
-    return lost_runs_of(run_store.live_lanes(runs_dir, now), stale, exited)
+    return lost_runs_of(run_store.live_lanes(runs_dir, now), stale, exited, now)
