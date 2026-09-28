@@ -435,16 +435,18 @@ def edge_deps(
     run_id: Callable[[Action], str],
     repo_for: Callable[[Action], str],
     record: Callable[[Action], None],
+    host: str,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
     Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
+    A take_lease action names no holder, so the lease is always taken as this loop's own session, pid and host.
     """
     run = partial(run_argv, cwd=workspace)
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
-        acquire_lease=lambda holder, host, steal=False: chair.acquire_lease(runs_dir, session, pid, host, steal=steal),
+        acquire_lease=lambda _holder, _host, steal=False: chair.acquire_lease(runs_dir, session, pid, host, steal=steal),
         record=record,
         run_id=run_id,
         repo_for=repo_for,

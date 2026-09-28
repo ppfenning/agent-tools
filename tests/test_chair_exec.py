@@ -489,6 +489,14 @@ def test_a_take_lease_over_an_expired_takeover_steals_and_a_plain_one_does_not()
     assert [c for c in calls if c[0] == "lease"] == [("lease", True), ("lease", False)]
 
 
+def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_none(monkeypatch, tmp_path) -> None:
+    taken: list = []
+    monkeypatch.setattr(chair_exec.chair, "acquire_lease", lambda runs_dir, session, pid, host, steal=False: taken.append((session, pid, host)) or "")
+    deps = chair_exec.edge_deps(tmp_path, tmp_path, "chair-loop", 42, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None, host="omarchy")
+    perform([{"kind": "take_lease", "epoch": 1, "reason": "takeover expired at 2026-09-27T23:00:00+00:00"}], deps, lambda: 1, False)
+    assert taken == [("chair-loop", 42, "omarchy")]
+
+
 def test_an_intake_with_an_id_yields_that_id() -> None:
     assert decompose_id("intake/x.md", "alpha") == "alpha"
 
