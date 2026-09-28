@@ -1,4 +1,4 @@
-"""Compose one chair tick: the lease first, then lands, recovery and fill under the limits gate.
+"""Compose one chair tick: the lease first, then lands, recovery, staleness and fill under the limits gate.
 
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
+from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_types import Action, DispatchFacts, Facts, LeaseFacts, LimitsFacts, stamp
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
@@ -94,10 +95,11 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
     ]
 
 
-def _plan_as_holder(facts: Facts) -> list[Action]:
+def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
     lost = frozenset(facts.get("lost_runs", {}))
+    stale = plan_stale(facts, now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
     ordinary = _withhold_lost_runs(plan_recover(facts), lost)
@@ -106,7 +108,7 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
     if facts["limits"]["hard_stop"]:
-        return [*lands, *fetch_exits, *_needs_chair_only(recovered)]
+        return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered)]
     cap = _launch_cap(facts["limits"])
     capped = _cap_launches(recovered, cap)
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
@@ -118,7 +120,7 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
         | not_exited
         | lost
     )
-    return [*lands, *fetch_exits, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
+    return [*lands, *fetch_exits, *stale, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
@@ -143,5 +145,5 @@ def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
     lease = facts["lease"]
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
-    actions = [*_plan_as_holder(facts), *housekeeping] if gated is None else gated
+    actions = [*_plan_as_holder(facts, now), *housekeeping] if gated is None else gated
     return [stamp(a, lease["epoch"]) for a in actions]
