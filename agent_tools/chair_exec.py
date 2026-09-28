@@ -87,6 +87,7 @@ class Deps:
     note_to: str = "chair"
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
+    harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -450,9 +451,9 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
 
 
-def _prune_available(run: Run) -> bool:
-    """Edge. True only when `python -m harness.store_backfill_traces prune --help` exits 0."""
-    code, _ = run(["python", "-m", "harness.store_backfill_traces", "prune", "--help"])
+def _prune_available(run: Run, harness_python: str) -> bool:
+    """Edge. True only when `<harness_python> -m harness.store_backfill_traces prune --help` exits 0."""
+    code, _ = run([harness_python, "-m", "harness.store_backfill_traces", "prune", "--help"])
     return code == 0
 
 
@@ -460,7 +461,8 @@ def _housekeeping(action: Action, deps: Deps) -> Result:
     """Lake sync, trace prune, runs clean, in order; the reason names all three, none stopping the others."""
     traces_root = run_store._traces_root(deps.runs_dir).url
     status, reason = chair_housekeeping.run_housekeeping(
-        deps.run, traces_root, partial(_prune_available, deps.run), deps.log_retention_days,
+        deps.run, traces_root, partial(_prune_available, deps.run, deps.harness_python),
+        deps.harness_python, deps.log_retention_days,
     )
     return _result(action, status, reason)
 
@@ -668,6 +670,7 @@ def edge_deps(
     repo_for: Callable[[Action], str],
     record: Callable[[Action], None],
     host: str,
+    harness_python: str,
     log_retention_days: int = 7,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
@@ -688,4 +691,5 @@ def edge_deps(
         work_dir=workspace,
         check_login=partial(_check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S)),
         log_retention_days=log_retention_days,
+        harness_python=harness_python,
     )

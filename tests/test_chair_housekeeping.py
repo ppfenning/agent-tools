@@ -1,5 +1,7 @@
 from agent_tools import chair_housekeeping as hk
 
+PYTHON = "/venv/bin/python"
+
 
 def _runner(fail=None, boom=None):
     seen: list[list[str]] = []
@@ -15,8 +17,8 @@ def _runner(fail=None, boom=None):
 
 def test_failed_sync_does_not_stop_prune():
     run, seen = _runner(fail="lake")
-    status, reason = hk.run_housekeeping(run, "/t", lambda: True)
-    assert seen == [hk.sync_argv(), hk.prune_argv("/t")]
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
+    assert seen == [hk.sync_argv(), hk.prune_argv("/t", 7, PYTHON)]
     assert status == "failed"
     assert reason == (
         "lake sync: FAILED exit 1 sync exploded; prune: ok fine; "
@@ -26,22 +28,22 @@ def test_failed_sync_does_not_stop_prune():
 
 def test_all_ok_is_done():
     run, _ = _runner()
-    status, reason = hk.run_housekeeping(run, "/t", lambda: True)
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
     assert status == "done"
     assert reason.startswith("lake sync: ok fine; prune: ok fine; clean skipped: ")
 
 
 def test_prune_unavailable_is_skipped_not_failed():
     run, seen = _runner()
-    status, reason = hk.run_housekeeping(run, "/t", lambda: False)
+    status, reason = hk.run_housekeeping(run, "/t", lambda: False, PYTHON)
     assert status == "done"
     assert "prune skipped: subcommand not available" in reason
-    assert hk.prune_argv("/t") not in seen
+    assert hk.prune_argv("/t", 7, PYTHON) not in seen
 
 
 def test_prune_raising_is_reported_for_prune_only():
     run, seen = _runner(boom="prune")
-    status, reason = hk.run_housekeeping(run, "/t", lambda: True)
+    status, reason = hk.run_housekeeping(run, "/t", lambda: True, PYTHON)
     assert status == "failed"
     assert "prune: FAILED exit 1 OSError: no such file" in reason
     assert reason.startswith("lake sync: ok")
@@ -49,8 +51,8 @@ def test_prune_raising_is_reported_for_prune_only():
 
 
 def test_prune_argv_literal():
-    assert hk.prune_argv("/traces") == [
-        "python", "-m", "harness.store_backfill_traces", "prune", "/traces", "--older-than", "7",
+    assert hk.prune_argv("/traces", 7, "/venv/bin/python") == [
+        "/venv/bin/python", "-m", "harness.store_backfill_traces", "prune", "/traces", "--older-than", "7",
     ]
 
 
@@ -66,4 +68,4 @@ def test_join_reason_keeps_failed_names():
 
 
 def test_the_trace_prune_keeps_the_configured_number_of_days():
-    assert hk.prune_argv("/t", 14)[-2:] == ["--older-than", "14"]
+    assert hk.prune_argv("/t", 14, PYTHON)[-2:] == ["--older-than", "14"]
