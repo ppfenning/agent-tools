@@ -117,6 +117,18 @@ def test_launch_cap_keeps_the_first_relaunches_in_order_and_drops_the_paired_cle
     ]
 
 
+def test_relaunches_stop_at_the_free_lanes_of_this_machine():
+    facts = _facts(
+        dispatch={"max_in_flight": 2, "live_runs": 1, "hosts": []},
+        initiatives=[_initiative("a"), _initiative("b")],
+        run_exited={"a": True, "b": True},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "epoch": 7},
+    ]
+
+
 def test_a_harness_retry_counts_against_the_launch_cap():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
