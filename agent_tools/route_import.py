@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_tools import queue_rows
+from agent_tools import intake_state, queue_rows
 
 Row = queue_rows.Row
 
 _KINDS = {"work": "task", "intake": "intake"}
+_TERMINAL = frozenset({"done", "dropped"})
 
 
 @dataclass(frozen=True)
@@ -55,14 +56,50 @@ def _unchanged(row: Row, stored: Row) -> bool:
     return all(stored.get(field) == value for field, value in row.items())
 
 
+def _initiative_entry(path_parts: tuple[str, ...], text: str) -> tuple[str, str] | None:
+    """(initiative id, text) for a `work/<id>/initiative.md` path, else None."""
+    is_initiative = len(path_parts) == 3 and path_parts[0] == "work" and path_parts[2] == "initiative.md"
+    return (path_parts[1], text) if is_initiative else None
+
+
+def _initiative_done(initiative_id: str, rows: list[Row]) -> bool:
+    """True when every task row naming `initiative_id` is `done` or `dropped`; vacuously True for an id
+    with no task rows, matching route.initiative_states."""
+    return all(
+        row["state"] in _TERMINAL for row in rows if row["kind"] == "task" and row["initiative"] == initiative_id
+    )
+
+
+def _intake_entry(row: Row) -> dict:
+    """`row` in the entry shape `intake_state.intake_group` takes. `path` is never `done/`-prefixed: a
+    queued or a done row names the same path, matching `cli._intake_entry_from_row`."""
+    return {"path": f"intake/{row['task_id']}.md", "initiative": row["extra"].get("initiative"), "done": row["state"] == "done"}
+
+
+def _resolved(row: Row, initiatives_by_id: dict, initiatives: list) -> Row:
+    """`row` with an intake-kind's hardcoded path state replaced by `intake_state.intake_group`'s rule;
+    a task row is returned unchanged."""
+    if row["kind"] != "intake":
+        return row
+    return {**row, "state": intake_state.intake_group(_intake_entry(row), initiatives_by_id, initiatives)}
+
+
 def plan_import(files: list[tuple[tuple[str, ...], str]], existing_rows: list[Row]) -> Plan:
     """The rows to write, plus how many already matched the store (`unchanged`) or were not imported
     (`skipped`: unparseable, `initiative.md`, or a file whose store key an earlier file in `files` holds).
-    First file per key wins, so two files sharing a key cannot overwrite each other on every run."""
+    First file per key wins, so two files sharing a key cannot overwrite each other on every run.
+
+    An intake-kind row's `state` is not the hardcoded path state: it is `intake_state.intake_group`'s
+    verdict, given the `id`/`done`/`text` initiatives list route status builds from the `initiative.md`
+    files already present in `files` — that file still writes no row of its own."""
     outcomes = [_parsed(path_parts, text) for path_parts, text in files]
     parsed = [row for row in outcomes if row is not None]
-    first_at = {_key(row): i for i, row in reversed(list(enumerate(parsed)))}
-    kept = [row for i, row in enumerate(parsed) if first_at[_key(row)] == i]
+    initiative_texts = dict(filter(None, (_initiative_entry(path_parts, text) for path_parts, text in files)))
+    initiatives = [{"id": iid, "done": _initiative_done(iid, parsed), "text": text} for iid, text in initiative_texts.items()]
+    initiatives_by_id = {i["id"]: i for i in initiatives}
+    resolved = [_resolved(row, initiatives_by_id, initiatives) for row in parsed]
+    first_at = {_key(row): i for i, row in reversed(list(enumerate(resolved)))}
+    kept = [row for i, row in enumerate(resolved) if first_at[_key(row)] == i]
     stored_by_key = {_key(row): row for row in existing_rows}
     to_write = [row for row in kept if not _unchanged(row, stored_by_key.get(_key(row), {}))]
     return Plan(to_write=tuple(to_write), unchanged=len(kept) - len(to_write), skipped=len(outcomes) - len(kept))
