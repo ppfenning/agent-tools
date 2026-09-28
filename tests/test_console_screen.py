@@ -20,13 +20,13 @@ def test_render_marks_selected_draft():
         "drafts:",
         "> foo  pat  1h",
         "hosts:",
-        "  jarvis  up  cap=2",
+        "  jarvis  up  cap=2  beat=t  login ?",
         "lanes:",
         "  run-1  jarvis  beat=2026-09-28T00:05:00+00:00",
         "chair:",
         "  sess-1  jarvis  pid=123",
         "needs chair:",
-        "  2026-09-28T00:00:00+00:00  needs_chair",
+        "  ?  ?  2026-09-28T00:00:00+00:00",
     ]
 
 
@@ -71,3 +71,20 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
         "chair": [{"session": "sess-1"}],
         "needs_chair": [recent],
     }
+
+
+def test_needs_chair_rows_collapse_to_the_newest_per_initiative_and_cause():
+    older = {"kind": "needs_chair", "ts": "2026-09-28T07:09:36Z", "target": "i", "action_json": {"initiative": "i", "cause": "stranded"}}
+    newer = {"kind": "needs_chair", "ts": "2026-09-28T07:18:55Z", "target": "i", "action_json": '{"initiative": "i", "cause": "stranded"}'}
+    assert console_screen.newest_per_item([older, newer]) == [newer]
+
+
+def test_gather_reads_drafts_from_the_workspace_work_directory(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(console_screen.draft_list, "read_drafts", lambda work_dir, now: seen.append(work_dir) or [])
+    monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [])
+    monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [])
+    monkeypatch.setattr(console_screen.chair, "read", lambda runs_dir: None)
+    monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [])
+    console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00")
+    assert seen == [tmp_path / "work"]
