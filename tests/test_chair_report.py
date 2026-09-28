@@ -81,6 +81,12 @@ def test_a_not_landed_land_appears_as_failed():
     assert " | failed: land:t1, pull:epic-c | needs chair: none" in line
 
 
+def test_a_not_landed_land_phase_appears_as_failed_with_its_phase():
+    results = [_result("land_phase", "not_landed", phase="p2", initiative="epic-a")]
+    line = format_status(_facts(), [], results, NOW)
+    assert " | failed: land_phase:epic-a/p2 | needs chair: none" in line
+
+
 def test_a_quiet_tick_names_no_launch_and_no_failure():
     line = format_status(_facts(), [], [_landed(), _result("launch_epic", "fenced", initiative="x")], NOW)
     assert "launched:" not in line and "failed:" not in line
