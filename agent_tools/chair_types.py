@@ -126,6 +126,7 @@ ActionKind = Literal[
     "fetch",
     "fetch_exit",
     "land",
+    "land_phase",
     "clear_branches",
     "relaunch",
     "retry",
@@ -149,8 +150,9 @@ class Action(TypedDict, total=False):
     epoch: int
     task_id: str
     repo: str
-    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run
-    initiative: str  # retry and rescue carry initiative and task_id; a stale_to_draft or mark_lost names the initiative
+    run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run; a land_phase names the run whose phase-mode land command performs it
+    initiative: str  # retry, rescue and land_phase carry initiative (land_phase carries no task_id); a stale_to_draft or mark_lost names the initiative
+    phase: str  # a land_phase names the phase it lands
     cause: str
     intake_ids: list[str]
     holder: str
