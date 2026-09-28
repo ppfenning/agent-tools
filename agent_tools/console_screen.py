@@ -8,6 +8,7 @@ pieces (`gather`, `render`, `selection_at`) stay testable without one.
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,18 +40,45 @@ def _is_recent_needs_chair(row: dict, now: datetime) -> bool:
     return ts is not None and abs((now - ts).total_seconds()) <= _NEEDS_CHAIR_WINDOW_S
 
 
+def _action(row: dict) -> dict:
+    """The row's `action_json` as a dict: Postgres hands back a dict, SQLite a JSON string."""
+    raw = row.get("action_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _needs_chair_key(row: dict) -> tuple[str, str]:
+    action = _action(row)
+    return str(action.get("initiative") or row.get("target") or "?"), str(action.get("cause") or row.get("cause") or "?")
+
+
+def newest_per_item(rows: list[dict]) -> list[dict]:
+    """Pure. One row per (initiative, cause), the newest by `ts`: the loop records the same item every tick."""
+    newest: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        key = _needs_chair_key(row)
+        if key not in newest or str(row.get("ts") or "") > str(newest[key].get("ts") or ""):
+            newest[key] = row
+    return sorted(newest.values(), key=_needs_chair_key)
+
+
 def gather(runs_dir: Path, work_dir: Path, now: str) -> dict[str, list]:
-    """Edge. One call to each of the five readers; no other I/O."""
+    """Edge. One call to each of the five readers; no other I/O. `work_dir` is the workspace; drafts live in its
+    `work` directory."""
     record = chair.read(runs_dir)
     actions = chair_read_stale.read_chair_actions(runs_dir)
     end = _parse_iso(now)
-    needs_chair = [row for row in actions if end is not None and _is_recent_needs_chair(row, end)]
+    recent = [row for row in actions if end is not None and _is_recent_needs_chair(row, end)]
     return {
-        "drafts": draft_list.read_drafts(work_dir, now),
+        "drafts": draft_list.read_drafts(work_dir / "work", now),
         "hosts": run_store.hosts(runs_dir),
         "lanes": run_store.live_lanes(runs_dir, now),
         "chair": [record] if record is not None else [],
-        "needs_chair": needs_chair,
+        "needs_chair": newest_per_item(recent),
     }
 
 
@@ -59,7 +87,14 @@ def _draft_line(row) -> str:
 
 
 def _host_line(row: dict) -> str:
-    return f"{row.get('name')}  {row.get('state')}  cap={row.get('capacity')}"
+    versions = row.get("versions_json")
+    if isinstance(versions, str):
+        try:
+            versions = json.loads(versions)
+        except ValueError:
+            versions = {}
+    login = {True: "login ok", False: "login lapsed"}.get((versions or {}).get("login_ok"), "login ?")
+    return f"{row.get('name')}  {row.get('state')}  cap={row.get('capacity')}  beat={row.get('beat_at') or 'never'}  {login}"
 
 
 def _lane_line(row) -> str:
@@ -71,7 +106,8 @@ def _chair_line(row: dict) -> str:
 
 
 def _needs_chair_line(row: dict) -> str:
-    return f"{row.get('ts')}  {row.get('kind')}"
+    initiative, cause = _needs_chair_key(row)
+    return f"{initiative}  {cause}  {row.get('ts')}"
 
 
 _ITEM_LINE = {
