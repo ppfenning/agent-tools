@@ -25,9 +25,11 @@ def _perform(action, code=0, output="merge: ok\nmark_done: ok"):
     return perform([action], deps, lambda: 1, False), recorded
 
 
-def test_land_argv_names_the_run_holding_the_approved_record():
+def test_the_phase_land_names_the_run_holding_the_approved_record():
     facts = {"approved": approved_facts([TASK]), "initiatives": []}
-    assert argv_for(plan_lands(facts)[0]) == ["cox", "runs", "land", "x-1", "--task", "t", "--repo", "/r", "--apply", "--no-claim"]
+    assert plan_lands(facts) == [
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "/r", "run": "x-1", "epoch": None}
+    ]
 
 
 def test_land_without_a_run_has_no_argv():

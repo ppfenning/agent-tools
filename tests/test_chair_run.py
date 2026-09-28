@@ -17,7 +17,12 @@ def _facts(lease):
         "lease": lease,
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 4, "live_runs": 0, "hosts": []},
-        "approved": [{"id": "t1", "initiative": "i", "repo": "r", "phase_done": True, "needs": [], "run": "x-1", "needs_fetch": False}],
+        "approved": [
+            {
+                "id": "t1", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [],
+                "run": "x-1", "needs_fetch": False,
+            }
+        ],
         "initiatives": [],
         "quarantines": [],
         "intake": [],
@@ -123,7 +128,7 @@ def _dry_run_plan(lease, **over):
 
 def test_a_dry_run_on_a_released_lease_plans_the_land_the_holder_would():
     kinds, rig = _dry_run_plan(FREE)
-    assert kinds == ["land"]
+    assert kinds == ["land_phase"]
     assert rig.acquired == [] and rig.commands == []
 
 
