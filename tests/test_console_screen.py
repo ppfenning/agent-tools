@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from agent_tools import console_screen
+from agent_tools import console_screen, runs_top
 from agent_tools.draft_list import DraftRow
 from agent_tools.run_store import Lane
 
@@ -15,7 +15,8 @@ def _sections():
     return {
         "drafts": [DraftRow(id="foo", proposed_by="pat", age_seconds=3600)],
         "hosts": [{"name": "jarvis", "state": "up", "capacity": 3, "in_use": 2, "beat_at": _BEAT, "versions_json": "{}"}],
-        "lanes": [Lane("run-1", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)],
+        "lanes": [console_screen.LaneRow(run="run-1", host="jarvis", heartbeat_at=_BEAT, phase="build", node="claude",
+                                         attempt=2, turns=14, cost_usd=1.5, phases_landed=1, phases_total=2)],
         "chair": [{"holder": "sess-1", "state": "live", "minutes_ago": 2}],
         "spend": {"five_hour": 0.4, "weekly": 0.12, "hard_stop": 0.93},
         "needs_chair": [{"kind": "needs_chair", "ts": _BEAT}],
@@ -23,14 +24,14 @@ def _sections():
 
 
 def test_render_marks_selected_draft():
-    assert console_screen.render(_sections(), selected=0, width=80, now=_NOW, tz=_EASTERN) == [
+    assert console_screen.render(_sections(), selected=0, width=100, now=_NOW, tz=_EASTERN) == [
         "spend: 5h 40%  weekly 12%/93%",
         "drafts:",
         "> foo  pat  1h",
         "hosts:",
         "  jarvis  2/3  up  beat=8:50 AM  2m ago  login ?",
         "lanes:",
-        "  run-1  jarvis  beat=8:50 AM  2m ago",
+        "  run-1  jarvis  beat=8:50 AM  2m ago  build  claude  att 2  turns 14  $1.50  1/2 phases",
         "chair:",
         "  sess-1  (live, beat 2m ago)",
         "needs chair:",
@@ -119,6 +120,8 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [host_row])
     monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [lane_row])
     monkeypatch.setattr(console_screen.runs_top_screen, "chair_now", lambda runs_dir: chair_row)
+    monkeypatch.setattr(console_screen.runs_top_screen, "rows_now", lambda runs_dir: [])
+    monkeypatch.setattr(console_screen.run_store, "work_items", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [recent, stale, keyless])
 
     result = console_screen.gather(Path("/runs"), Path("/work"), now, "omarchy", 3, spend)
@@ -126,7 +129,8 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     assert result == {
         "drafts": ["draft-row"],
         "hosts": [{**host_row, "in_use": 1}, {"name": "omarchy", "capacity": 3, "state": "active", "in_use": 0}],
-        "lanes": [lane_row],
+        "lanes": [console_screen.LaneRow(run="run-1", host="jarvis", heartbeat_at=_BEAT, phase="", node="",
+                                          attempt=0, turns=0, cost_usd=0.0, phases_landed=0, phases_total=0)],
         "chair": [chair_row],
         "spend": spend,
         "needs_chair": [recent],
@@ -145,7 +149,45 @@ def test_gather_reads_drafts_from_the_workspace_work_directory(monkeypatch, tmp_
     monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [])
     monkeypatch.setattr(console_screen.runs_top_screen, "chair_now", lambda runs_dir: None)
+    monkeypatch.setattr(console_screen.runs_top_screen, "rows_now", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [])
     spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
     console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
     assert seen == [tmp_path / "work"]
+
+
+def test_lane_line_shows_its_own_runs_top_phase_and_its_initiatives_phase_progress():
+    """The PHASE is the run's own `rows_now` row, never a value inferred from row order; progress is a count
+    of phases whose items are all `done` or `dropped`."""
+    lane = Lane("acme-3", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    run_rows = {"acme-3": runs_top.Row(run="acme-3", alive=True, phase="build", node="claude", attempt=2,
+                                        turns=14, cost_usd=1.5, verdict="", status="running")}
+    items = [
+        {"initiative": "acme", "phase": "plan", "state": "done"},
+        {"initiative": "acme", "phase": "plan", "state": "dropped"},
+        {"initiative": "acme", "phase": "build", "state": "open"},
+    ]
+
+    rows = console_screen._lane_rows([lane], run_rows, items)
+    line = console_screen._lane_line(rows[0], _NOW, _EASTERN)
+
+    assert "build" in line
+    assert "1/2 phases" in line
+
+
+def test_gather_reads_work_items_once_per_snapshot_window(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(console_screen.draft_list, "read_drafts", lambda work_dir, now: [])
+    monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [])
+    monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [])
+    monkeypatch.setattr(console_screen.runs_top_screen, "chair_now", lambda runs_dir: None)
+    monkeypatch.setattr(console_screen.runs_top_screen, "rows_now", lambda runs_dir: [])
+    monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [])
+    monkeypatch.setattr(console_screen.run_store, "work_items", lambda runs_dir: calls.append(runs_dir) or [])
+    spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
+    runs_dir = tmp_path / "runs"
+
+    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
+    console_screen.gather(runs_dir, tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
+
+    assert len(calls) == 1

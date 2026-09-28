@@ -12,18 +12,23 @@ spend figures and hands them in as a plain dict.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import subprocess
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
-from agent_tools import chair_read_stale, console_plan, draft_list, run_store, runs_top_screen
+from agent_tools import chair_facts, chair_read_stale, console_plan, draft_list, run_store, runs_top_screen
 
 _SECTION_ORDER = ("drafts", "hosts", "lanes", "chair", "needs_chair")
 _SELECTABLE_SECTIONS = ("drafts", "hosts", "lanes", "chair")
 _NEEDS_CHAIR_KIND = "needs_chair"
 _NEEDS_CHAIR_WINDOW_S = 600
+_LANDED_STATES = ("done", "dropped")
+_PHASE_SNAPSHOT_S = 30  # one read of work_items serves every lane redraw in this window: the harness subprocess it runs has a 60s timeout
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -92,10 +97,68 @@ def _hosts_with_lane_counts(hosts: list[dict], lanes: list, local_name: str) -> 
     return [{**row, "in_use": in_use.get(row.get("name"), 0)} for row in hosts]
 
 
+@functools.lru_cache(maxsize=8)
+def _work_items_snapshot(runs_dir: str, _window: int) -> tuple[dict, ...]:
+    """Every `work_items` row, read once per `_PHASE_SNAPSHOT_S` window: `loop` calls `gather` on every tick and
+    after every keypress, and `run_store.work_items` starts a harness interpreter with a 60-second timeout."""
+    return tuple(run_store.work_items(Path(runs_dir)))
+
+
+def _phase_progress(items: Sequence[dict], initiative: str) -> tuple[int, int]:
+    """Pure. `(landed, total)` phases of `initiative`: a phase is landed when every one of its items is `done`
+    or `dropped`. A count needs no order, so this never looks at which item came first."""
+    by_phase: dict[str, list[str]] = {}
+    for row in items:
+        if row.get("initiative") == initiative:
+            by_phase.setdefault(row.get("phase"), []).append(row.get("state"))
+    landed = sum(1 for states in by_phase.values() if states and all(s in _LANDED_STATES for s in states))
+    return landed, len(by_phase)
+
+
+@dataclass(frozen=True)
+class LaneRow:
+    """A lane joined to the `cox runs top` columns of its own run and its initiative's phase progress."""
+
+    run: str
+    host: str | None
+    heartbeat_at: str
+    phase: str
+    node: str
+    attempt: int
+    turns: int
+    cost_usd: float
+    phases_landed: int
+    phases_total: int
+
+
+def _lane_rows(lanes: list, run_rows: dict, items: Sequence[dict]) -> list[LaneRow]:
+    """Pure. One `LaneRow` per lane. `phase`/`node`/`attempt`/`turns`/`cost_usd` are the run's own `rows_now`
+    row's values (blank/zero when it has none yet) — never a value read off the order of `run_rows` or `items`.
+    `phases_landed`/`phases_total` come from `_phase_progress` on the run's own initiative."""
+    rows = []
+    for lane in lanes:
+        run_row = run_rows.get(lane.run)
+        landed, total = _phase_progress(items, chair_facts.run_initiative(lane.run))
+        rows.append(LaneRow(
+            run=lane.run,
+            host=lane.host,
+            heartbeat_at=lane.heartbeat_at,
+            phase=run_row.phase if run_row is not None else "",
+            node=run_row.node if run_row is not None else "",
+            attempt=run_row.attempt if run_row is not None else 0,
+            turns=run_row.turns if run_row is not None else 0,
+            cost_usd=run_row.cost_usd if run_row is not None else 0.0,
+            phases_landed=landed,
+            phases_total=total,
+        ))
+    return rows
+
+
 def gather(
     runs_dir: Path, work_dir: Path, now: str, local_name: str, local_capacity: int, spend: dict,
 ) -> dict[str, list]:
-    """Edge. One call to each reader; no other I/O beyond that. `work_dir` is the workspace; drafts live in its
+    """Edge. One call to each reader (`work_items` through `_work_items_snapshot`, so it runs at most once per
+    `_PHASE_SNAPSHOT_S` window); no other I/O beyond that. `work_dir` is the workspace; drafts live in its
     `work` directory. `local_name`/`local_capacity` seat the local machine's own hosts row and its lanes-in-use
     count. `spend` is a plain dict the caller already computed (the CLI edge, from the same sources the chair
     loop uses); this module never reads usage, pacing or run-store cost to build it."""
@@ -105,10 +168,12 @@ def gather(
     recent = [row for row in actions if end is not None and _is_recent_needs_chair(row, end)]
     lanes = run_store.live_lanes(runs_dir, now)
     hosts = with_local_host(run_store.hosts(runs_dir), local_name, local_capacity)
+    run_rows = {row.run: row for row in runs_top_screen.rows_now(runs_dir)}
+    items = _work_items_snapshot(str(runs_dir), int(time.monotonic() // _PHASE_SNAPSHOT_S))
     return {
         "drafts": draft_list.read_drafts(work_dir / "work", now),
         "hosts": _hosts_with_lane_counts(hosts, lanes, local_name),
-        "lanes": lanes,
+        "lanes": _lane_rows(lanes, run_rows, items),
         "chair": [chair_state] if chair_state is not None else [],
         "spend": spend,
         "needs_chair": newest_per_item(recent),
@@ -156,7 +221,10 @@ def _host_line(row: dict, now: datetime, tz: tzinfo) -> str:
 
 
 def _lane_line(row, now: datetime, tz: tzinfo) -> str:
-    return f"{row.run}  {row.host or '-'}  beat={_clock_and_age(row.heartbeat_at, now, tz)}"
+    beat = f"beat={_clock_and_age(row.heartbeat_at, now, tz)}"
+    run_cols = f"{row.phase}  {row.node}  att {row.attempt}  turns {row.turns}  ${row.cost_usd:.2f}"
+    progress = f"{row.phases_landed}/{row.phases_total} phases"
+    return f"{row.run}  {row.host or '-'}  {beat}  {run_cols}  {progress}"
 
 
 def _chair_line(row: dict, now: datetime, tz: tzinfo) -> str:
