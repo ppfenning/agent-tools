@@ -30,7 +30,7 @@ def _workspace(tmp_path: Path) -> tuple[Path, Path]:
     _item(phase, "done1", "done")
     _item(phase, "appr1", "approved")
     (phase / "quar1.md").write_text(
-        "---\nid: quar1\nstate: ready\nattempts:\n  - run: init-1\n    ts: t\n---\nbody\n", encoding="utf-8"
+        "---\nid: quar1\nstate: ready\nattempts:\n  - run: init-1\n    ts: 2020-01-01T00:00:00Z\n---\nbody\n", encoding="utf-8"
     )
     (ws / "intake").mkdir()
     (ws / "intake" / "idea.md").write_text("an idea\n", encoding="utf-8")

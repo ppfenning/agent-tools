@@ -49,6 +49,7 @@ from agent_tools import (
     chair_read_record,
     chair_read_remote_unfetched,
     chair_read_run_id,
+    chair_read_stale,
     chair_read_stranded,
     chair_report,
     chair_run,
@@ -5822,6 +5823,8 @@ def _chair_run_deps(
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
+        stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
+        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n),
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
