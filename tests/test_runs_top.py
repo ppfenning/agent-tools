@@ -84,31 +84,31 @@ def test_column_widths_on_rows_of_unequal_width():
         Row("r1", True, "build", "review_charter", 1, 3, 500, "", "running"),
         Row("r2", True, "build", "b", 1, 3, 500, "", "running"),
     ]
-    widths = column_widths(rows, ("RUN", "PHASE", "NODE"))
-    assert widths == (len("RUN"), len("build"), len("review_charter"))
+    widths = column_widths(rows, ("RUN", "MACHINE", "PHASE", "NODE"))
+    assert widths == (len("RUN"), len("MACHINE"), len("build"), len("review_charter"))
 
 
-_HEADERS = ("RUN", "PHASE", "NODE", "ATT", "TURNS", "TOKENS", "VERDICT", "STATUS", "CEIL", "BY")
+_HEADERS = ("RUN", "MACHINE", "PHASE", "NODE", "ATT", "TURNS", "TOKENS", "VERDICT", "STATUS", "CEIL", "BY")
 
 
 def test_render_aligns_a_long_and_a_short_node_so_att_starts_at_the_same_index():
     long_row = Row("r1", True, "build", "review_charter", 1, 3, 500, "", "running")
     short_row = Row("r2", True, "build", "b", 2, 3, 500, "", "running")
     widths = column_widths([long_row, short_row], _HEADERS)
-    start = sum(widths[:3]) + 3
+    start = sum(widths[:4]) + 4
     lines = render([long_row, short_row], 80)
-    assert lines[1][start:start + widths[3]] == "1".rjust(widths[3])
-    assert lines[2][start:start + widths[3]] == "2".rjust(widths[3])
+    assert lines[1][start:start + widths[4]] == "1".rjust(widths[4])
+    assert lines[2][start:start + widths[4]] == "2".rjust(widths[4])
 
 
 def test_render_right_aligns_numeric_columns():
     r = Row("r1", True, "build", "b", 1, 22, 3, "", "running")
     widths = column_widths([r], _HEADERS)
-    start = sum(widths[:3]) + 3
+    start = sum(widths[:4]) + 4
     lines = render([r], 80)
-    assert lines[1][start:start + widths[3]] == "1".rjust(widths[3])
-    turns_start = start + widths[3] + 1
-    assert lines[1][turns_start:turns_start + widths[4]] == "22".rjust(widths[4])
+    assert lines[1][start:start + widths[4]] == "1".rjust(widths[4])
+    turns_start = start + widths[4] + 1
+    assert lines[1][turns_start:turns_start + widths[5]] == "22".rjust(widths[5])
 
 
 def test_render_formats_the_cost_cell_as_dollars():
@@ -187,12 +187,19 @@ def test_remote_row_is_alive_and_empty_of_local_facts():
     assert (r.alive, r.remote, r.host, r.phase, r.node, r.turns, r.cost_usd, r.verdict) == (True, True, "h1", "", "", 0, 0.0, "")
 
 
-def test_render_names_the_host_in_a_remote_run_cell_and_keeps_the_columns():
-    local = render([row("a-1", True, [], [], [])], 200)
-    remote = render([remote_row("x-1", "h1", 5)], 200)
-    assert remote[0].split() == local[0].split()
-    assert remote[1].startswith("x-1 (on h1)")
+def test_the_machine_column_follows_run_and_the_run_cell_is_the_bare_run():
+    lines = render([remote_row("x-1", "h1", 5)], 200)
+    assert lines[0].split()[:3] == ["RUN", "MACHINE", "PHASE"]
+    assert lines[1].split()[0] == "x-1"
 
 
-def test_render_says_another_machine_when_the_host_is_unknown():
-    assert render([remote_row("x-1", None, 5)], 200)[1].startswith("x-1 (on another machine)")
+def test_a_local_row_shows_the_host_it_was_given():
+    assert render([row("a-1", True, [], [], [], host="omarchy")], 200)[1].split()[:2] == ["a-1", "omarchy"]
+
+
+def test_a_remote_row_shows_its_lane_host():
+    assert render([remote_row("x-1", "h1", 5)], 200)[1].split()[:2] == ["x-1", "h1"]
+
+
+def test_a_remote_row_with_no_host_shows_a_question_mark():
+    assert render([remote_row("x-1", None, 5)], 200)[1].split()[:2] == ["x-1", "?"]

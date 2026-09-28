@@ -1,13 +1,14 @@
 import datetime
 import json
 import os
+import socket
 import sqlite3
 import time
 
 import pytest
 from test_run_store import lane_run, lane_store, leases_table
 
-from agent_tools import cli, run_store
+from agent_tools import cli, run_store, runs_top
 from agent_tools.runs_top_screen import _fact, calls_from_usage, draw, facts, first_visible, loop, rows_now
 
 
@@ -417,7 +418,14 @@ def test_a_lane_whose_run_has_a_local_pidfile_appears_once_as_local(tmp_path):
 
     rows = rows_now(tmp_path, now=_NOW)
 
-    assert [(r.run, r.remote, r.host) for r in rows] == [("x-3", False, None)]
+    assert [(r.run, r.remote, r.host) for r in rows] == [("x-3", False, socket.gethostname())]
+
+
+def test_a_lane_on_this_machine_with_no_pidfile_shows_this_machine_by_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(socket, "gethostname", lambda: "h")
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+
+    assert runs_top.render(rows_now(tmp_path, now=_NOW), 200)[1].split()[:2] == ["x-3", "h"]
 
 
 def test_with_no_live_leases_the_rows_equal_the_local_only_rows(tmp_path):
