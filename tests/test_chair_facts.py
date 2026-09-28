@@ -280,7 +280,8 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
-    assert set(facts) == set(Facts.__annotations__)
+    # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
+    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
@@ -326,6 +327,15 @@ def test_a_fake_lost_runs_callable_appears_under_lost_runs():
 
 def test_no_lost_runs_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["lost_runs"] == {}
+
+
+def test_a_fake_hosts_callables_return_value_appears_verbatim_under_login_hosts():
+    rows = [{"name": "h1", "state": "needs_login", "versions_json": "{}"}]
+    assert gather_facts(replace(_deps(), hosts=lambda: rows), NOW)["login_hosts"] == rows
+
+
+def test_an_absent_hosts_callable_gives_an_empty_login_hosts():
+    assert gather_facts(_deps(), NOW)["login_hosts"] == []
 
 
 def _row(initiative: str, task_id: str, state: str, **extra: object) -> dict:
