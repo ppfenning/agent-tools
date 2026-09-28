@@ -593,10 +593,31 @@ def test_phase_plan_step_list_and_clean_phase_scoping():
     }]
     items = [{"id": "seams-task", "status": "done"}]
     steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
-    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done"]
-    assert next(s for s in steps if s["kind"] == "checks")["branch"] == "epic/x/seams"
+    assert [s["kind"] for s in steps] == [
+        "pick_branch", "squash_phase", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done",
+    ]
+    assert next(s for s in steps if s["kind"] == "checks")["worktree_of"] == "pr/x--seams"
     assert next(s for s in steps if s["kind"] == "clean_phase") == {
-        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "tasks": ["seams-task"],
+        "kind": "clean_phase", "run": "epic-x-5", "phase_branch": "epic/x/seams", "pr_branch": "pr/x--seams",
+        "tasks": ["seams-task"],
+    }
+
+
+def test_phase_plan_squash_phase_step_for_a_two_task_phase():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [
+        {"task": "seams-a", "run": "epic-x-5", "phase": "seams", "status": "done",
+         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}},
+        {"task": "seams-b", "run": "epic-x-5", "phase": "seams", "status": "done",
+         "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+         "change_facts": {"fix_loop_attempts": 1, "files_touched": ["b.py"]}},
+    ]
+    items = [{"id": "seams-a", "status": "done"}, {"id": "seams-b", "status": "done"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert next(s for s in steps if s["kind"] == "squash_phase") == {
+        "kind": "squash_phase", "branch": "epic/x/seams", "onto": "pr/x--seams",
+        "from": "main", "subject": "epic x: seams",
     }
 
 
@@ -1715,7 +1736,7 @@ def test_the_phase_plans_merge_step_carries_what_the_local_forge_reads():
                            task_records=[_record(status="done")])
     assert next(s for s in steps if s["kind"] == "merge") == {
         "kind": "merge", "squash": True, "delete_branch": True,
-        "branch": "epic/x/seams", "default_branch": "trunk", "subject": "epic x: seams",
+        "branch": "pr/x--seams", "default_branch": "trunk", "subject": "epic x: seams",
     }
 
 
@@ -1731,8 +1752,8 @@ def test_the_phase_plans_pr_and_checks_steps_name_their_branch_and_base():
     steps = land.land_plan(phase_record, {}, "trunk", items=[{"id": "seams-task", "status": "done"}],
                            task_records=[_record(status="done")])
     pr = next(s for s in steps if s["kind"] == "pr_create")
-    assert (pr["head"], pr["base"]) == ("epic/x/seams", "trunk")
-    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "epic/x/seams"}
+    assert (pr["head"], pr["base"]) == ("pr/x--seams", "trunk")
+    assert next(s for s in steps if s["kind"] == "wait_checks") == {"kind": "wait_checks", "branch": "pr/x--seams"}
 
 
 def test_land_phase_record_reads_the_store_manifest_when_no_file_exists(tmp_path):

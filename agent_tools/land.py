@@ -157,25 +157,30 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main") -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
-    `checks` step names the phase `branch` instead of running in place; the
-    edge builds a throwaway worktree from it rather than switching the
-    working repo's own branch out from under whatever else uses it."""
+    phase branch is squashed onto a fresh `default_branch` in its own PR
+    branch, the way a task land builds its PR, since a coxswain repo requires
+    an up-to-date branch to merge and a phase branch cut from an older main
+    cannot land as it is; `checks` and everything after run off that PR
+    branch, not the phase branch itself."""
     refusal = phase_landable(items, {r.get("task"): r for r in task_records})
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
     run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
     phase_branch = f"epic/{initiative}/{phase}"
+    pr_branch = f"pr/{initiative}--{phase}"
     landed_tasks = [r.get("task") for r in task_records if r.get("status") != "dropped"]
     return [
         {"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"},
-        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "branch": phase_branch},
-        {"kind": "push", "branch": phase_branch},
+        {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
+         "subject": f"epic {initiative}: {phase}"},
+        {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
+        {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records),
-         "head": phase_branch, "base": default_branch},
-        {"kind": "wait_checks", "branch": phase_branch},
-        {"kind": "merge", "squash": True, "delete_branch": True, "branch": phase_branch,
+         "head": pr_branch, "base": default_branch},
+        {"kind": "wait_checks", "branch": pr_branch},
+        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
          "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
-        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "tasks": landed_tasks},
+        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
         *[{"kind": "mark_done", "task": t} for t in landed_tasks],
     ]
 
