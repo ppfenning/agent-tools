@@ -64,7 +64,7 @@ cox courier send REF --to TO --note NOTE [--profile PROFILE]   append a bus entr
 cox courier inbox [--label LABEL] [--profile PROFILE]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE]   acknowledge one bus entry by id
 cox versions [--root ROOT] [--manifest MANIFEST]   component versions against the manifest
-cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
+cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox install --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
 cox upgrade --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog

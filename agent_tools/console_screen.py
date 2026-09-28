@@ -1,8 +1,12 @@
-"""Curses edge for `cox console`: gathers drafts, hosts, lanes and the chair
-record, renders them, and runs the `cox` command `console_plan.plan_command`
-plans for a keypress. `curses` is imported inside each function that needs
-it, so this module imports on a machine with no terminal and the pure
-pieces (`gather`, `render`, `selection_at`) stay testable without one.
+"""Curses edge for `cox console`: gathers drafts, hosts (the local machine
+always included, lanes in use over capacity), lanes, the chair's live/stale
+state and the spend header, renders them, and runs the `cox` command
+`console_plan.plan_command` plans for a keypress. `curses` is imported
+inside each function that needs it, so this module imports on a machine
+with no terminal and the pure pieces (`gather`, `render`, `selection_at`,
+`with_local_host`) stay testable without one. `console_screen` never reads
+usage, pacing or the run store's cost directly: the CLI edge computes the
+spend figures and hands them in as a plain dict.
 """
 
 from __future__ import annotations
@@ -10,10 +14,11 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
-from agent_tools import chair, chair_read_stale, console_plan, draft_list, run_store
+from agent_tools import chair_read_stale, console_plan, draft_list, run_store, runs_top_screen
 
 _SECTION_ORDER = ("drafts", "hosts", "lanes", "chair", "needs_chair")
 _SELECTABLE_SECTIONS = ("drafts", "hosts", "lanes", "chair")
@@ -66,18 +71,46 @@ def newest_per_item(rows: list[dict]) -> list[dict]:
     return sorted(newest.values(), key=_needs_chair_key)
 
 
-def gather(runs_dir: Path, work_dir: Path, now: str) -> dict[str, list]:
-    """Edge. One call to each of the five readers; no other I/O. `work_dir` is the workspace; drafts live in its
-    `work` directory."""
-    record = chair.read(runs_dir)
+def with_local_host(hosts: list[dict], local_name: str, local_capacity: int) -> list[dict]:
+    """Pure. `hosts` unchanged when a row already names `local_name`; otherwise `hosts` plus a synthetic active
+    row for it, so the local machine always has a row even before `cox host beat` first writes one."""
+    if any(row.get("name") == local_name for row in hosts):
+        return hosts
+    return [*hosts, {"name": local_name, "capacity": local_capacity, "state": "active"}]
+
+
+def _lanes_in_use(lanes: list, local_name: str) -> dict[str, int]:
+    """Pure. Live lane count per host name; a lane with no host, or one on `local_name`, counts under
+    `local_name` — a lane launched on this machine carries no `host` value of its own."""
+    names = [local_name if lane.host in (None, local_name) else lane.host for lane in lanes]
+    return {name: names.count(name) for name in dict.fromkeys(names)}
+
+
+def _hosts_with_lane_counts(hosts: list[dict], lanes: list, local_name: str) -> list[dict]:
+    """Pure. `hosts` with each row's `in_use` set from `lanes`, so `_host_line` can show lanes in use over capacity."""
+    in_use = _lanes_in_use(lanes, local_name)
+    return [{**row, "in_use": in_use.get(row.get("name"), 0)} for row in hosts]
+
+
+def gather(
+    runs_dir: Path, work_dir: Path, now: str, local_name: str, local_capacity: int, spend: dict,
+) -> dict[str, list]:
+    """Edge. One call to each reader; no other I/O beyond that. `work_dir` is the workspace; drafts live in its
+    `work` directory. `local_name`/`local_capacity` seat the local machine's own hosts row and its lanes-in-use
+    count. `spend` is a plain dict the caller already computed (the CLI edge, from the same sources the chair
+    loop uses); this module never reads usage, pacing or run-store cost to build it."""
+    chair_state = runs_top_screen.chair_now(runs_dir)
     actions = chair_read_stale.read_chair_actions(runs_dir)
     end = _parse_iso(now)
     recent = [row for row in actions if end is not None and _is_recent_needs_chair(row, end)]
+    lanes = run_store.live_lanes(runs_dir, now)
+    hosts = with_local_host(run_store.hosts(runs_dir), local_name, local_capacity)
     return {
         "drafts": draft_list.read_drafts(work_dir / "work", now),
-        "hosts": run_store.hosts(runs_dir),
-        "lanes": run_store.live_lanes(runs_dir, now),
-        "chair": [record] if record is not None else [],
+        "hosts": _hosts_with_lane_counts(hosts, lanes, local_name),
+        "lanes": lanes,
+        "chair": [chair_state] if chair_state is not None else [],
+        "spend": spend,
         "needs_chair": newest_per_item(recent),
     }
 
@@ -118,7 +151,8 @@ def _host_line(row: dict, now: datetime, tz: tzinfo) -> str:
     login = {True: "login ok", False: "login lapsed"}.get((versions or {}).get("login_ok"), "login ?")
     beat = row.get("beat_at")
     beat_text = _clock_and_age(beat, now, tz) if beat else "never"
-    return f"{row.get('name')}  {row.get('state')}  cap={row.get('capacity')}  beat={beat_text}  {login}"
+    in_use = row.get("in_use", 0)
+    return f"{row.get('name')}  {in_use}/{row.get('capacity')}  {row.get('state')}  beat={beat_text}  {login}"
 
 
 def _lane_line(row, now: datetime, tz: tzinfo) -> str:
@@ -126,7 +160,7 @@ def _lane_line(row, now: datetime, tz: tzinfo) -> str:
 
 
 def _chair_line(row: dict, now: datetime, tz: tzinfo) -> str:
-    return f"{row.get('session')}  {row.get('host')}  pid={row.get('pid')}"
+    return f"{row.get('holder')}  ({row.get('state')}, beat {row.get('minutes_ago')}m ago)"
 
 
 def _needs_chair_line(row: dict, now: datetime, tz: tzinfo) -> str:
@@ -143,11 +177,33 @@ _ITEM_LINE = {
 }
 
 
+def _fraction_text(label: str, fraction: float | None) -> str:
+    return f"{label} n/a" if fraction is None else f"{label} {fraction:.0%}"
+
+
+def _five_hour_text(fraction: float | None) -> str:
+    return _fraction_text("5h", fraction)
+
+
+def _weekly_text(fraction: float | None, hard_stop_fraction: float) -> str:
+    if fraction is None:
+        return "weekly n/a"
+    return f"weekly {fraction:.0%}/{hard_stop_fraction:.0%}"
+
+
+def _spend_header(spend: dict) -> str:
+    return f"spend: {_five_hour_text(spend.get('five_hour'))}  {_weekly_text(spend.get('weekly'), spend.get('hard_stop', 0.0))}"
+
+
 def render(sections: dict, selected: int, width: int, now: datetime, tz: tzinfo) -> list[str]:
-    """Pure. A header per section then one line per item; `>` marks the selected item among the selectable
-    sections (drafts, hosts, lanes, chair, in that order); `needs_chair` rows are shown but never selectable.
-    Every line is cut to `width`; timestamps show as clock time in `tz` plus age against `now`."""
+    """Pure. One spend header line first, when `sections["spend"]` carries a dict, then a header per section and
+    one line per item; `>` marks the selected item among the selectable sections (drafts, hosts, lanes, chair, in
+    that order); `needs_chair` rows are shown but never selectable. Every line is cut to `width`; timestamps show
+    as clock time in `tz` plus age against `now`."""
     lines: list[str] = []
+    spend = sections.get("spend")
+    if spend:
+        lines.append(_spend_header(spend)[:width])
     index = 0
     for name in _SECTION_ORDER:
         lines.append(f"{name.replace('_', ' ')}:"[:width])
@@ -222,7 +278,10 @@ def _act(stdscr, sections: dict, selected: int, key: str) -> str | None:
     return _last_line(result.stdout) or _last_line(result.stderr)
 
 
-def loop(stdscr, runs_dir: Path, work_dir: Path, interval: float) -> int:
+def loop(
+    stdscr, runs_dir: Path, work_dir: Path, local_name: str, local_capacity: int,
+    spend_fn: Callable[[], dict], interval: float,
+) -> int:
     import curses
 
     with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
@@ -233,7 +292,7 @@ def loop(stdscr, runs_dir: Path, work_dir: Path, interval: float) -> int:
     while True:
         now = datetime.now(UTC)
         tz = now.astimezone().tzinfo
-        sections = gather(runs_dir, work_dir, now.isoformat())
+        sections = gather(runs_dir, work_dir, now.isoformat(), local_name, local_capacity, spend_fn())
         total = len(_selectable_rows(sections))
         selected = min(selected, total - 1) if total else 0
         _draw(stdscr, sections, selected, message, now, tz)
@@ -251,7 +310,10 @@ def loop(stdscr, runs_dir: Path, work_dir: Path, interval: float) -> int:
         # next iteration redraws against the current sections and size.
 
 
-def main(runs_dir: Path, work_dir: Path, interval: float = 5.0) -> int:
+def main(
+    runs_dir: Path, work_dir: Path, local_name: str, local_capacity: int,
+    spend_fn: Callable[[], dict], interval: float = 5.0,
+) -> int:
     import curses
     import signal
 
@@ -260,7 +322,9 @@ def main(runs_dir: Path, work_dir: Path, interval: float = 5.0) -> int:
 
     previous = signal.signal(signal.SIGHUP, _hangup)
     try:
-        return curses.wrapper(lambda stdscr: loop(stdscr, runs_dir, work_dir, interval))
+        return curses.wrapper(
+            lambda stdscr: loop(stdscr, runs_dir, work_dir, local_name, local_capacity, spend_fn, interval)
+        )
     except KeyboardInterrupt:
         # A closed window sends SIGHUP; raising through the wrapper lets it
         # restore the terminal before this function returns.
