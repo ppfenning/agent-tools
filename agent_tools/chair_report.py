@@ -42,8 +42,18 @@ def mode_of(actions: Sequence[Action], results: Sequence[Result]) -> str:
     return "holding"
 
 
+def _scope(action: Action) -> str:
+    """The initiative, as `<initiative>/<phase>` when the action names a phase: a land_phase carries no task_id."""
+    initiative, phase = action.get("initiative", "?"), action.get("phase", "")
+    return f"{initiative}/{phase}" if phase else initiative
+
+
+def _target(action: Action) -> str:
+    return action.get("task_id") or _scope(action)
+
+
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
-    return [f"{a.get('initiative', '?')}:{a.get('cause', '?')}" for a in actions if a.get("kind") == "needs_chair"]
+    return [f"{_scope(a)}:{a.get('cause', '?')}" for a in actions if a.get("kind") == "needs_chair"]
 
 
 def _launched_item(action: Action) -> str:
@@ -64,9 +74,9 @@ def launched_items(results: Sequence[Result]) -> list[str]:
 
 
 def failed_items(results: Sequence[Result]) -> list[str]:
-    """`<kind>:<task or initiative>` for every refused, failed or not_landed result."""
+    """`<kind>:<task or initiative>` for every refused, failed or not_landed result; a land_phase is `<initiative>/<phase>`."""
     return [
-        f"{r['action'].get('kind')}:{r['action'].get('task_id') or r['action'].get('initiative', '?')}"
+        f"{r['action'].get('kind')}:{_target(r['action'])}"
         for r in results
         if r["status"] in ("refused", "failed", "not_landed")
     ]
@@ -82,9 +92,9 @@ def fetched_items(results: Sequence[Result]) -> list[str]:
 
 
 def would_items(results: Sequence[Result]) -> list[str]:
-    """`<kind>:<task or initiative>` for every dry_run result except standby and take_lease."""
+    """`<kind>:<task or initiative>` for every dry_run result except standby and take_lease; a land_phase is `<initiative>/<phase>`."""
     return [
-        f"{r['action'].get('kind')}:{r['action'].get('task_id') or r['action'].get('initiative', '?')}"
+        f"{r['action'].get('kind')}:{_target(r['action'])}"
         for r in results
         if r["status"] == "dry_run" and r["action"].get("kind") not in ("standby", "take_lease")
     ]

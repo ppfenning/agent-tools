@@ -53,6 +53,15 @@ def test_a_fetch_exit_runs_the_same_cox_runs_fetch_argv_as_fetch():
     assert argv_for({"kind": "fetch_exit", "run": "r-1", "initiative": "i"}) == ["cox", "runs", "fetch", "r-1"]
 
 
+def test_a_land_phase_runs_cox_runs_land_with_phase_not_task():
+    action = {"kind": "land_phase", "run": "r-1", "phase": "p1", "repo": "r"}
+    assert argv_for(action) == ["cox", "runs", "land", "r-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"]
+
+
+def test_a_land_phase_missing_its_phase_returns_no_argv():
+    assert argv_for({"kind": "land_phase", "run": "r-1", "repo": "r"}) is None
+
+
 def test_a_fetch_exit_that_exits_zero_applies_approvals_and_carries_run_and_host(tmp_path, monkeypatch) -> None:
     remote_lane.remote_record_path(tmp_path, "r-1").write_text(
         json.dumps({"host": "jarvis", "launched_at": "2026-09-26T00:00:00+00:00"}), encoding="utf-8"
@@ -83,6 +92,10 @@ def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, mon
 
 def _land(task: str, repo: str) -> dict:
     return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
+
+
+def _land_phase(phase: str, repo: str) -> dict:
+    return {"kind": "land_phase", "phase": phase, "repo": repo, "run": "run-1", "epoch": 1}
 
 
 def _clear(initiative: str) -> dict:
@@ -208,6 +221,61 @@ def test_a_land_missing_its_repo_is_refused_without_running() -> None:
     results = perform([{"kind": "land", "task_id": "t1", "epoch": 1}], _deps(calls), lambda: 1, False)
     assert [r["status"] for r in results] == ["refused", "escalated"]
     assert calls == [("record", "land"), ("record", "needs_chair")]
+
+
+def test_a_land_phase_counts_only_when_both_markers_appear() -> None:
+    results = perform([_land_phase("p1", "r")], _deps([]), lambda: 1, False)
+    assert [r["status"] for r in results] == ["landed"]
+
+
+def test_a_land_phase_runs_cox_runs_land_with_phase_repo_apply_no_claim() -> None:
+    calls: list = []
+    perform([_land_phase("p1", "r")], _deps(calls), lambda: 1, False)
+    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"])]
+
+
+def test_a_land_phase_with_only_merge_is_not_counted_and_skips_its_repo_siblings() -> None:
+    calls: list = []
+    actions = [_land_phase("p1", "r"), _land("t2", "r")]
+    results = perform(actions, _deps(calls, "merge: ok\n"), lambda: 1, False)
+    assert [r["status"] for r in results if r["status"] != "escalated"] == ["not_landed", "skipped"]
+    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--phase", "p1", "--repo", "r", "--apply", "--no-claim"])]
+
+
+def test_an_uncounted_land_phase_skips_a_later_land_phase_in_its_repo() -> None:
+    calls: list = []
+    actions = [_land_phase("p1", "r"), _land_phase("p2", "r")]
+    results = perform(actions, _deps(calls, "merge: ok\n"), lambda: 1, False)
+    assert [r["status"] for r in results] == ["not_landed", "escalated", "skipped", "escalated"]
+    assert results[2]["reason"] == "an earlier land in r (phase p1) was not counted"
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
+
+
+def test_a_refused_land_phase_escalates_naming_its_phase() -> None:
+    facts = {
+        "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "five_hour_fraction": None},
+        "dispatch": {"max_in_flight": 4, "live_runs": 0},
+    }
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    results = perform([action], _deps([], "failing checks: lint", code=1), lambda: 1, False)
+    assert results[1]["action"] == {"kind": "needs_chair", "initiative": "alpha", "task_id": "", "cause": "checks", "epoch": 1, "phase": "p1"}
+    assert results[1]["reason"] == "land phase p1 refused"
+    line = format_status(facts, [], results, datetime(2026, 9, 27, tzinfo=UTC))
+    assert line.endswith("needs chair: alpha/p1:checks")
+
+
+def test_an_unclassified_land_phase_escalates_as_stranded_naming_its_phase() -> None:
+    action = {**_land_phase("p1", "r"), "initiative": "alpha"}
+    results = perform([action], _deps([], "merge: ok\n"), lambda: 1, False)
+    assert results[1]["action"] == {"kind": "needs_chair", "initiative": "alpha", "task_id": "", "cause": STRANDED_CAUSE, "epoch": 1, "phase": "p1"}
+    assert results[1]["reason"] == "land phase p1 not_landed"
+
+
+def test_a_land_action_still_works_unchanged() -> None:
+    calls: list = []
+    results = perform([_land("t1", "r")], _deps(calls), lambda: 1, False)
+    assert [r["status"] for r in results] == ["landed"]
+    assert _touched(calls) == [("run", ["cox", "runs", "land", "run-1", "--task", "t1", "--repo", "r", "--apply", "--no-claim"])]
 
 
 def test_clear_branches_refuses_a_foreign_glob() -> None:

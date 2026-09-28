@@ -128,8 +128,20 @@ def land_refusal(action: Action, code: int, output: str) -> Action | None:
         cause = "land"
     return {
         "kind": "needs_chair", "initiative": action.get("initiative", ""), "task_id": action.get("task_id", ""),
-        "cause": cause, "epoch": action.get("epoch", 0),
+        "cause": cause, "epoch": action.get("epoch", 0), **_phase_of(action),
     }
+
+
+def _phase_of(action: Action) -> Action:
+    """`{"phase": ...}` for a land_phase, which carries no task_id, so its needs_chair still names what failed; else empty."""
+    phase = action.get("phase", "")
+    return {"phase": phase} if phase else {}
+
+
+def _land_subject(action: Action) -> str:
+    """The task a land names, else `phase <phase>` for a land_phase; the name a skip or escalation reason quotes."""
+    task, phase = action.get("task_id", ""), action.get("phase", "")
+    return task if task else (f"phase {phase}" if phase else "")
 
 
 def branch_pattern(initiative: str) -> str | None:
@@ -170,9 +182,12 @@ def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
     # found the record stale took it with an empty host on 2026-09-27 and put the loop in standby).
     task, repo, initiative = action.get("task_id", ""), action.get("repo", ""), action.get("initiative", "")
     run = action.get("run", "")
+    phase = action.get("phase", "")
     idea = (action.get("intake_ids") or [""])[0]
     if kind == "land":
         return ["cox", "runs", "land", run, "--task", task, "--repo", repo, "--apply", "--no-claim"] if run and task and repo else None
+    if kind == "land_phase":
+        return ["cox", "runs", "land", run, "--phase", phase, "--repo", repo, "--apply", "--no-claim"] if run and phase and repo else None
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
@@ -271,6 +286,24 @@ def _carry_forward(
             return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
         merged.append(phase)
     return merged, None, None
+
+
+def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
+    """Same shape as `_land`, one command for a whole phase: its own `mark_done:` lines mark every task in the
+    phase done, so this only runs the command and reads its output."""
+    repo = action.get("repo", "")
+    argv = argv_for(action)
+    if argv is None:
+        return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
+    if repo in blocked:
+        return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+    code, output = deps.run(argv)
+    refusal = land_refusal(action, code, output)
+    if refusal is not None:
+        return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
+    if _repo_busy(output):
+        return _result(action, "busy", output)
+    return _result(action, "landed" if landed(code, output) else "not_landed", output)
 
 
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -487,6 +520,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
         return _land(action, deps, blocked)
+    if kind == "land_phase":
+        return _land_phase(action, deps, blocked)
     if kind == "clear_branches":
         return _clear(action, deps, blocked)
     if kind == "take_lease":
@@ -511,11 +546,12 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
     A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
-    A land whose command exits nonzero is refused, escalated with the cause `land_refusal` read from its output,
-    and blocks its repo's later lands this tick. A land refused before its command runs blocks nothing.
+    A land or land_phase whose command exits nonzero is refused, escalated with the cause `land_refusal` read
+    from its output, and blocks its repo's later lands and land_phases this tick. A land refused before its
+    command runs blocks nothing.
     """
     results: list[Result] = []
-    blocked: dict[str, str] = {}  # repo -> task of the uncounted land that blocks its later lands and deletes
+    blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
     for action in actions:
         if dry_run:
@@ -528,13 +564,13 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
         else:
             result = _execute(action, deps, blocked)
-        if action.get("kind") == "land" and (result["status"] == "not_landed" or "needs_chair" in result):
-            blocked[action.get("repo", "")] = action.get("task_id", "")
+        if action.get("kind") in ("land", "land_phase") and (result["status"] == "not_landed" or "needs_chair" in result):
+            blocked[action.get("repo", "")] = _land_subject(action)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
         deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") == "land" and result["status"] not in ("landed", "fenced", "busy"):
+        if action.get("kind") in ("land", "land_phase") and result["status"] not in ("landed", "fenced", "busy"):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
@@ -550,13 +586,13 @@ def escalation(land: Action) -> Action:
     dropped its stranded row, so this reports it instead."""
     return {
         "kind": "needs_chair", "initiative": land.get("initiative", ""), "task_id": land.get("task_id", ""),
-        "cause": STRANDED_CAUSE, "epoch": land.get("epoch", 0),
+        "cause": STRANDED_CAUSE, "epoch": land.get("epoch", 0), **_phase_of(land),
     }
 
 
 def _escalate(land: Action, result: Result) -> Result:
     raised = result.get("needs_chair") or escalation(land)
-    return _result(raised, "escalated", f"land {land.get('task_id', '')} {result['status']}")
+    return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}")
 
 
 _LOGIN_CHECK_TIMEOUT_S = 60  # an unreachable lane host must not stall a tick
