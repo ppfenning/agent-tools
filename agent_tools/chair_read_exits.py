@@ -8,6 +8,11 @@ from agent_tools.chair_facts import run_initiative
 Row = Mapping[str, Any]
 
 
+def row_exited(row: Row) -> bool:
+    """Pure. A `runs` row has exited when it carries an `ended_at` or its status is `quarantined`."""
+    return row.get("ended_at") is not None or row.get("status") == "quarantined"
+
+
 def run_exited(rows: Sequence[Row]) -> dict[str, bool]:
     """Pure. Per initiative, whether its newest run by `launched_at` has an `ended_at` or status `quarantined`; an initiative with no row is absent."""
     newest: dict[str, Row] = {}
@@ -16,7 +21,7 @@ def run_exited(rows: Sequence[Row]) -> dict[str, bool]:
         held = newest.get(initiative)
         if held is None or str(row.get("launched_at") or "") > str(held.get("launched_at") or ""):
             newest[initiative] = row
-    return {i: row.get("ended_at") is not None or row.get("status") == "quarantined" for i, row in newest.items()}
+    return {i: row_exited(row) for i, row in newest.items()}
 
 
 def exit_rows(runs_dir: Path) -> list[dict[str, Any]]:

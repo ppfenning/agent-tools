@@ -43,6 +43,7 @@ from agent_tools import (
     chair_read_intake,
     chair_read_lease,
     chair_read_live,
+    chair_read_lost,
     chair_read_patch,
     chair_read_quarantined,
     chair_read_record,
@@ -5797,6 +5798,7 @@ def _chair_run_deps(
         remote_unfetched=lambda: chair_read_remote_unfetched.read_remote_unfetched(
             runs_dir, [row["id"] for row in docket()["initiatives"]]
         ),
+        lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
     )
