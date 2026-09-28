@@ -55,15 +55,21 @@ def _run_files(ws):
 
 
 def _fake_edge(monkeypatch, calls, codes=None, real_rsync=False):
-    """Records every argv and returns `codes[argv[0]]`, default 0; ssh never runs, rsync runs only with `real_rsync`."""
+    """Records every argv and returns `codes[step]`, default 0; ssh never runs, rsync runs only with `real_rsync`.
+
+    The sync and launch steps are both an ssh argv, so `step` is "sync" or "ssh" (launch) by content, not argv[0]."""
     codes = codes or {}
 
     def edge(cwd):
         def run(argv):
             calls.append(argv)
-            if argv[0] == "rsync" and real_rsync:
-                return subprocess.run(argv, cwd=cwd).returncode
-            return codes.get(argv[0], 0)
+            if argv[0] == "rsync":
+                if real_rsync:
+                    return subprocess.run(argv, cwd=cwd).returncode
+                return codes.get("rsync", 0)
+            if argv[0] == "ssh" and "route launch epic" not in argv[2]:
+                return codes.get("sync", 0)
+            return codes.get("ssh", 0)
 
         return run, lambda path: path
 
@@ -92,7 +98,7 @@ def test_on_copies_the_initiative_starts_the_lane_and_writes_only_the_remote_rec
     assert rc == 0
     assert "run demo-1" in out and "host box" in out
     assert (remote / "work" / "demo" / "p1" / "t.md").exists()
-    assert calls[1][0] == "ssh" and "--run-id demo-1" in calls[1][2] and "--label lbl" in calls[1][2]
+    assert calls[2][0] == "ssh" and "--run-id demo-1" in calls[2][2] and "--label lbl" in calls[2][2]
     record = json.loads((ws / "runs" / "demo-1.remote.json").read_text())
     assert set(record) == {"host", "launched_at", "repo"} and record["host"] == "box"
     assert record["repo"] == argv[argv.index("--repo") + 1]
@@ -182,7 +188,7 @@ def test_a_second_on_launch_with_the_first_runs_id_is_refused_and_keeps_its_reco
     rc = main([*argv, "--on", "box", "--run-id", "demo-1"])
     assert rc == 2
     assert "run id demo-1 is already taken" in capsys.readouterr().out
-    assert len(calls) == 2
+    assert len(calls) == 3  # rsync, sync, launch on the first --on; the refused second run makes none
     assert (ws / "runs" / "demo-1.remote.json").read_text() == first
 
 
@@ -198,7 +204,8 @@ def test_two_on_launches_without_a_run_id_get_different_ids_and_keep_both_record
     assert "run demo-1" in out and "run demo-2" in out
     assert (ws / "runs" / "demo-1.remote.json").read_text() == first
     assert (ws / "runs" / "demo-2.remote.json").exists()
-    assert [c for c in calls if c[0] == "ssh"][1][2].count("--run-id demo-2") == 1
+    launch_calls = [c for c in calls if c[0] == "ssh" and "route launch epic" in c[2]]
+    assert launch_calls[1][2].count("--run-id demo-2") == 1
 
 
 def test_taken_run_names_names_each_entrys_bare_run_id(tmp_path):
@@ -239,7 +246,7 @@ def test_the_production_edge_pushes_to_the_ssh_location_from_the_workspace(tmp_p
     assert rc == 0, capsys.readouterr().out
     remote_calls = [(cmd, cwd) for cmd, cwd in seen if cmd[0] in ("rsync", "ssh")]
     assert remote_calls[0] == (["rsync", "-a", "work/demo/", f"me@box:{remote}/work/demo/"], ws)
-    ssh, cwd = remote_calls[1]
+    ssh, cwd = remote_calls[2]  # remote_calls[1] is the sync step that brings the lane host's repo up to date
     assert ssh[:2] == ["ssh", "me@box"] and f"--initiative {remote}/work/demo" in ssh[2] and cwd == ws
     assert (ws / "runs" / "demo-1.remote.json").exists()
 
