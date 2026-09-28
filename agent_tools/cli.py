@@ -817,7 +817,8 @@ def _runs_top(a: argparse.Namespace) -> int:
 
 def _runs_bar(a: argparse.Namespace) -> int:
     rows = [
-        dataclasses.asdict(runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"]))
+        dataclasses.asdict(runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"],
+                                        host=socket.gethostname()))
         for f in runs_top_screen.facts(a.runs_dir)
     ]
     print(json.dumps(runs_bar.bar(rows, runs_bar.attention(rows))))

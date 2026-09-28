@@ -181,8 +181,9 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     now = now or datetime.datetime.now(datetime.UTC)
     root = Path(runs_dir)
     chair_state = chair_now(runs_dir, heartbeat_minutes)
+    host = socket.gethostname()
     local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
-                          f["heartbeat_age"])
+                          f["heartbeat_age"], host)
              for f in facts(runs_dir)]
     lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return [*local, *_remote_rows(root, lanes, now)]
