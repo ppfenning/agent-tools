@@ -51,11 +51,14 @@ def test_phase_mode_dry_run_step_list_has_no_checkout_step(phase_runs_dir, tmp_p
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done"]
+    assert [s["kind"] for s in steps] == [
+        "pick_branch", "squash_phase", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done",
+    ]
     checks = next(s for s in steps if s["kind"] == "checks")
-    assert checks["branch"] == "epic/x/seams"
+    assert checks["worktree_of"] == "pr/x--seams"
     clean = next(s for s in steps if s["kind"] == "clean_phase")
     assert clean["phase_branch"] == "epic/x/seams"
+    assert clean["pr_branch"] == "pr/x--seams"
     assert clean["tasks"] == ["seams-task"]
     mark_done = next(s for s in steps if s["kind"] == "mark_done")
     assert mark_done["path"] == str(phase_runs_dir / "epic-x-5" / "tasks" / "seams" / "seams-task.json")
@@ -77,7 +80,9 @@ def test_default_mode_selects_phase_when_neither_flag_is_given(phase_runs_dir, t
     rc = cli._runs_land(ns)
     steps = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done"]
+    assert [s["kind"] for s in steps] == [
+        "pick_branch", "squash_phase", "checks", "push", "pr_create", "wait_checks", "merge", "clean_phase", "mark_done",
+    ]
 
 
 def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_runs_dir, tmp_path, capsys):
@@ -110,7 +115,7 @@ def test_absent_policy_truncates_the_dry_run_plan_at_ticket(phase_runs_dir, tmp_
     rc = cli._runs_land(_land_ns(repo=str(repo), runs_dir=str(phase_runs_dir)))
     steps = json.loads(capsys.readouterr().out)
     assert rc == 0
-    assert [s["kind"] for s in steps] == ["pick_branch", "checks", "push", "pr_create", "note"]
+    assert [s["kind"] for s in steps] == ["pick_branch", "squash_phase", "checks", "push", "pr_create", "note"]
 
 
 def test_gate_flag_overrides_the_resolved_level_and_prints_that_it_did(phase_runs_dir, tmp_path, capsys):
