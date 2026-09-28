@@ -184,8 +184,13 @@ def _key(row: Row) -> Key:
 
 
 def harness_failures(attempts: Sequence[Row], key: Key) -> int:
-    """The task's harness-cause attempts over all runs. A retry that fails again reads one higher."""
-    return sum(1 for a in attempts if _key(a) == key and a.get("cause") == HARNESS_CAUSE)
+    """The task's harness-cause attempts over all runs, on the task's current body. A retry that fails again reads
+    one higher. A row with no `on_current_body` counts, as it does today."""
+    return sum(
+        1
+        for a in attempts
+        if _key(a) == key and a.get("cause") == HARNESS_CAUSE and a.get("on_current_body", True)
+    )
 
 
 def rescue_failed(attempts: Sequence[Row], key: Key) -> bool:

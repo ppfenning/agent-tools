@@ -21,6 +21,7 @@ RESCUE = {
     "ts": "2026-09-05",
     "kind": "rescue_failed",
     "cause": "rescue_failed",
+    "on_current_body": True,
 }
 
 
@@ -49,6 +50,13 @@ def test_an_item_with_no_attempts_adds_no_rows():
 def test_a_missing_cause_is_carried_as_absent():
     (row,) = attempt_rows([(PATH, [{"run": "r1", "ts": "t"}])])
     assert "cause" in row and row["cause"] is None
+
+
+def test_an_attempt_with_another_bodys_sha_is_off_current_body_and_a_sha_less_one_is_on_it():
+    body_a = "body A"
+    attempts = [{"run": "r1", "body_sha": body_sha(body_a)}, {"run": "r2"}]
+    rows = attempt_rows([(PATH, attempts, "body B")])
+    assert {row["run"]: row["on_current_body"] for row in rows} == {"r1": False, "r2": True}
 
 
 def test_a_path_outside_the_work_layout_has_no_parts():

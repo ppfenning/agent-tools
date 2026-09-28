@@ -156,6 +156,15 @@ def test_a_task_id_repeated_in_another_phase_is_counted_apart():
     assert harness_failures([HARNESS, {**HARNESS, "phase": "p2"}], ("i", "p1", "a")) == 1
 
 
+def test_harness_attempts_off_the_current_body_are_not_counted():
+    attempts = [{**HARNESS, "on_current_body": False}, {**HARNESS, "run": "i-2", "on_current_body": False}]
+    assert harness_failures(attempts, ("i", "p1", "a")) == 0
+
+
+def test_a_harness_attempt_with_no_on_current_body_key_still_counts():
+    assert harness_failures([HARNESS], ("i", "p1", "a")) == 1
+
+
 def test_the_cause_and_the_count_come_from_the_same_attempts():
     (q,) = gather_facts(_deps(attempts=({**HARNESS, "cause": "code"}, HARNESS), stranded=()), NOW)["quarantines"]
     assert q == {**BARE, "cause": "harness", "harness_failures": 1}
