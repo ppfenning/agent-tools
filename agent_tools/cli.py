@@ -2312,8 +2312,9 @@ def _route_import_workspace(a: argparse.Namespace) -> Path | str:
 
 def _route_import(a: argparse.Namespace) -> int:
     """Loads intake/ and work/<initiative>/<phase>/*.md files into the store's work_items table.
-    Idempotent: importing the same files again reports zero written. Exits 2, after reporting the
-    count written so far, the moment a row fails to upsert."""
+    Idempotent: importing the same files again reports zero written. Exits 2, after printing the
+    failing row's key and the store's error, then the count written so far, the moment a row fails
+    to upsert."""
     ws = _route_import_workspace(a)
     if isinstance(ws, str):
         print(f"route import: {ws}")
@@ -2326,7 +2327,9 @@ def _route_import(a: argparse.Namespace) -> int:
     plan = route_import.plan_import(_route_import_files(ws), run_store.read_queue(runs_dir))
     written = 0
     for row in plan.to_write:
-        if not run_store.upsert_row(runs_dir, row):
+        detail = run_store.upsert_row_detail(runs_dir, row)
+        if detail:
+            print(f"route import: store refused {row['initiative']}/{row['task_id']}: {detail}")
             print(route_import.format_summary(written, plan))
             return 2
         written += 1
