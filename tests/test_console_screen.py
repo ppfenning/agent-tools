@@ -14,26 +14,53 @@ _EASTERN = ZoneInfo("America/New_York")
 def _sections():
     return {
         "drafts": [DraftRow(id="foo", proposed_by="pat", age_seconds=3600)],
-        "hosts": [{"name": "jarvis", "state": "up", "capacity": 2, "beat_at": _BEAT, "versions_json": "{}"}],
+        "hosts": [{"name": "jarvis", "state": "up", "capacity": 3, "in_use": 2, "beat_at": _BEAT, "versions_json": "{}"}],
         "lanes": [Lane("run-1", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)],
-        "chair": [{"session": "sess-1", "host": "jarvis", "pid": 123, "heartbeat_at": _BEAT}],
+        "chair": [{"holder": "sess-1", "state": "live", "minutes_ago": 2}],
+        "spend": {"five_hour": 0.4, "weekly": 0.12, "hard_stop": 0.93},
         "needs_chair": [{"kind": "needs_chair", "ts": _BEAT}],
     }
 
 
 def test_render_marks_selected_draft():
     assert console_screen.render(_sections(), selected=0, width=80, now=_NOW, tz=_EASTERN) == [
+        "spend: 5h 40%  weekly 12%/93%",
         "drafts:",
         "> foo  pat  1h",
         "hosts:",
-        "  jarvis  up  cap=2  beat=8:50 AM  2m ago  login ?",
+        "  jarvis  2/3  up  beat=8:50 AM  2m ago  login ?",
         "lanes:",
         "  run-1  jarvis  beat=8:50 AM  2m ago",
         "chair:",
-        "  sess-1  jarvis  pid=123",
+        "  sess-1  (live, beat 2m ago)",
         "needs chair:",
         "  ?  ?  8:50 AM  2m ago",
     ]
+
+
+def test_render_shows_spend_as_not_available_when_a_ceiling_is_missing():
+    sections = {**_sections(), "spend": {"five_hour": None, "weekly": None, "hard_stop": 0.93}}
+    lines = console_screen.render(sections, selected=-1, width=80, now=_NOW, tz=_EASTERN)
+    assert lines[0] == "spend: 5h n/a  weekly n/a"
+
+
+def test_render_omits_the_spend_line_when_no_spend_section_is_given():
+    sections = {k: v for k, v in _sections().items() if k != "spend"}
+    lines = console_screen.render(sections, selected=-1, width=80, now=_NOW, tz=_EASTERN)
+    assert lines[0] == "drafts:"
+
+
+def test_with_local_host_appends_a_synthetic_row_when_absent():
+    hosts = [{"name": "jarvis", "capacity": 2, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "omarchy", 3) == [
+        {"name": "jarvis", "capacity": 2, "state": "up"},
+        {"name": "omarchy", "capacity": 3, "state": "active"},
+    ]
+
+
+def test_with_local_host_leaves_hosts_unchanged_when_the_local_row_already_exists():
+    hosts = [{"name": "omarchy", "capacity": 4, "state": "up"}]
+    assert console_screen.with_local_host(hosts, "omarchy", 3) == hosts
 
 
 def test_render_formats_timestamps_as_local_clock_time_plus_age_not_the_raw_iso_string():
@@ -83,20 +110,25 @@ def test_gather_keeps_only_recent_needs_chair(monkeypatch):
     recent = {"kind": "needs_chair", "ts": "2026-09-28T11:55:00+00:00"}
     stale = {"kind": "needs_chair", "ts": "2026-09-28T00:00:00+00:00"}
     keyless = {"ts": "2026-09-28T11:59:00+00:00"}
+    host_row = {"name": "jarvis", "state": "up", "capacity": 2}
+    lane_row = Lane("run-1", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    chair_row = {"holder": "sess-1", "state": "live", "minutes_ago": 0}
+    spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
 
     monkeypatch.setattr(console_screen.draft_list, "read_drafts", lambda work_dir, now: ["draft-row"])
-    monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: ["host-row"])
-    monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: ["lane-row"])
-    monkeypatch.setattr(console_screen.chair, "read", lambda runs_dir: {"session": "sess-1"})
+    monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [host_row])
+    monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [lane_row])
+    monkeypatch.setattr(console_screen.runs_top_screen, "chair_now", lambda runs_dir: chair_row)
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [recent, stale, keyless])
 
-    result = console_screen.gather(Path("/runs"), Path("/work"), now)
+    result = console_screen.gather(Path("/runs"), Path("/work"), now, "omarchy", 3, spend)
 
     assert result == {
         "drafts": ["draft-row"],
-        "hosts": ["host-row"],
-        "lanes": ["lane-row"],
-        "chair": [{"session": "sess-1"}],
+        "hosts": [{**host_row, "in_use": 1}, {"name": "omarchy", "capacity": 3, "state": "active", "in_use": 0}],
+        "lanes": [lane_row],
+        "chair": [chair_row],
+        "spend": spend,
         "needs_chair": [recent],
     }
 
@@ -112,7 +144,8 @@ def test_gather_reads_drafts_from_the_workspace_work_directory(monkeypatch, tmp_
     monkeypatch.setattr(console_screen.draft_list, "read_drafts", lambda work_dir, now: seen.append(work_dir) or [])
     monkeypatch.setattr(console_screen.run_store, "hosts", lambda runs_dir: [])
     monkeypatch.setattr(console_screen.run_store, "live_lanes", lambda runs_dir, now: [])
-    monkeypatch.setattr(console_screen.chair, "read", lambda runs_dir: None)
+    monkeypatch.setattr(console_screen.runs_top_screen, "chair_now", lambda runs_dir: None)
     monkeypatch.setattr(console_screen.chair_read_stale, "read_chair_actions", lambda runs_dir: [])
-    console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00")
+    spend = {"five_hour": None, "weekly": None, "hard_stop": 0.93}
+    console_screen.gather(tmp_path / "runs", tmp_path, "2026-09-28T12:00:00+00:00", "omarchy", 3, spend)
     assert seen == [tmp_path / "work"]

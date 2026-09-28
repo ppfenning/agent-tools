@@ -4481,14 +4481,54 @@ def _versions(a: argparse.Namespace) -> int:
     return 0
 
 
+def _console_spend(runs_dir: Path, profile: dict, now: datetime.datetime) -> dict:
+    """Edge. The 5-hour and weekly spend fractions and the weekly hard-stop fraction, built from the same three
+    sources `_chair_run_deps`'s `facts_deps` builds (`usage_window.gather`, `usage_window.gather_weekly` with the
+    store's own spend, and `_resolved_pacing_policy`), so the console's header never drifts from what the chair
+    loop itself is pacing against. A fraction is None when its ceiling is absent or not positive."""
+    weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
+    window = usage_window.gather(runs_dir, now, ceiling_usd=profile.get("window_ceiling_usd"))
+    weekly = usage_window.gather_weekly(
+        runs_dir, now, profile.get("weekly_ceiling_usd"),
+        store_spend=lambda since: run_store.cost_since(runs_dir, since),
+        reset=weekly_reset,
+    )
+    policy = _resolved_pacing_policy(runs_dir)
+
+    def fraction(spent: float, ceiling: float | None) -> float | None:
+        return None if not ceiling or ceiling <= 0 else spent / ceiling
+
+    return {
+        "five_hour": fraction(window.spent_usd, window.ceiling_usd),
+        "weekly": fraction(weekly.spent_usd, weekly.ceiling_usd),
+        "hard_stop": policy.weekly_hard_stop_fraction,
+    }
+
+
 def _console(a: argparse.Namespace) -> int:
+    # Resolved the same tolerant way `_usage_assess` resolves its profile: a missing or unreadable one just
+    # means no cartridge cap and no ceiling, not a raise.
+    text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(text) if text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    runs_dir = Path(a.runs_dir)
+    local_name = socket.gethostname()
+    local_capacity = _chair_max_in_flight(runs_dir, profile)
     if a.once or not sys.stdin.isatty():
         now = datetime.datetime.now(datetime.UTC)
         tz = now.astimezone().tzinfo
-        sections = console_screen.gather(Path(a.runs_dir), Path(a.work_dir), now.isoformat())
+        sections = console_screen.gather(
+            runs_dir, Path(a.work_dir), now.isoformat(), local_name, local_capacity,
+            _console_spend(runs_dir, profile, now),
+        )
         print("\n".join(console_screen.render(sections, -1, 120, now, tz)))
         return 0
-    return console_screen.main(Path(a.runs_dir), Path(a.work_dir), a.interval)
+    def spend_fn() -> dict:
+        return _console_spend(runs_dir, profile, datetime.datetime.now(datetime.UTC))
+
+    return console_screen.main(runs_dir, Path(a.work_dir), local_name, local_capacity, spend_fn, a.interval)
 
 
 def _home(a: argparse.Namespace) -> int:
@@ -4741,6 +4781,7 @@ CONSOLE_GROUP = commands.Group(
         commands.Arg(("--work-dir",), {"default": "."}),
         commands.Arg(("--interval",), {"type": float, "default": 5}),
         commands.Arg(("--once",), {"action": "store_true"}),
+        commands.Arg(("--profile",)),
     ),
     fn=_console,
 )
