@@ -8,6 +8,7 @@ from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_fetch import (
     FetchError,
     chair_repo_path,
+    fetch_plan,
     fetch_run,
     host_repo_path,
     pull_argvs,
@@ -75,6 +76,13 @@ def test_pull_argvs_copy_the_run_directory_and_its_log_into_the_runs_dir():
     ]
 
 
+def test_fetch_plan_pulls_only_the_log_when_the_run_directory_never_existed():
+    plan = fetch_plan("u@h:/w/runs/r1", "u@h:/w/runs/r1.log", "/c/runs", "r1", False, True)
+    assert plan.pull_argvs == [["rsync", "-a", "u@h:/w/runs/r1.log", "/c/runs/"]]
+    assert plan.do_git_fetch is False
+    assert plan.outcome == ("fetched: no tasks ran",)
+
+
 def test_task_repos_lists_each_repo_once_and_skips_records_without_one(tmp_path):
     for name, text in [("a", '{"repo": "/r/one"}'), ("b", '{"repo": "/r/one"}'), ("c", "{}"), ("d", "not json")]:
         path = tmp_path / "tasks" / "p1" / f"{name}.json"
@@ -107,7 +115,8 @@ def test_fetch_run_is_an_error_when_no_record_names_a_repo(tmp_path):
     result = fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", task_repos,
                        lambda argv: calls.append(argv) or 0, lease_released=True, ended_at="t")
     assert isinstance(result, FetchError) and result.step == "repos"
-    assert [c[0] for c in calls] == ["rsync", "rsync"]
+    # Two probe calls (run directory, log), then the two pull rsyncs the probe's "exists" answers plan.
+    assert [c[0] for c in calls] == ["rsync", "rsync", "rsync", "rsync"]
 
 
 def test_fetch_run_refuses_an_unended_lane_before_running_anything(tmp_path):
@@ -123,7 +132,9 @@ def test_fetch_run_stops_at_a_failed_rsync_without_a_git_fetch(tmp_path):
     result = fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", lambda _: ["/x"],
                        lambda argv: calls.append(argv) or 23, lease_released=True, ended_at="t")
     assert isinstance(result, FetchError) and result.step == "rsync"
-    assert [c[0] for c in calls] == ["rsync"]
+    # Both probes read "missing" (23), so the plan falls back to the full pull, whose first rsync
+    # then fails the same way.
+    assert [c[0] for c in calls] == ["rsync", "rsync", "rsync"]
 
 
 def test_fetch_run_maps_repos_inside_the_workspace_and_keeps_those_outside(tmp_path):
@@ -135,7 +146,8 @@ def test_fetch_run_maps_repos_inside_the_workspace_and_keeps_those_outside(tmp_p
     assert result == (inside, outside)
     refspec = "refs/heads/agents/r1/*:refs/heads/agents/r1/*"
     verify = ["ls-remote", "--exit-code", ".", "refs/heads/agents/r1/*"]
-    assert calls[2:] == [
+    # calls[:2] are the two "exists" probes, calls[2:4] the pull rsyncs; git starts at 4.
+    assert calls[4:] == [
         ["git", "-C", inside, "fetch", "u@h:/hostws/repo", refspec],
         ["git", "-C", inside, *verify],
         ["git", "-C", outside, "fetch", "u@h:/elsewhere/repo", refspec],
