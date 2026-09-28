@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agent_tools import chair_exec, chair_housekeeping, remote_lane
+from agent_tools import chair_exec, chair_housekeeping, courier, remote_lane
 from agent_tools.chair_exec import (
     Deps,
     Refusal,
@@ -19,6 +19,7 @@ from agent_tools.chair_exec import (
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_report import format_status
+from agent_tools.draft_apply import plan_approve
 from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -665,3 +666,82 @@ def test_a_prune_probe_that_fails_records_the_skip_reason(monkeypatch) -> None:
     assert "lake sync: ok" in reason
     assert f"clean skipped: {chair_housekeeping.CLEAN_MISSING}" in reason
     assert _HK_PRUNE not in calls
+
+
+def _write_stale_initiative(tmp_path, *, draft: str = "false") -> None:
+    phase = tmp_path / "work" / "demo" / "phase-1"
+    phase.mkdir(parents=True)
+    (tmp_path / "work" / "demo" / "initiative.md").write_text(
+        f"---\nid: demo\ndraft: {draft}\n---\nProse.\n", encoding="utf-8"
+    )
+    (phase / "t1.md").write_text("---\nid: t1\nstate: done\n---\nTicket body.\n", encoding="utf-8")
+
+
+def _stale_action(**overrides) -> dict:
+    return {
+        "kind": "stale_to_draft", "initiative": "demo", "stale_tasks": ["t1"],
+        "reason": "idle 10 days", "since": "2026-09-01T00:00:00Z", "epoch": 1, **overrides,
+    }
+
+
+def _stale_deps(calls: list, tmp_path) -> Deps:
+    return replace(_deps(calls), work_dir=tmp_path, runs_dir=tmp_path, now=lambda: "2026-09-27T00:00:00+00:00")
+
+
+def test_a_stale_to_draft_writes_the_rewritten_initiative_and_ticket_and_records_it(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    calls: list = []
+    results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 1, False)
+    assert results[0]["status"] == "done"
+    initiative_text = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
+    ticket_text = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
+    assert "draft: true" in initiative_text
+    assert "state: todo" in ticket_text
+    assert ("record", "stale_to_draft") in calls
+
+
+def test_the_same_action_sends_one_courier_note_referencing_the_initiative(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
+    blob = (tmp_path / "courier.jsonl").read_text(encoding="utf-8")
+    # The inbox bare `cox` prints at start: its own chair label, as holder.
+    [entry] = courier.inbox(blob, "chair-2026-09-27", holder="chair-2026-09-27")
+    assert (entry["ref"], entry["note"]) == ("coxswain://initiative/demo", "idle 10 days")
+
+
+def test_a_stale_to_draft_for_an_already_draft_initiative_writes_nothing(tmp_path) -> None:
+    _write_stale_initiative(tmp_path, draft="true")
+    before_initiative = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
+    before_ticket = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
+    results = perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
+    assert results[0]["status"] == "refused"
+    assert (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8") == before_initiative
+    assert (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8") == before_ticket
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_a_fenced_stale_to_draft_is_fenced_and_calls_nothing(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    calls: list = []
+    results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 2, False)
+    assert results[0]["status"] == "fenced"
+    assert _touched(calls) == []
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_a_dry_run_stale_to_draft_performs_nothing(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    calls: list = []
+    results = perform([_stale_action()], _stale_deps(calls, tmp_path), lambda: 1, True)
+    assert results[0]["status"] == "dry_run"
+    assert calls == []
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_ready(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    perform([_stale_action()], _stale_deps([], tmp_path), lambda: 1, False)
+    initiative_text = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
+    ticket_text = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
+    plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "pat", datetime(2026, 9, 27, tzinfo=UTC))
+    assert plan.moves == (("t1", "todo", "ready"),)

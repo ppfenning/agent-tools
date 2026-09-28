@@ -6,13 +6,25 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 from __future__ import annotations
 
 import subprocess
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
-from agent_tools import chair, chair_apply_fetch, chair_housekeeping, chair_plan_prune, remote_lane, route, run_store
+from agent_tools import (
+    chair,
+    chair_apply_fetch,
+    chair_housekeeping,
+    chair_plan_prune,
+    courier,
+    remote_lane,
+    route,
+    run_store,
+    stale_draft,
+)
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, is_fenced
 
@@ -57,6 +69,16 @@ class Deps:
     intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
     runs_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's task records and remote record live here
     work_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's ticket files live under work_dir/work/<initiative>
+    now: Callable[[], str] = lambda: datetime.now(UTC).isoformat()  # the tick's clock, passed to plan_stale_draft
+    # The courier `to` of a stale_to_draft note. docs/design/courier.md's "Who writes" names "the
+    # steward's proposals" as an existing writer to copy the recipient from, but no such call exists:
+    # courier.send has exactly one call site before this patch (cli.py's generic `cox courier send`,
+    # whose `to` comes from the caller's `--to` flag), and neither steward.py nor steward_draft.py
+    # imports courier at all. "chair" reuses courier.inbox's own generic label instead (see its
+    # docstring): it reaches whichever chair holds the lease, and bare `cox` prints that holder's
+    # inbox to the human at start. A session label such as "chair-2026-09-27" would reach only that
+    # one session, so the generic label is used here.
+    note_to: str = "chair"
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -249,6 +271,15 @@ def _initiative_tickets(work_dir: Path, initiative: str) -> list[dict]:
     return tickets
 
 
+def _ticket_paths(work_dir: Path, initiative: str) -> dict[str, Path]:
+    """Edge. Every ticket path under `work/<initiative>/*/*.md`, keyed by its task id (file stem); `initiative.md` excluded."""
+    return {
+        path.stem: path
+        for path in sorted((work_dir / "work" / initiative).glob("*/*.md"))
+        if path.name != "initiative.md"
+    }
+
+
 def _write_ticket(work_dir: Path, item: dict) -> None:
     """Edge. `item` re-rendered to frontmatter and written back to `work_dir/work/<initiative>/<file>`, the shape `_initiative_tickets` read it from."""
     fields = [(key, _rendered_value(value)) for key, value in item.items() if key not in ("initiative", "file", "body")]
@@ -329,6 +360,49 @@ def _housekeeping(action: Action, deps: Deps) -> Result:
     return _result(action, status, reason)
 
 
+def _send_stale_draft_note(deps: Deps, initiative: str, reason: str) -> None:
+    """Edge. One `coxswain://initiative/<id>` courier line appended to `work_dir/courier.jsonl`, addressed to
+    `deps.note_to`, quoting `reason` verbatim."""
+    ref = courier.Reference("initiative", initiative)
+    sender = (chair.read(deps.runs_dir) or {}).get("session") or "chair"
+    entry = courier.send(ref, sender, deps.note_to, reason, uuid.uuid4().hex)
+    path = deps.work_dir / "courier.jsonl"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(courier.append_line(existing, entry), encoding="utf-8")
+
+
+def _stale_to_draft(action: Action, deps: Deps) -> Result:
+    """Edge. Reads the initiative and its tickets, asks `stale_draft.plan_stale_draft` to turn the stale ones into
+    a draft, and on success writes the rewritten files and tells `deps.note_to` by courier.
+
+    A Refusal (an initiative already a draft, no stale task, an unknown ticket) writes nothing and sends no
+    note; it is reported as an ordinary refusal, the same as any other action's precondition failure.
+    """
+    initiative = action.get("initiative", "")
+    initiative_path = deps.work_dir / "work" / initiative / "initiative.md"
+    try:
+        initiative_text = initiative_path.read_text(encoding="utf-8")
+    except OSError:
+        return _result(action, "refused", f"no initiative.md at {initiative_path}")
+    ticket_paths = _ticket_paths(deps.work_dir, initiative)
+    ticket_texts = {}
+    for task_id, path in ticket_paths.items():
+        try:
+            ticket_texts[task_id] = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    stale_tasks = action.get("stale_tasks", [])
+    reason = action.get("reason", "")
+    plan = stale_draft.plan_stale_draft(initiative_text, ticket_texts, stale_tasks, reason, action.get("since", ""), deps.now())
+    if isinstance(plan, stale_draft.Refusal):
+        return _result(action, "refused", plan.reason)
+    initiative_path.write_text(plan.initiative_text, encoding="utf-8")
+    for task_id in stale_tasks:
+        ticket_paths[task_id].write_text(plan.tickets[task_id], encoding="utf-8")
+    _send_stale_draft_note(deps, initiative, reason)
+    return _result(action, "done", f"drafted {initiative}: stale tasks {stale_tasks}")
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
@@ -345,6 +419,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _launch(action, deps)
     if kind == "housekeeping":
         return _housekeeping(action, deps)
+    if kind == "stale_to_draft":
+        return _stale_to_draft(action, deps)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
