@@ -1,5 +1,6 @@
 import argparse
 import json
+import subprocess
 
 from agent_tools import cli, runs_stranded
 
@@ -174,14 +175,19 @@ def test_omitting_branch_exists_reproduces_todays_list_unchanged():
     assert len(without_arg) == 1
 
 
-def _workspace(tmp_path, with_stranded, item_state="ready", record_repo=None):
+def _workspace(tmp_path, with_stranded, item_state="ready", record_repo=None, branch=None):
     profile = tmp_path / "profile.yaml"
     profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
     ws = tmp_path / "ws"
     if with_stranded:
         tasks = ws / "runs" / "r1" / "tasks" / "p1"
         tasks.mkdir(parents=True)
-        record = _record(repo=record_repo) if record_repo is not None else _record()
+        over = {}
+        if record_repo is not None:
+            over["repo"] = record_repo
+        if branch is not None:
+            over["branch"] = branch
+        record = _record(**over)
         (tasks / "t1.json").write_text(json.dumps(record), encoding="utf-8")
         work = ws / "work" / "acme" / "p1"
         work.mkdir(parents=True)
@@ -231,3 +237,33 @@ def test_cli_skips_a_missing_repo_and_names_it_on_stderr(tmp_path, capsys):
     out, err = capsys.readouterr()
     assert out.strip() == "no stranded work"
     assert err.strip() == f"skipped missing repo: {missing_repo}"
+
+
+def _git_repo_with_branch(repo, branch):
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "branch", branch], check=True)
+
+
+def test_cli_prints_no_stranded_work_when_the_phase_branch_still_exists(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    _git_repo_with_branch(repo, "epic/acme/p1")
+    profile = _workspace(tmp_path, with_stranded=True, record_repo=str(repo), branch="epic/acme/p1")
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=False))
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "no stranded work"
+
+
+def test_cli_lists_the_row_once_the_phase_branch_is_deleted(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    _git_repo_with_branch(repo, "epic/acme/p1")
+    subprocess.run(["git", "-C", str(repo), "branch", "-D", "epic/acme/p1"], check=True)
+    profile = _workspace(tmp_path, with_stranded=True, record_repo=str(repo), branch="epic/acme/p1")
+    rc = cli._runs_stranded(argparse.Namespace(profile=str(profile), runs_dir=None, json=True))
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [{"run": "r1", "task": "t1", "phase": "p1", "branch": "epic/acme/p1",
+                      "remedy": f"cox runs land r1 --task t1 --repo {repo}"}]

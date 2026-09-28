@@ -869,7 +869,8 @@ def _runs_stranded(a: argparse.Namespace) -> int:
         {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
         for item in _work_items(ws)
     ]
-    rows = runs_stranded.stranded(task_records, items, os.path.isdir)
+    rows = runs_stranded.stranded(task_records, items, os.path.isdir,
+                                   lambda repo, branch: _branch_exists(Path(repo), branch))
     missing = runs_stranded.missing_repos(task_records, items, os.path.isdir)
 
     def report_missing() -> None:
