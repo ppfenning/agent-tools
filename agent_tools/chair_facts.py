@@ -60,6 +60,9 @@ class FactsDeps:
         record and no local run directory or log. Optional, and absent means no initiative counts.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
         threshold) with no exit record in the store. Optional, and absent means no initiative counts.
+    hosts: the same seam as `lost_runs`, `run_store.hosts(runs_dir)`'s raw rows from the store's `hosts`
+        table, one per host, keys name, state, versions_json, and whatever else that table carries. Stored
+        verbatim under the `login_hosts` fact for the login watch to read. Defaults to a callable returning [].
     history: the newest housekeeping action's ISO timestamp (`chair_read_housekeeping.read_last_housekeeping`).
         Optional, and absent means no history, i.e. housekeeping is due.
     housekeeping_hours: the raw profile value at `chair.housekeeping_hours`, resolved by `resolve_housekeeping_hours`.
@@ -109,6 +112,7 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
+    hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -363,6 +367,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
+        "login_hosts": deps.hosts(),
         "last_housekeeping_at": deps.history() if deps.history is not None else None,
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
         if deps.housekeeping_hours is not None
