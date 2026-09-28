@@ -19,7 +19,8 @@ Row = Mapping[str, object]
 
 __all__ = [
     "add_argv", "beat_argv", "beat_versions", "dispatchable", "doctor_line", "format_host_list", "host_line",
-    "host_rows_to_lane_hosts", "recorded_repos", "row_capacities", "set_state_argv", "shadowed", "sync_host", "versions_report",
+    "host_rows_to_lane_hosts", "recorded_repos", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed",
+    "sync_host", "versions_report",
 ]
 
 
@@ -72,6 +73,31 @@ def recorded_repos(row: Row | None) -> list[str]:
 def row_capacities(rows: Sequence[Row]) -> dict[str, int]:
     """Capacity per active host, for hosts whose row carries one."""
     return {str(r["name"]): int(r["capacity"]) for r in rows if r.get("state") == "active" and r.get("capacity") is not None}  # type: ignore[call-overload]
+
+
+def row_weights(rows: Sequence[Row]) -> dict[str, int]:
+    """Weight per active host, for hosts whose row carries one. A store with no weight column yields none."""
+    return {str(r["name"]): int(r["weight"]) for r in rows if r.get("state") == "active" and r.get("weight") is not None}  # type: ignore[call-overload]
+
+
+def _capability_list(value: object) -> list[str]:
+    """A list from Postgres, JSON list text or comma-separated text from SQLite, as `cox host add --capabilities` writes it."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    text = str(value).strip()
+    try:
+        parsed = json.loads(text) if text.startswith("[") else None
+    except ValueError:
+        parsed = None
+    return [str(v) for v in parsed] if isinstance(parsed, list) else [c.strip() for c in text.split(",") if c.strip()]
+
+
+def row_capabilities(rows: Sequence[Row]) -> dict[str, list[str]]:
+    """Capabilities per active host, for hosts whose row carries them. A store with no capabilities column yields none."""
+    return {
+        str(r["name"]): _capability_list(r["capabilities"])
+        for r in rows if r.get("state") == "active" and r.get("capabilities") is not None
+    }
 
 
 def _login(row: Row) -> str:
@@ -127,8 +153,11 @@ def format_host_list(rows: Sequence[Row], now: datetime.datetime, live_by_host: 
     return [host_line(r, now, live_by_host) for r in rows]
 
 
-def add_argv(name: str, ssh: str, capacity: int, by: str) -> list[str]:
-    return ["host", "upsert", name, "--ssh", ssh, "--capacity", str(capacity), "--by", by]
+def add_argv(name: str, ssh: str, capacity: int, weight: int, capabilities: str, by: str) -> list[str]:
+    return [
+        "host", "upsert", name, "--ssh", ssh, "--capacity", str(capacity),
+        "--weight", str(weight), "--capabilities", capabilities, "--by", by,
+    ]
 
 
 def set_state_argv(name: str, state: str, by: str) -> list[str]:

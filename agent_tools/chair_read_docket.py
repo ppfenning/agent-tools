@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_tools import epic, route, run_store
+from agent_tools import epic, queue_rows, route, run_store
 
 Row = Mapping[str, Any]
 
@@ -30,7 +30,7 @@ def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
     return {
         "id": summary["id"],
         "started": any(i["state"] in _BEGUN for i in own),
-        "ready_tasks": [{"id": i["id"], "needs": list(i["needs"])} for i in ready],
+        "ready_tasks": [{"id": i["id"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)} for i in ready],
         "landed": landed,
     }
 
@@ -53,7 +53,10 @@ def _claimed(row: Row, now: str) -> bool:
 
 
 def _item_of(row: Row) -> dict[str, Any]:
-    return {"id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"], "needs": list(row["needs"])}
+    return {
+        "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
+        "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
+    }
 
 
 def docket_from_rows(rows: Sequence[Row], now: str) -> list[dict[str, Any]]:

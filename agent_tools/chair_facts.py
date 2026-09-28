@@ -231,7 +231,10 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
         {
             "id": i["id"],
             "started": bool(i["started"]),
-            "ready_tasks": [{"id": t["id"], "needs": list(t["needs"])} for t in i["ready_tasks"]],
+            "ready_tasks": [
+                {"id": t["id"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
+                for t in i["ready_tasks"]
+            ],
             "landed": set(i["landed"]),
         }
         for i in docket["initiatives"]
@@ -240,15 +243,30 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
 
 
 def dispatch_facts(
-    docket: Row, lane_hosts: Sequence[str], live_by_host: Mapping[str, int], capacity: Mapping[str, int] | None = None
+    docket: Row,
+    lane_hosts: Sequence[str],
+    live_by_host: Mapping[str, int],
+    capacity: Mapping[str, int] | None = None,
+    weight: Mapping[str, int] | None = None,
+    capabilities: Mapping[str, Sequence[str]] | None = None,
 ) -> DispatchFacts:
-    """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity` carries its own cap."""
+    """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity`
+    carries its own cap. `weight` and `capabilities` come from the same hosts table row; a name missing from either
+    mapping (an older store, or a profile-only host with no row at all) defaults to weight 1 and no capabilities."""
     caps = capacity or {}
+    weights = weight or {}
+    abilities = capabilities or {}
     return {
         "max_in_flight": int(docket["max_in_flight"]),
         "live_runs": live_by_host.get("", 0),
         "hosts": [
-            {"name": name, "live_runs": live_by_host.get(name, 0), **({"capacity": caps[name]} if name in caps else {})}
+            {
+                "name": name,
+                "live_runs": live_by_host.get(name, 0),
+                **({"capacity": caps[name]} if name in caps else {}),
+                "weight": weights.get(name, 1),
+                "capabilities": list(abilities.get(name, [])),
+            }
             for name in lane_hosts
         ],
     }

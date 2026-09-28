@@ -142,7 +142,7 @@ def test_the_dispatch_facts_offer_the_lane_hosts_named_in_the_profile_file(tmp_p
     profile.write_text("lane_hosts:\n  - name: jarvis\n    ssh: jarvis\n    workspace_dir: /w\n", encoding="utf-8")
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
-        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0}],
+        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0, "weight": 1, "capabilities": []}],
     }
 
 
@@ -170,8 +170,26 @@ def test_the_dispatch_facts_name_only_the_active_table_hosts_when_the_table_has_
     _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("pi", "pi", 2, "draining", BEAT))
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
     assert deps.facts_deps.dispatch({"max_in_flight": 3}) == {  # type: ignore[misc]
-        "max_in_flight": 3, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0, "capacity": 8}],
+        "max_in_flight": 3, "live_runs": 0,
+        "hosts": [{"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 1, "capabilities": []}],
     }
+
+
+def test_the_dispatch_facts_carry_weight_and_capabilities_from_the_hosts_row(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    conn = sqlite3.connect(runs / "cox.db")
+    conn.execute(HOSTS_DDL.replace("updated_by TEXT)", "updated_by TEXT, weight INTEGER, capabilities TEXT)"))
+    conn.execute(
+        "INSERT INTO hosts VALUES ('jarvis', 'jarvis', 8, 'active', '2026-09-26T11:58:00Z', ?, '2026-09-26T11:58:00Z', 'chair', 2, ?)",
+        (BEAT, '["go"]'),
+    )
+    conn.commit()
+    conn.close()
+    deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
+        {"name": "jarvis", "live_runs": 0, "capacity": 8, "weight": 2, "capabilities": ["go"]}
+    ]
 
 
 def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_chair_says_why(tmp_path) -> None:
@@ -195,7 +213,9 @@ def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_
     runs = tmp_path / "runs"
     _hosts_table(runs)
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, profile, "files")
-    assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [{"name": "other", "live_runs": 0}]  # type: ignore[misc]
+    assert deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"] == [  # type: ignore[misc]
+        {"name": "other", "live_runs": 0, "weight": 1, "capabilities": []}
+    ]
 
 
 def test_a_live_pidfile_run_with_no_store_lane_still_counts_as_a_local_lane(tmp_path, monkeypatch) -> None:
