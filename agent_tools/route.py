@@ -81,6 +81,7 @@ _KNOWN_KEYS = {
     "forge",
     "tracker",
     "umbrella_dir",
+    "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
 }
 
 _JSON_KEYS = {"sources", "repo_map"}

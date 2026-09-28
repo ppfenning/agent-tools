@@ -86,6 +86,7 @@ class Deps:
     # one session, so the generic label is used here.
     note_to: str = "chair"
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
+    log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -458,7 +459,9 @@ def _prune_available(run: Run) -> bool:
 def _housekeeping(action: Action, deps: Deps) -> Result:
     """Lake sync, trace prune, runs clean, in order; the reason names all three, none stopping the others."""
     traces_root = run_store._traces_root(deps.runs_dir).url
-    status, reason = chair_housekeeping.run_housekeeping(deps.run, traces_root, partial(_prune_available, deps.run))
+    status, reason = chair_housekeeping.run_housekeeping(
+        deps.run, traces_root, partial(_prune_available, deps.run), deps.log_retention_days,
+    )
     return _result(action, status, reason)
 
 
@@ -665,6 +668,7 @@ def edge_deps(
     repo_for: Callable[[Action], str],
     record: Callable[[Action], None],
     host: str,
+    log_retention_days: int = 7,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
@@ -683,4 +687,5 @@ def edge_deps(
         runs_dir=runs_dir,
         work_dir=workspace,
         check_login=partial(_check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S)),
+        log_retention_days=log_retention_days,
     )

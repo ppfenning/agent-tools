@@ -92,6 +92,7 @@ from agent_tools import (
     route_sync,
     route_sync_gh,
     router,
+    run_logs,
     run_store,
     runs_bar,
     runs_detail,
@@ -4987,7 +4988,13 @@ def _lake_sync_lines(report: dict) -> list[str]:
         f"traces: would register {traces['would_register']}, {traces['skipped']} skipped" if dry
         else f"traces: {traces['registered']} registered, {traces['skipped']} skipped"
     )
-    return [*created, *tables, trace_line]
+    logs = report.get("logs")
+    log_line = [] if logs is None or not logs["due"] else [
+        f"logs: would archive {logs['due']} past {logs['retention_days']} days" if dry
+        else f"logs: {logs['archived']} of {logs['due']} archived past {logs['retention_days']} days"
+        + (f", {len(logs['failed'])} failed: {logs['failed'][0]}" if logs["failed"] else "")
+    ]
+    return [*created, *tables, trace_line, *log_line]
 
 
 def _lake_catalog_missing(catalog_uri: str) -> bool:
@@ -4995,8 +5002,10 @@ def _lake_catalog_missing(catalog_uri: str) -> bool:
     return catalog_uri.startswith("sqlite:///") and not Path(catalog_uri.removeprefix("sqlite:///")).exists()
 
 
-def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str) -> Callable[[], dict]:
-    """Edge. Create any missing table; return the callable a lease guards that appends the new rows and registers traces."""
+def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str,
+                   runs_dir: Path | None = None, retention: int = run_logs.DEFAULT_RETENTION_DAYS) -> Callable[[], dict]:
+    """Edge. Create any missing table; return the callable a lease guards that appends the new rows, registers
+    traces, and archives ended runs' logs past `retention` days beside the traces before removing the local copies."""
     catalog = lake_config.load_catalog(config)
     # Imported here: these modules import pyiceberg and pyarrow at module top, and cli.py must load without the extra.
     from agent_tools import lake_sync, lake_tables, lake_traces
@@ -5006,9 +5015,28 @@ def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str) -> Cal
     def sync() -> dict:
         results = lake_sync.sync(catalog, store)
         traces = lake_traces.register_traces(catalog, root)
-        return _lake_sync_report(results, traces, False, (), config.catalog_uri, config.warehouse, root)
+        report = _lake_sync_report(results, traces, False, (), config.catalog_uri, config.warehouse, root)
+        if runs_dir is not None:
+            report["logs"] = _run_logs_report(_archive_run_logs(config, root, runs_dir, retention, dry_run=False), retention)
+        return report
 
     return sync
+
+
+def _archive_run_logs(config: lake_config.LakeConfig, root: str, runs_dir: Path, retention: int,
+                      dry_run: bool) -> run_logs.Outcome:
+    """Edge. Ended runs' logs past retention, archived beside the traces root through the lake's own object-store settings."""
+    from pyiceberg.io import load_file_io
+
+    target = run_logs.logs_root(root)
+    io = load_file_io(lake_config.iceberg_properties(config.object_store, os.environ), target)
+    ended = {str(row.get("run_id") or "") for row in chair_read_exits.exit_rows(runs_dir) if chair_read_exits.row_exited(row)}
+    now = datetime.datetime.now(datetime.UTC)
+    return run_logs.archive_and_prune(runs_dir, target, io, ended, now, retention, dry_run=dry_run)
+
+
+def _run_logs_report(outcome: run_logs.Outcome, retention: int) -> dict:
+    return {"retention_days": retention, "due": outcome.due, "archived": outcome.archived, "failed": outcome.failed}
 
 
 def _lake_open_readonly(config: lake_config.LakeConfig, name: str):
@@ -5079,6 +5107,14 @@ def _lake_sync_outcome(a: argparse.Namespace, outcome: lake_lease.SyncOutcome) -
     return 0
 
 
+def _log_retention_days(a: argparse.Namespace) -> int:
+    """Edge. The routing profile's log_retention_days; the default when the profile is missing or unreadable."""
+    try:
+        return run_logs.retention_days(route.parse_profile(_read_text_or_none(_profile_path(a)) or ""))
+    except route.ProfileError:
+        return run_logs.DEFAULT_RETENTION_DAYS
+
+
 def _lake_sync(a: argparse.Namespace) -> int:
     """Edge. Sync the run store and the trace files into the Iceberg lake; `--dry-run` creates and writes nothing."""
     # Absolute: `file://runs/lake` would name a host, and a relative trace path registered once would break from another cwd.
@@ -5093,7 +5129,8 @@ def _lake_sync(a: argparse.Namespace) -> int:
     try:
         if a.dry_run:
             return _lake_sync_done(a, _lake_dry_run(config, store, root))
-        outcome = lake_lease.sync_under_lease(_lake_real_run(config, store, root), runs_dir)
+        retention = _log_retention_days(a)
+        outcome = lake_lease.sync_under_lease(_lake_real_run(config, store, root, runs_dir, retention), runs_dir)
     except lake_config.LakeUnavailable as err:
         return _lake_refuse(a, str(err))
     except ImportError as err:
@@ -5946,6 +5983,7 @@ def _chair_run_deps(
         run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
         record=chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder),
         host=host,
+        log_retention_days=run_logs.retention_days(profile),
     )
     return chair_run.RunDeps(
         facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
