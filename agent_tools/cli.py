@@ -2237,7 +2237,10 @@ def _route_context(a: argparse.Namespace) -> int:
     # gatherer, per charter A6, so a bug in the usage assessment surfaces
     # instead of erasing an otherwise-good docket (run tools-pacing-7).
     try:
-        profile, reason, intake, runs, initiatives, problems, efficiency = _gather_context(_profile_path(a), work_state.work_state_mode(_lake_provider(a)[0]))
+        # Inside the guard on purpose: the provider profile is a file read like the rest.
+        provider_profile = _lake_provider(a)[0]
+        work_mode, work_line = work_state.resolve(provider_profile)
+        profile, reason, intake, runs, initiatives, problems, efficiency = _gather_context(_profile_path(a), work_mode)
     except Exception as exc:
         print(f"routing: context unavailable ({type(exc).__name__}: {exc})")
         return 0
@@ -2266,6 +2269,10 @@ def _route_context(a: argparse.Namespace) -> int:
     else:
         gate_level = _resolved_gate_level(Path(profile["workspace_dir"]).expanduser() / "runs")
         rendered = route.render_context(profile, intake, runs, initiatives, problems, gate_level=gate_level, now=_now_iso(), efficiency=efficiency)
+        # Printed whenever a provider profile was read. With none (`_lake_provider` gives `{}`)
+        # there is no work-state source to name, and the output stays as it was before this line.
+        if provider_profile:
+            print(work_line)
         print(f"{rendered}\nusage: {usage_reason}")
     return 0
 
@@ -2460,8 +2467,10 @@ def _route_status(a: argparse.Namespace) -> int:
     # exceptions at the edge, matching _route_context's guard above.
     try:
         ws = Path(workspace).expanduser()
+        provider_profile = _lake_provider(a)[0]
+        work_mode, work_line = work_state.resolve(provider_profile)
         rows = _status_rows_for(ws / "runs")
-        items = _stored_work_items(ws, work_state.work_state_mode(_lake_provider(a)[0]))
+        items = _stored_work_items(ws, work_mode)
         groups = _intake_groups_for(ws, items)
         problems = route.state_problems(items)
         if a.json:
@@ -2480,6 +2489,10 @@ def _route_status(a: argparse.Namespace) -> int:
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
             )
+            # Printed whenever a provider profile was read. With none (`_lake_provider` gives `{}`)
+            # there is no work-state source to name, and the output stays as it was before this line.
+            if provider_profile:
+                print(work_line)
             print("\n".join(part for part in (status, drafts) if part))
     except Exception as exc:
         print(f"routing: status unavailable ({type(exc).__name__}: {exc})")
