@@ -24,7 +24,14 @@ component, so `/ws-other` is not under `/ws`.
 Each repo is fetched with `git -C <chair repo> fetch <host repo> <refspec>`. Then
 `git -C <chair repo> ls-remote --exit-code . refs/heads/agents/<run>/*` must find
 a ref, so a fetch that brought no branch is a `FetchError`. A lane whose lease is
-held or that has no `ended_at` is refused before anything is copied."""
+held or that has no `ended_at` is refused before anything is copied.
+
+A run that stopped before writing anything never created `runs/<run>/` on the
+host, so rsyncing it first would exit 23 every tick forever. `fetch_run` probes
+for the run directory and the log first, cheaply, over the same rsync
+connection, then hands the two booleans to `fetch_plan` (mirroring the
+`launch_plan`/`launch_on_host` split in `remote_launch.py`) to decide, purely,
+which steps to run."""
 
 from __future__ import annotations
 
@@ -37,7 +44,8 @@ from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
 
 __all__ = [
-    "FetchError", "chair_repo_path", "fetch_run", "host_repo_path", "pull_argvs", "refuse_unended", "task_repos",
+    "FetchError", "FetchPlan", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "pull_argvs",
+    "refuse_unended", "task_repos",
 ]
 
 
@@ -45,6 +53,13 @@ __all__ = [
 class FetchError:
     step: str
     message: str
+
+
+@dataclass(frozen=True)
+class FetchPlan:
+    pull_argvs: list[list[str]]
+    do_git_fetch: bool
+    outcome: tuple[str, ...] | None
 
 
 def refuse_unended(lease_released: bool, ended_at: str | None) -> str | None:
@@ -75,6 +90,27 @@ def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: s
         rsync_pull_argv(run_location.rstrip("/") + "/", f"{runs}/{run}/"),
         rsync_pull_argv(log_location, runs + "/"),
     ]
+
+
+def fetch_plan(
+    run_location: str,
+    log_location: str,
+    chair_runs_dir: str,
+    run: str,
+    run_dir_exists: bool,
+    log_exists: bool,
+) -> FetchPlan:
+    """The rsync argvs `fetch_run` runs, whether it goes on to git-fetch, and the outcome to return
+    if it should stop right there. A run directory that exists is pulled in full, as always.
+
+    One that never existed but left a log is a run that ended before writing a single task record:
+    there is nothing to git-fetch or verify, so the log is pulled alone, `runs/<run>/tasks/` is made
+    empty, and the outcome is `("fetched: no tasks ran",)` rather than a `FetchError`. A run with
+    neither directory nor log falls through to the full plan, which fails exactly as it does today."""
+    if not run_dir_exists and log_exists:
+        runs = chair_runs_dir.rstrip("/")
+        return FetchPlan([rsync_pull_argv(log_location, runs + "/")], False, ("fetched: no tasks ran",))
+    return FetchPlan(pull_argvs(run_location, log_location, chair_runs_dir, run), True, None)
 
 
 def _repo_of(path: Path) -> str | None:
@@ -109,11 +145,22 @@ def fetch_run(
         return FetchError("refuse", refusal)
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     host_ws = host.workspace_dir.rstrip("/")
+    run_location = place(f"{host_ws}/runs/{run}")
+    log_location = place(f"{host_ws}/runs/{run}.log")
+    # A cheap probe over the same connection rsync uses, so a run directory that never existed
+    # (the run stopped before writing anything) is planned for, instead of rsynced blind and retried
+    # forever on its exit-23 "No such file or directory".
+    run_dir_exists = run_cmd(["rsync", "--list-only", run_location]) == 0
+    log_exists = run_cmd(["rsync", "--list-only", log_location]) == 0
     chair_runs_dir.mkdir(parents=True, exist_ok=True)
-    for argv in pull_argvs(place(f"{host_ws}/runs/{run}"), place(f"{host_ws}/runs/{run}.log"), str(chair_runs_dir), run):
+    plan = fetch_plan(run_location, log_location, str(chair_runs_dir), run, run_dir_exists, log_exists)
+    for argv in plan.pull_argvs:
         code = run_cmd(argv)
         if code != 0:
             return FetchError("rsync", f"{' '.join(argv)} exited {code}")
+    if plan.outcome is not None:
+        (chair_runs_dir / run / "tasks").mkdir(parents=True, exist_ok=True)
+        return plan.outcome
     chair_ws = str(chair_runs_dir.parent)
     repos = tuple(dict.fromkeys(chair_repo_path(chair_ws, host_ws, r) for r in repo_paths(chair_runs_dir / run)))
     if not repos:
