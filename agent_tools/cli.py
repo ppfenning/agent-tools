@@ -1147,27 +1147,32 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
                   item_path: str | None = None, workspace: str | None = None,
                   item_id: str | None = None, profile: str | None = None,
-                  runs_dir: str | None = None, umbrella: str | None = None) -> list[dict]:
+                  runs_dir: str | None = None, umbrella: str | None = None,
+                  task_items: dict[str, str] | None = None) -> list[dict]:
     """Steps enriched with what only the edge knows: each `mark_done`'s own
     record file path (`task_paths` maps task name to path in phase mode), and
     the configured worktree root for `clean`/`clean_phase`. `item_path` (task
-    mode only) is the work item `mark_done` will also try to close out. A
+    mode only) is the work item `mark_done` will also try to close out;
+    `task_items` (phase mode) is the same, keyed by task name, since a phase
+    closes one item per task rather than a single item. A
     `checks` step that names a `branch` (phase mode) gets no filesystem write
     here — a dry run must stay read-only, so the actual worktree is only ever
     created at execution time, inside `_execute_land_step`, under `--apply`.
     A `route_sync` step gets the `workspace` to sync, the item's own `id`
     (`item_id`, else the task name the plan used), and the land's `profile`
     and `runs_dir`, so the step reads the tracker from where the plan did.
-    A `cherry_pick` step gets the profile's `umbrella_dir` as `umbrella` when set, for `.agent-generate`."""
+    A `cherry_pick` or `squash_phase` step gets the profile's `umbrella_dir`
+    as `umbrella` when set, for `.agent-generate`."""
     def enrich(step: dict) -> dict:
-        if step["kind"] == "cherry_pick" and umbrella is not None:
+        if step["kind"] in ("cherry_pick", "squash_phase") and umbrella is not None:
             return {**step, "umbrella": umbrella}
         if step["kind"] == "route_sync":
             return {**step, "item": item_id or step["item"], "workspace": workspace,
                     "profile": profile, "runs_dir": runs_dir}
         if step["kind"] == "mark_done":
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
-            return {**marked, "item": item_path, "from": "approved", "to": "done"} if item_path else marked
+            item = item_path or (task_items or {}).get(step["task"])
+            return {**marked, "item": item, "from": "approved", "to": "done"} if item else marked
         if step["kind"] in ("clean", "clean_phase"):
             return {**step, "worktree_root": worktree_root}
         return step
@@ -1196,7 +1201,8 @@ def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | 
 
 def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dict] | None, str]:
     """The phase's own tickets from the work store (`work/<initiative>/<phase>/*.md`,
-    `route.work_item`'s `state`), or `None` with the directory searched when
+    `route.work_item`'s `state`), each carrying its own `file` path for
+    `mark_done` to close out, or `None` with the directory searched when
     there is nothing there to read — a phase can never be waved through by a
     missing ticket file."""
     phase_dir = work_root / initiative / phase
@@ -1210,8 +1216,14 @@ def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dic
             continue
         fields = route.parse_frontmatter(text)[0]
         item = route.work_item(fields, initiative=initiative, phase_dir=phase, stem=p.stem)
-        items.append({"id": item["id"], "status": item["state"]})
+        items.append({"id": item["id"], "status": item["state"], "file": str(p)})
     return items, str(phase_dir)
+
+
+def _phase_task_items(items: list[dict]) -> dict[str, str]:
+    """Task id to ticket path, `approved` items only: `mark_done` moves an item approved to done, and a
+    `done` item that `phase_landable` also admits would be refused by the store's `--expect approved`."""
+    return {i["id"]: i["file"] for i in items if i["status"] == "approved"}
 
 
 def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
@@ -1384,6 +1396,38 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
         return (True, f"cherry-picked {shas[0][:8]} onto {step['onto']}") if ok else (False, detail)
+    if kind == "squash_phase":
+        # Built in its own worktree from `from`, exactly like `cherry_pick`, so `repo`'s HEAD never moves.
+        wt = _land_worktree(repo, step["onto"])
+        _remove_land_worktree(repo, step["onto"])
+        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", step["onto"], str(wt), step["from"]], capture_output=True, text=True)
+        if co.returncode != 0:
+            return False, co.stderr.strip() or co.stdout.strip()
+        _link_venv(repo, wt)
+        def drop() -> None:
+            # A refused squash leaves neither worktree nor pr branch, so a rerun starts fresh.
+            subprocess.run(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+        merge = subprocess.run(["git", "-C", str(wt), "merge", "--squash", step["branch"]], capture_output=True, text=True)
+        if merge.returncode != 0:
+            conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
+                                        capture_output=True, text=True).stdout.split()
+            drop()
+            return False, f"squash of {step['branch']} conflicts in: {', '.join(conflicted)}"
+        if not _git_out(wt, "diff", "--cached", "--name-only"):
+            drop()
+            return False, f"{step['branch']} adds nothing over {step['from']}"
+        commit = subprocess.run(["git", "-C", str(wt), "commit", "-qm", step["subject"]], capture_output=True, text=True)
+        if commit.returncode != 0:
+            return False, commit.stderr.strip() or commit.stdout.strip()
+        ok, detail = _generate_and_amend(wt, step.get("umbrella"), print)
+        if not ok and detail.startswith(_GENERATE_FAILED):
+            # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
+            # instead of finding a pr branch that holds the un-generated tree and refusing on it.
+            subprocess.run(["git", "-C", str(wt), "checkout", "-q", "--detach"], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
+        return (True, f"squashed {step['branch']} onto {step['onto']}") if ok else (False, detail)
     if kind == "reuse_branch":
         wt = _land_worktree(repo, step["branch"])
         _remove_land_worktree(repo, step["branch"])
@@ -1428,6 +1472,11 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
     if kind == "clean_phase":
         doomed = [b for b in cleanup.git_branches(repo) if b == step["phase_branch"] or b.startswith(step["phase_branch"] + "--")]
         doomed += [f"agents/{step['run']}/{t}" for t in step["tasks"]]
+        if step.get("pr_branch"):
+            # git refuses `branch -D` on a branch a worktree holds, and squash_phase's worktree sits under the
+            # temp dir, not `worktree_root`, so drop it here rather than trust an earlier step to have done so.
+            _remove_land_worktree(repo, step["pr_branch"])
+            doomed.append(step["pr_branch"])
         for t in step["tasks"]:
             wt = Path(step["worktree_root"]).expanduser() / step["run"] / t
             if wt.exists():
@@ -1747,7 +1796,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         plan_steps = land.land_plan({**phase_record, "initiative": initiative}, {}, default_branch, repo_facts,
                                     items=items, task_records=task_records)
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
-                              umbrella=profile.get("umbrella_dir"))
+                              umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
         lease_task = f"phase:{initiative}/{phase}"
     else:
         record, searched, count, source = _land_load(runs_dir, a.run_id, a.task)
@@ -1915,7 +1964,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
             return 2, reached, pr
         reached.append(step["kind"])
-        if step["kind"] in ("cherry_pick", "reuse_branch"):
+        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch"):
             built.append(step.get("onto") or step["branch"])
         if step["kind"] == "merge":
             # gh and git cannot delete a branch a worktree still holds.
@@ -1939,8 +1988,8 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print(detail)
             return 2, reached, pr
         print(f"{step['kind']}: {detail}")
-        if not ok and step["kind"] == "cherry_pick" and detail.startswith(_GENERATE_FAILED):
-            # `_execute_land_step` detached it and deleted its branch; the next land's cherry_pick removes it.
+        if not ok and step["kind"] in ("cherry_pick", "squash_phase") and detail.startswith(_GENERATE_FAILED):
+            # `_execute_land_step` detached it and deleted its branch; the next land's same step removes it.
             built.remove(step["onto"])
             print(f"land: worktree left at {_land_worktree(repo, step['onto'])} for inspection")
         if not ok:
