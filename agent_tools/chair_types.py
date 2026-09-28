@@ -170,6 +170,7 @@ class Action(TypedDict, total=False):
     reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
+    carry: list[str]  # the phases a clear_branches keeps and merges main into
 
 
 class PlanLands(Protocol):

@@ -354,6 +354,118 @@ def test_a_cleared_single_worktree_is_done_through_the_real_sweep_and_its_relaun
     assert [a[3] if a[0] == "git" else a[0] for a in argvs] == ["worktree", "worktree", "branch", "for-each-ref", "cox"]
 
 
+_P_WORKTREE = "worktree /w/app/.worktrees/i-p\nHEAD ccc\nbranch refs/heads/epic/i/p"
+
+
+def _carry_run(argvs: list, listing: str, branches: set, conflict_branches: frozenset = frozenset(), fail: tuple = ()) -> Run:
+    """A stateful fake git: worktree list/add/remove, for-each-ref/branch -D, and a carried phase's merge/diff/abort.
+
+    `fail`, when given, names the argv tokens (e.g. `("worktree", "add")`) whose exact command exits 1.
+    """
+    tmp_branch: dict[str, str] = {}
+
+    def run(argv):
+        argvs.append(argv)
+        if fail and all(tok in argv for tok in fail):
+            return 1, f"boom: {' '.join(fail)}"
+        if "worktree" in argv and "list" in argv:
+            return 0, listing
+        if "worktree" in argv and "add" in argv:
+            tmp_branch[argv[-2]] = argv[-1]
+            return 0, ""
+        if "worktree" in argv and "remove" in argv:
+            return 0, ""
+        if "for-each-ref" in argv:
+            prefix = argv[-1].removeprefix("refs/heads/").removesuffix("*")
+            return 0, "\n".join(sorted(b for b in branches if b.startswith(prefix)))
+        if "branch" in argv and "-D" in argv:
+            branches.discard(argv[-1])
+            return 0, ""
+        if "merge" in argv and "--no-edit" in argv:
+            return (1, "CONFLICT (content): merge conflict") if tmp_branch.get(argv[2]) in conflict_branches else (0, "merge ok")
+        if "diff" in argv and "--diff-filter=U" in argv:
+            return 0, "src/app.py\n"
+        if "merge" in argv and "--abort" in argv:
+            return 0, ""
+        return 0, ""
+
+    return run
+
+
+def test_a_carried_phase_keeps_its_worktree_removed_branch_kept_then_merges_in_a_throwaway_worktree() -> None:
+    argvs: list = []
+    branches = {"epic/i/p"}
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n", branches)
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    results = perform([action], deps, lambda: 1, False)
+    assert results[0]["status"] == "done"
+    assert branches == {"epic/i/p"}
+    assert not any("-D" in a for a in argvs)
+    assert argvs[0] == ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]
+    assert argvs[1] == ["git", "-C", "/w/app", "worktree", "remove", "--force", "/w/app/.worktrees/i-p"]
+    assert argvs[2] == ["git", "-C", "/w/app", "for-each-ref", "--format=%(refname:short)", "refs/heads/epic/i/*"]
+    add = argvs[3]
+    tmp = add[-2]
+    assert add == ["git", "-C", "/w/app", "worktree", "add", tmp, "epic/i/p"]
+    assert argvs[4] == ["git", "-C", tmp, "merge", "--no-edit", "main"]
+    assert argvs[5] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
+    assert len(argvs) == 6
+    assert not any("checkout" in a or "switch" in a for a in argvs)
+
+
+def test_a_carried_sweep_leaves_the_phase_branch_but_deletes_its_task_and_sibling_branches() -> None:
+    argvs: list = []
+    branches = {"epic/i/p", "epic/i/p--t", "epic/i/q"}
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n", branches)
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    results = perform([action], deps, lambda: 1, False)
+    assert results[0]["status"] == "done"
+    assert branches == {"epic/i/p"}
+
+
+def test_a_conflicting_carry_merge_aborts_and_raises_one_needs_chair() -> None:
+    argvs: list = []
+    branches: set = set()
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n", branches, conflict_branches=frozenset({"epic/i/p"}))
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app")
+    action = {**_clear("i"), "carry": ["p"], "repo": "/w/app"}
+    results = perform([action], deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["done", "recorded"]
+    needs = results[1]
+    assert needs["action"]["kind"] == "needs_chair" and needs["action"]["initiative"] == "i"
+    assert "p" in needs["reason"] and "src/app.py" in needs["reason"]
+    add = next(a for a in argvs if "worktree" in a and "add" in a)
+    tmp = add[-2]
+    assert ["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"] in argvs
+    assert ["git", "-C", tmp, "merge", "--abort"] in argvs
+    assert ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp] in argvs
+    assert not any("checkout" in a or "switch" in a for a in argvs)
+
+
+def test_no_carry_key_runs_exactly_todays_argv_with_no_worktree_add_or_merge() -> None:
+    calls: list = []
+    results = perform([{**_clear("alpha"), "repo": "/w/app"}], _deps(calls), lambda: 1, False)
+    assert _touched(calls) == [
+        ("run", ["git", "-C", "/w/app", "worktree", "list", "--porcelain"]),
+        ("delete", "/w/app", "epic/alpha/*"),
+    ]
+    assert results[0]["status"] == "done"
+    assert not any(c[0] == "run" and ("add" in c[1] or "merge" in c[1]) for c in calls)
+
+
+def test_a_failed_worktree_add_fails_the_clear_and_holds_its_relaunch() -> None:
+    argvs: list = []
+    branches: set = set()
+    run = _carry_run(argvs, f"{_MAIN_WORKTREE}\n", branches, fail=("worktree", "add"))
+    deps = replace(_deps([]), run=run, repo_for=lambda action: "/w/app")
+    actions = [{**_clear("i"), "carry": ["p"], "repo": "/w/app"}, {"kind": "relaunch", "initiative": "i", "epoch": 1}]
+    results = perform(actions, deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["failed", "skipped"]
+    assert "worktree add" in results[0]["reason"] and "epic/i/p" in results[0]["reason"]
+
+
 def test_a_missing_binary_is_an_exit_code_not_an_exception() -> None:
     code, output = run_argv(["cox-binary-that-does-not-exist"])
     assert code == 127

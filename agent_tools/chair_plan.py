@@ -4,7 +4,7 @@ Pure. Takes the facts and the tick's clock, returns actions each stamped with th
 """
 from datetime import datetime, timedelta
 
-from agent_tools import chair_login_watch
+from agent_tools import chair_login_watch, chair_plan_prune
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
@@ -44,6 +44,14 @@ def _cap_launches(actions: list[Action], cap: int) -> list[Action]:
 
 def _needs_chair_only(actions: list[Action]) -> list[Action]:
     return [a for a in actions if a["kind"] == "needs_chair"]
+
+
+def _with_carry(action: Action, approved: list[dict]) -> Action:
+    """A clear_branches gains `carry`, the sorted phases of the initiative still partial, when there are any."""
+    if action["kind"] != "clear_branches":
+        return action
+    carry = sorted(chair_plan_prune.phases_to_carry(approved, action["initiative"]))
+    return {**action, "carry": carry} if carry else action
 
 
 def _dispatch_room(dispatch: DispatchFacts) -> int:
@@ -129,7 +137,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     if facts["limits"]["hard_stop"]:
         return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered), *login_needs_chair]
     cap = _launch_cap(facts["limits"])
-    capped = _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))
+    capped = [_with_carry(a, facts["approved"]) for a in _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))]
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
