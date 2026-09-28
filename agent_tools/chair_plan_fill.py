@@ -4,6 +4,7 @@ Pure. free_lanes comes from the caller; this module never reads dispatch or limi
 """
 from collections.abc import Sequence
 
+from agent_tools import chair_login_watch
 from agent_tools.chair_types import Action, Facts, InitiativeFacts
 
 # name, weight (a host's share of new placements), capabilities, free lane count, assigned-so-far
@@ -78,12 +79,13 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
 
 def plan_fill(facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
     dispatch = facts["dispatch"]
+    blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
     host_free: list[HostSlot] = [
         (
             h["name"],
             h.get("weight", 1),
             frozenset(h.get("capabilities", [])),
-            max(0, h.get("capacity", dispatch["max_in_flight"]) - h["live_runs"]),
+            0 if h["name"] in blocked else max(0, h.get("capacity", dispatch["max_in_flight"]) - h["live_runs"]),
             0,
         )
         for h in dispatch["hosts"]

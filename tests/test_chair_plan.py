@@ -330,6 +330,36 @@ def test_another_holder_with_an_expired_takeover_plans_take_lease_with_the_reaso
     assert plan_tick(facts) == [{"kind": "take_lease", "reason": "takeover expired at 2026-09-26T15:00:00+00:00", "epoch": 7}]
 
 
+def _login_host(name: str, login_ok: bool | None = None, checked_at: str | None = None) -> dict:
+    versions: dict = {}
+    if login_ok is not None:
+        versions["login_ok"] = login_ok
+    if checked_at is not None:
+        versions["login_checked_at"] = checked_at
+    return {"name": name, "state": "active", "versions_json": versions}
+
+
+def test_needs_chair_login_lapsed_passes_through_at_the_hard_stop():
+    facts = _facts(
+        limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
+        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+    )
+    assert plan_tick(facts) == [{"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7}]
+
+
+def test_a_due_host_yields_one_check_login_action():
+    facts = _facts(login_hosts=[_login_host("jarvis")], last_housekeeping_at=_NOW.isoformat())
+    assert plan_tick(facts, _NOW) == [{"kind": "check_login", "host": "jarvis", "epoch": 7}]
+
+
+def test_a_host_neither_due_nor_blocked_yields_no_login_actions():
+    facts = _facts(
+        login_hosts=[_login_host("jarvis", login_ok=True, checked_at=_NOW.isoformat())],
+        last_housekeeping_at=_NOW.isoformat(),
+    )
+    assert plan_tick(facts, _NOW) == []
+
+
 def test_another_holder_inside_its_takeover_plans_standby_naming_until():
     facts = _facts(lease=_lease(expired=False, until="2026-09-26T15:00:00+00:00"))
     assert plan_tick(facts) == [{"kind": "standby", "holder": "other", "host": "elsewhere", "until": "2026-09-26T15:00:00+00:00", "epoch": 7}]

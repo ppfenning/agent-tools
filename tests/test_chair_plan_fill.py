@@ -181,3 +181,18 @@ def test_a_required_capability_places_only_on_a_host_that_has_it():
 def test_an_initiative_with_no_requires_is_unaffected_by_host_capabilities():
     facts = _facts(dispatch=_weighted_dispatch(), initiatives=[_init("a")])
     assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "big"}]
+
+
+def _login_host(name: str, login_ok: bool) -> dict:
+    return {"name": name, "state": "active", "versions_json": {"login_ok": login_ok}}
+
+
+def test_a_blocked_hosts_free_count_is_zero_even_with_no_live_runs():
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 0}]}
+    facts = _facts(dispatch=dispatch, initiatives=[_init("a")], login_hosts=[_login_host("jarvis", False)])
+    assert plan_fill(facts, 0) == []
+
+
+def test_an_unblocked_host_with_free_capacity_still_receives_a_launch():
+    facts = _hosted(1, initiatives=[_init("a")], login_hosts=[_login_host("other", False)])
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "jarvis"}]
