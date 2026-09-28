@@ -145,11 +145,12 @@ def test_fetch_run_maps_repos_inside_the_workspace_and_keeps_those_outside(tmp_p
                        lambda argv: calls.append(argv) or 0, lease_released=True, ended_at="t")
     assert result == (inside, outside)
     refspec = "refs/heads/agents/r1/*:refs/heads/agents/r1/*"
+    phase_refspec = "+refs/heads/epic/r1/*:refs/heads/epic/r1/*"
     verify = ["ls-remote", "--exit-code", ".", "refs/heads/agents/r1/*"]
     # calls[:2] are the two "exists" probes, calls[2:4] the pull rsyncs; git starts at 4.
     assert calls[4:] == [
-        ["git", "-C", inside, "fetch", "u@h:/hostws/repo", refspec],
+        ["git", "-C", inside, "fetch", "u@h:/hostws/repo", refspec, phase_refspec],
         ["git", "-C", inside, *verify],
-        ["git", "-C", outside, "fetch", "u@h:/elsewhere/repo", refspec],
+        ["git", "-C", outside, "fetch", "u@h:/elsewhere/repo", refspec, phase_refspec],
         ["git", "-C", outside, *verify],
     ]

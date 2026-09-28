@@ -46,4 +46,13 @@ def test_git_fetch_argv_maps_the_run_branches_onto_themselves():
     assert git_fetch_argv("me@box:/srv/repo", "r9") == [
         "git", "fetch", "me@box:/srv/repo",
         "refs/heads/agents/r9/*:refs/heads/agents/r9/*",
+        "+refs/heads/epic/r9/*:refs/heads/epic/r9/*",
+    ]
+
+
+def test_git_fetch_argv_also_brings_back_the_initiative_phase_branch():
+    assert git_fetch_argv("jarvis:/r", "init-a-2") == [
+        "git", "fetch", "jarvis:/r",
+        "refs/heads/agents/init-a-2/*:refs/heads/agents/init-a-2/*",
+        "+refs/heads/epic/init-a/*:refs/heads/epic/init-a/*",
     ]
