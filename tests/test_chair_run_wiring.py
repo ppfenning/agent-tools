@@ -312,6 +312,33 @@ def test_a_tick_that_lost_the_lease_leaves_the_record_file_untouched(tmp_path, m
     assert cli.chair.chair_path(runs).read_bytes() == before
 
 
+def test_a_beat_during_an_active_takeover_until_still_advances_the_record_file_heartbeat(tmp_path, monkeypatch) -> None:
+    """The lease sidecar already names this loop (chair-x@h:1) -- reclaimed, e.g., by a take_lease action after an
+    expired takeover -- but the record file still names the prior holder, with a takeover `until` still ahead.
+    A tick's beat must still move heartbeat_at forward for the holder the lease actually names."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    store = _FakeStore("chair-x@h:1")
+    monkeypatch.setattr(cli.chair.store_cli, "lease_renew", lambda runs_dir, name, who, epoch, ttl: store.renew(who, epoch))
+    (runs / cli.chair.LEASE_FILENAME).write_text(json.dumps({"holder": "chair-x@h:1", "epoch": 3}), encoding="utf-8")
+    cli.chair.write(runs, {
+        "session": "alice", "pid": 9, "host": "h", "taken_at": _OLD, "heartbeat_at": _OLD,
+        "runs": [], "claude_session": None, "until": "2099-01-01T00:00:00+00:00",
+    })
+    deps = cli._chair_run_deps(runs, {}, "chair-x", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    def stop_after_beat(*_args):
+        raise RuntimeError("beat done")
+
+    quiet = dataclasses.replace(deps.report_deps, echo=lambda line: None)
+    deps = dataclasses.replace(deps, gather=stop_after_beat, report_deps=quiet)
+
+    chair_run.run(True, 0, False, deps)
+
+    assert store.heartbeat == 1
+    assert cli.chair.read(runs)["heartbeat_at"] > _OLD
+
+
 def _stranded_workspace_with_a_missing_repo(tmp_path):
     """A `runs`/`work` pair whose one live, approved, unlanded record names a repo that does not exist."""
     runs = tmp_path / "runs"
