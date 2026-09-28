@@ -5,7 +5,11 @@ from agent_tools.cli import main
 
 
 def _row(initiative, task_id, state):
-    return {"initiative": initiative, "task_id": task_id, "state": state}
+    return {"kind": "task", "initiative": initiative, "task_id": task_id, "state": state}
+
+
+def _intake_row(task_id, state):
+    return {"kind": "intake", "initiative": "intake", "task_id": task_id, "state": state}
 
 
 def test_equal_states_give_nothing():
@@ -19,14 +23,32 @@ def test_differing_states_give_a_state_kind():
 
 
 def test_a_file_absent_from_the_store_is_file_only():
-    assert route_drift.drift([("demo", "t1", "ready")], [_row("other", "t9", "done")])[0] == {
-        "initiative": "demo", "task_id": "t1", "kind": "file_only", "file_state": "ready", "store_state": None
+    out = route_drift.drift(
+        [("demo", "t1", "ready")], [_row("other", "t9", "done")], [("intake/foo.md", "queued")], []
+    )
+    assert out[0] == {"initiative": "demo", "task_id": "t1", "kind": "file_only", "file_state": "ready", "store_state": None}
+    assert out[1] == {
+        "initiative": "intake", "task_id": "intake/foo.md", "kind": "file_only", "file_state": "queued", "store_state": None
     }
 
 
 def test_a_store_row_absent_from_files_is_store_only():
-    assert route_drift.drift([], [_row("demo", "t1", "done")]) == [
-        {"initiative": "demo", "task_id": "t1", "kind": "store_only", "file_state": None, "store_state": "done"}
+    assert route_drift.drift([], [_row("demo", "t1", "done")], [], [_intake_row("foo", "landed")]) == [
+        {"initiative": "demo", "task_id": "t1", "kind": "store_only", "file_state": None, "store_state": "done"},
+        {"initiative": "intake", "task_id": "intake/foo.md", "kind": "store_only", "file_state": None, "store_state": "landed"},
+    ]
+
+
+def test_intake_equal_states_give_nothing():
+    assert route_drift.drift([], [], [("intake/foo.md", "queued")], [_intake_row("foo", "queued")]) == []
+
+
+def test_intake_differing_states_give_a_state_kind():
+    assert route_drift.drift([], [], [("intake/foo.md", "queued")], [_intake_row("foo", "decomposed")]) == [
+        {
+            "initiative": "intake", "task_id": "intake/foo.md", "kind": "state",
+            "file_state": "queued", "store_state": "decomposed",
+        }
     ]
 
 
@@ -37,7 +59,11 @@ def test_output_is_sorted_by_initiative_then_task():
 
 def test_json_is_the_list_with_sorted_keys():
     d = {"initiative": "demo", "task_id": "t1", "kind": "state", "file_state": "ready", "store_state": "done"}
-    assert json.loads(route_drift.format_json([d])) == [d]
+    i = {
+        "initiative": "intake", "task_id": "intake/foo.md", "kind": "state",
+        "file_state": "queued", "store_state": "decomposed",
+    }
+    assert json.loads(route_drift.format_json([d, i])) == [d, i]
     assert route_drift.format_json([]) == "[]"
 
 
@@ -60,7 +86,7 @@ def _workspace(tmp_path):
 
 
 def _store(monkeypatch, rows):
-    monkeypatch.setattr("agent_tools.cli.run_store.work_items", lambda *_a, **_k: rows)
+    monkeypatch.setattr("agent_tools.cli.run_store.read_queue", lambda *_a, **_k: rows)
 
 
 def test_edge_reports_drift_and_exits_zero(tmp_path, monkeypatch, capsys):
@@ -90,3 +116,15 @@ def test_edge_with_an_empty_store_prints_one_note_and_exits_zero(tmp_path, monke
     _store(monkeypatch, [])
     rc = main(["route", "drift", "--profile", str(_workspace(tmp_path))])
     assert (rc, capsys.readouterr().out) == (0, "store has no work_items\n")
+
+
+def test_edge_reports_intake_drift(tmp_path, monkeypatch, capsys):
+    profile = _workspace(tmp_path)
+    ws = tmp_path / "workspace"
+    (ws / "intake").mkdir()
+    (ws / "intake" / "foo.md").write_text("---\ntitle: Foo\n---\n\nDo the foo\n")
+    _store(monkeypatch, [_row("demo", "task", "ready"), _intake_row("foo", "decomposed")])
+    rc = main(["route", "drift", "--profile", str(profile)])
+    lines = capsys.readouterr().out.splitlines()
+    assert rc == 0
+    assert any(line.split() == ["intake", "intake/foo.md", "state", "queued", "decomposed"] for line in lines[1:])
