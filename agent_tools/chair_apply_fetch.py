@@ -18,9 +18,14 @@ from agent_tools.land import _approved
 __all__ = ["apply_fetched_approvals", "apply_ready_to_approved", "approved_task_ids"]
 
 
+def _task_id(record: Mapping[str, Any]) -> str:
+    """A task record written by the harness names its task under `ticket`; `task` is kept for older readers."""
+    return str(record.get("task") or record.get("ticket") or "")
+
+
 def approved_task_ids(records: Iterable[Mapping[str, Any]]) -> list[str]:
-    """The `task` id of every record whose review and arbitration verdicts approve it (`land._approved` is None)."""
-    return [str(record["task"]) for record in records if record.get("task") and _approved(dict(record)) is None]
+    """The task id of every record whose review and arbitration verdicts approve it (`land._approved` is None)."""
+    return [_task_id(record) for record in records if _task_id(record) and _approved(dict(record)) is None]
 
 
 def apply_ready_to_approved(text: str) -> tuple[str | None, str | None]:

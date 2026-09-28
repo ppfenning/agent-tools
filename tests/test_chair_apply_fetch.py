@@ -6,6 +6,10 @@ import pytest
 from agent_tools.chair_apply_fetch import apply_fetched_approvals, apply_ready_to_approved, approved_task_ids
 
 
+def test_a_record_that_names_its_task_under_ticket_is_approved_by_that_id():
+    assert approved_task_ids([{"ticket": "t1", "review": {"verdict": "approve"}}]) == ["t1"]
+
+
 def test_approved_task_ids_keeps_only_the_approved_records():
     records = [
         {"task": "t1", "review": {"verdict": "approve"}},
