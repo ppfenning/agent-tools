@@ -3815,7 +3815,7 @@ def _route_lint(a: argparse.Namespace) -> int:
     problems = route.lint_items(items, repo, ("pytest", "git status", "git diff"))
     for problem in problems:
         print(f"{problem.task} {problem.rule}: {problem.detail} -> {problem.fix}")
-    return 2 if any(p.rule in ("reach", "coupling") for p in problems) else 0
+    return 2 if any(p.rule in ("reach", "coupling", "phase_needs") for p in problems) else 0
 
 
 def _route_groups(a: argparse.Namespace) -> int:

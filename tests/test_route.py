@@ -1641,7 +1641,9 @@ def test_lint_items_flags_coupling_even_when_a_needs_edge_orders_the_pair():
          "needs": ["t1"]},
     ]
     problems = route.lint_items(items, "acme/widgets", ())
-    assert [p.rule for p in problems] == ["coupling"]
+    # lint-refuses-a-needs-edge-inside-one-phase: this same-phase needs edge
+    # is now also a phase_needs deadlock in its own right.
+    assert [p.rule for p in problems] == ["coupling", "phase_needs"]
 
 
 def test_lint_items_flags_coupling_across_a_former_needs_chain():
@@ -1652,7 +1654,9 @@ def test_lint_items_flags_coupling_across_a_former_needs_chain():
         {"task": "c", "phase": "build", "surfaces": ["tests/test_route.py"], "body": "c"},
     ]
     problems = route.lint_items(items, "acme/widgets", ())
-    assert [p.rule for p in problems] == ["coupling"]
+    # lint-refuses-a-needs-edge-inside-one-phase: both same-phase needs edges
+    # in this chain (a needs b, b needs c) are also phase_needs deadlocks.
+    assert [p.rule for p in problems] == ["coupling", "phase_needs", "phase_needs"]
 
 
 def test_lint_items_pins_coupling_as_a_phase_scoped_rule_when_no_needs_edge_exists():
@@ -1663,6 +1667,35 @@ def test_lint_items_pins_coupling_as_a_phase_scoped_rule_when_no_needs_edge_exis
         {"task": "t2", "phase": "ship", "surfaces": ["tests/test_route.py"], "body": "second ticket"},
     ]
     assert route.lint_items(items, "acme/widgets", ()) == []
+
+
+def test_lint_items_flags_a_needs_edge_inside_one_phase():
+    # lint-refuses-a-needs-edge-inside-one-phase: a needs edge between two
+    # tickets sharing a phase always deadlocks a phase land.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": [], "body": "first ticket"},
+        {"task": "t2", "phase": "build", "surfaces": [], "body": "second ticket",
+         "needs": ["t1"]},
+    ]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert problems == [
+        route.Problem(
+            "t2", "phase_needs", "t2 needs t1 in the same phase 'build'",
+            "move it to a later phase that needs this one",
+        )
+    ]
+
+
+def test_lint_items_allows_a_needs_edge_across_phases():
+    # A needs edge that already orders two phases is not a deadlock: the
+    # needed ticket's phase lands before the dependent's phase starts.
+    items = [
+        {"task": "t1", "phase": "build", "surfaces": [], "body": "first ticket"},
+        {"task": "t2", "phase": "ship", "surfaces": [], "body": "second ticket",
+         "needs": ["t1"]},
+    ]
+    problems = route.lint_items(items, "acme/widgets", ())
+    assert [p.rule for p in problems if p.rule == "phase_needs"] == []
 
 
 def test_coupling_problems_flags_an_approved_ticket_sharing_a_surface_with_a_ready_one():
@@ -1997,6 +2030,34 @@ def test_route_lint_cli_does_not_flag_coupling_when_a_needs_edge_orders_the_pair
     out = capsys.readouterr().out
     assert code == 0
     assert out == "merged: t1 + t2 -> t1 (shared tests/test_widget.py)\n"
+
+
+def test_route_lint_cli_refuses_a_needs_edge_inside_one_phase(tmp_path, capsys):
+    # lint-refuses-a-needs-edge-inside-one-phase: disjoint surfaces, so no merge
+    # folds the pair; the same-phase needs edge alone must exit 2.
+    initiative = tmp_path / "widget-fix"
+    initiative.mkdir()
+    (initiative / "initiative.md").write_text(
+        '---\nid: "widget-fix"\ntitle: "Widget fix"\nrepo: "acme/widgets"\n---\nfix the widget\n',
+        encoding="utf-8",
+    )
+    build = initiative / "build"
+    build.mkdir()
+    (build / "t1.md").write_text(
+        "---\nid: t1\nphase: build\nsurfaces: [agent_tools/x.py]\n---\nfirst ticket\n",
+        encoding="utf-8",
+    )
+    (build / "t2.md").write_text(
+        "---\nid: t2\nphase: build\nsurfaces: [agent_tools/y.py]\nneeds: [t1]\n---\nsecond ticket\n",
+        encoding="utf-8",
+    )
+    code = cli._route_lint(_lint_ns(initiative))
+    out = capsys.readouterr().out
+    assert code == 2
+    assert out == (
+        "t2 phase_needs: t2 needs t1 in the same phase 'build'"
+        " -> move it to a later phase that needs this one\n"
+    )
 
 
 def test_parse_profile_reads_the_weekly_ceiling_beside_the_window_ceiling():

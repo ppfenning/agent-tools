@@ -73,11 +73,16 @@ that changes a ticket body. `Problem(task, rule, detail, fix)`. Rules:
   first, so a remaining hit involves an `approved`, `in_progress` or `done` ticket.
 - **size:** a body over ~700 words → `fix: point at a spec file in the repository` (the measured `plan`
   death band).
+- **phase_needs:** a ticket whose `needs` names another ticket in the same phase → `fix: move it to a
+  later phase that needs this one`. The needed ticket can be approved but not landed, so the phase never
+  lands; on 2026-09-28 this relaunched one initiative every chair tick from 4:12 to 4:29 PM ET.
 
 Decompose REFUSES a DAG with a `reach` or `coupling` problem and returns the corrections to the
 `work_item_arm` (the graph already has `_apply_corrections`); `grant` and `size` are recorded as warnings on
 the ticket (`lint:` list in frontmatter) and printed. `cox route lint <initiative>` in tools runs the same
-pure function over a filed initiative so the chair can check a hand-written ticket before launch.
+pure function over a filed initiative so the chair can check a hand-written ticket before launch, and its own
+exit code refuses a `reach`, `coupling` or `phase_needs` problem. Decompose's refuse set lives in
+`graphs/delivery/initiative_decompose.py`, outside this repository, and this ticket does not touch it.
 
 ## 4. `consolidate`  (cartridges, graphs)
 
