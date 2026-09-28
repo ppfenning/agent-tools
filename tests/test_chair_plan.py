@@ -25,6 +25,8 @@ def _facts(**overrides) -> Facts:
         "lost_runs": {},
         "last_housekeeping_at": None,
         "housekeeping_hours": 24.0,
+        "stale_days": 7,
+        "stale_candidates": [],
     }
     return {**base, **overrides}  # type: ignore[return-value]
 
@@ -135,6 +137,13 @@ def _recovering(monkeypatch, actions: list[dict]) -> None:
     monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts: actions)
 
 
+_STALE = {"kind": "stale_to_draft", "initiative": "z", "stale_tasks": ["z-1"], "reason": "no file change, run, or chair action in 26 days", "since": "2026-09-27T12:00:00+00:00"}
+
+
+def _staling(monkeypatch, actions: list[dict]) -> None:
+    monkeypatch.setattr("agent_tools.chair_plan.plan_stale", lambda facts, now: actions)
+
+
 def test_a_rescue_counts_against_the_launch_cap(monkeypatch):
     _recovering(monkeypatch, [_RESCUE, _RETRY])
     facts = _facts(limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
@@ -151,6 +160,26 @@ def test_a_kept_rescue_is_stamped_with_the_lease_epoch(monkeypatch):
     _recovering(monkeypatch, [_RESCUE])
     facts = _facts(lease={"holder": "a", "host": "h", "epoch": 42, "mine": True, "released": False, "stale": False})
     assert plan_tick(facts) == [{**_RESCUE, "epoch": 42}]
+
+
+def test_a_stale_to_draft_passes_through_uncounted_while_a_retry_is_capped_normally(monkeypatch):
+    _recovering(monkeypatch, [_RETRY])
+    _staling(monkeypatch, [_STALE])
+    facts = _facts(
+        limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
+        last_housekeeping_at="2026-09-27T11:00:00+00:00",
+    )
+    assert plan_tick(facts, _NOW) == [{**_STALE, "epoch": 7}, {**_RETRY, "epoch": 7}]
+
+
+def test_a_stale_to_draft_is_kept_at_the_hard_stop_alongside_needs_chair(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "relaunch", "initiative": "a"}, _RETRY, _NEEDS_CHAIR_BARE])
+    _staling(monkeypatch, [_STALE])
+    facts = _facts(
+        limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
+        last_housekeeping_at="2026-09-27T11:00:00+00:00",
+    )
+    assert plan_tick(facts, _NOW) == [{**_STALE, "epoch": 7}, {**_NEEDS_CHAIR_BARE, "epoch": 7}]
 
 
 def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
