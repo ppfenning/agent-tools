@@ -6,7 +6,7 @@ Reuses `chair_read_quarantined.read_work_items` to list the board, `chair_read_a
 
 import subprocess
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_tools import run_store
@@ -84,7 +84,8 @@ def read_chair_actions(runs_dir: Path) -> list[dict]:
 
 
 def file_changed_at(workspace_dir: Path, initiative: str, phase: str, task: str) -> str | None:
-    """Edge. `git log`'s ISO-8601 author date of the ticket file's newest commit; None with no commit history."""
+    """Edge. `git log`'s ISO-8601 author date of the ticket file's newest commit; with no commit history, the file's
+    own modification time, so a ticket written since the last workspace commit reads as fresh; None with neither."""
     rel = f"work/{initiative}/{phase}/{task}.md"
     try:
         done = subprocess.run(
@@ -96,7 +97,12 @@ def file_changed_at(workspace_dir: Path, initiative: str, phase: str, task: str)
     except (OSError, subprocess.SubprocessError):
         return None
     out = done.stdout.strip() if done.returncode == 0 else ""
-    return out or None
+    if out:
+        return out
+    try:
+        return datetime.fromtimestamp((workspace_dir / rel).stat().st_mtime, UTC).isoformat()
+    except OSError:
+        return None
 
 
 def _candidate(
