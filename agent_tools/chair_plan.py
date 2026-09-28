@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
-from agent_tools.chair_plan_recover import plan_recover
+from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
 from agent_tools.chair_types import Action, DispatchFacts, Facts, LeaseFacts, LimitsFacts, stamp
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
@@ -76,15 +76,35 @@ def _withhold_not_exited(actions: list[Action], not_exited: frozenset[str]) -> l
     ]
 
 
+def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Action]:
+    """Drop a lost-run initiative's ordinary relaunch, retry and rescue: plan_lost_runs fully covers its recovery this tick.
+
+    A dropped relaunch takes its paired clear_branches with it. needs_chair is untouched: a quarantine on an
+    unrelated task of the same initiative still yields its own report as today.
+    """
+    dropped = {
+        n
+        for n, a in enumerate(actions)
+        if a["initiative"] in lost and (a["kind"] == "relaunch" or a["kind"] in {"retry", "rescue"})
+    }
+    return [
+        a
+        for n, a in enumerate(actions)
+        if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in lost)
+    ]
+
+
 def _plan_as_holder(facts: Facts) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
+    lost = frozenset(facts.get("lost_runs", {}))
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
-    pre_exit_gate = _withhold_remote_unfetched(plan_recover(facts), remote_unfetched)
+    ordinary = _withhold_lost_runs(plan_recover(facts), lost)
+    pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recovered = _withhold_not_exited(pre_exit_gate, not_exited)
+    recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
     if facts["limits"]["hard_stop"]:
         return [*lands, *fetch_exits, *_needs_chair_only(recovered)]
     cap = _launch_cap(facts["limits"])
@@ -96,6 +116,7 @@ def _plan_as_holder(facts: Facts) -> list[Action]:
         frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]})
         | remote_unfetched
         | not_exited
+        | lost
     )
     return [*lands, *fetch_exits, *capped, *plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)]
 

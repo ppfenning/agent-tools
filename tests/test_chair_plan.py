@@ -22,6 +22,7 @@ def _facts(**overrides) -> Facts:
         "sources_configured": True,
         "remote_unfetched": {},
         "run_exited": {},
+        "lost_runs": {},
         "last_housekeeping_at": None,
         "housekeeping_hours": 24.0,
     }
@@ -336,6 +337,55 @@ def test_an_initiative_without_a_recorded_exit_plans_no_relaunch():
 def test_an_initiative_absent_from_run_exited_plans_no_relaunch():
     facts = _facts(initiatives=[_initiative("i")])
     assert plan_tick(facts) == []
+
+
+def test_a_lost_run_initiative_gets_mark_lost_then_clear_branches_then_relaunch_with_no_host():
+    facts = _facts(
+        initiatives=[_initiative("i")],
+        lost_runs={"i": "i-run-1"},
+        dispatch={"max_in_flight": 5, "live_runs": 0, "hosts": []},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "mark_lost", "initiative": "i", "run": "i-run-1", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+def test_a_lost_run_relaunches_even_with_run_exited_false():
+    facts = _facts(
+        initiatives=[_initiative("i")],
+        lost_runs={"i": "i-run-1"},
+        run_exited={"i": False},
+        dispatch={"max_in_flight": 5, "live_runs": 0, "hosts": []},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "mark_lost", "initiative": "i", "run": "i-run-1", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+def test_an_initiative_absent_from_lost_runs_still_gates_on_run_exited():
+    facts = _facts(initiatives=[_initiative("a"), _initiative("b")], run_exited={"a": True, "b": False})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "epoch": 7},
+    ]
+
+
+def test_a_lost_run_initiative_with_an_unrelated_quarantine_still_gets_needs_chair():
+    facts = _facts(
+        initiatives=[_initiative("i")],
+        lost_runs={"i": "i-run-1"},
+        quarantines=[{"task_id": "q1", "initiative": "i", "cause": "code", "harness_failures": 0}],
+    )
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "code", "epoch": 7},
+        {"kind": "mark_lost", "initiative": "i", "run": "i-run-1", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
 
 
 def test_an_initiative_without_a_recorded_exit_stands_by_and_the_lane_goes_to_another():

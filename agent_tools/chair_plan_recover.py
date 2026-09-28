@@ -49,13 +49,13 @@ def _can_relaunch(i: InitiativeFacts, blocked: set[str]) -> bool:
     )
 
 
+def relaunch_pair(initiative: str) -> list[Action]:
+    """The clear_branches then relaunch pair a healthy relaunch emits for one initiative."""
+    return [{"kind": "clear_branches", "initiative": initiative}, {"kind": "relaunch", "initiative": initiative}]
+
+
 def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
-    return [
-        action
-        for i in initiatives
-        if _can_relaunch(i, blocked)
-        for action in ({"kind": "clear_branches", "initiative": i["id"]}, {"kind": "relaunch", "initiative": i["id"]})
-    ]
+    return [action for i in initiatives if _can_relaunch(i, blocked) for action in relaunch_pair(i["id"])]
 
 
 def plan_recover(facts: Facts) -> list[Action]:
@@ -66,3 +66,16 @@ def plan_recover(facts: Facts) -> list[Action]:
     quarantines = facts["quarantines"]
     blocked = {q["initiative"] for q in quarantines}
     return _quarantine_actions(quarantines) + _relaunch_actions(facts["initiatives"], blocked)
+
+
+def plan_lost_runs(facts: Facts) -> list[Action]:
+    """One mark_lost then the same clear_branches, relaunch pair, per initiative that is a key of lost_runs this tick.
+
+    Does not check readiness, needs or run_exited: a host unreachable for ten minutes with no exit record is
+    itself the evidence the previous process is gone.
+    """
+    return [
+        action
+        for initiative, run in facts.get("lost_runs", {}).items()
+        for action in ({"kind": "mark_lost", "initiative": initiative, "run": run}, *relaunch_pair(initiative))
+    ]
