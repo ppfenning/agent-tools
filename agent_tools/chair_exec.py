@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -50,7 +51,8 @@ class Result(TypedDict):
     reason: str
     run: NotRequired[str]  # a fetch_exit's run, for the next task's status line
     host: NotRequired[str]  # a fetch_exit's remote host, read from its <run>.remote.json
-    needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one
+    needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
+    # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,64 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     return _result(action, "landed" if landed(code, output) else "not_landed", output)
 
 
+def _swept_branches(deps: Deps, repo: str, pattern: str, carry: set[str]) -> tuple[list[str], str]:
+    """Like `deps.delete_branches`, but a branch on a carried phase is named and kept, not deleted.
+
+    `deps.delete_branches` force-deletes every branch under `pattern` with no way to exempt one, so a carried
+    sweep lists the matches itself and deletes only those not on a carried phase.
+    """
+    if not carry:
+        return deps.delete_branches(repo, pattern)
+    code, listing = deps.run(["git", "-C", repo, "for-each-ref", "--format=%(refname:short)", f"refs/heads/{pattern}"])
+    if code != 0:
+        return [], listing or f"git for-each-ref exited {code}"
+    prefix = pattern.removesuffix("*")
+    names = [n for n in listing.split() if n.startswith(prefix) and n.rsplit("/", 1)[-1] not in carry]
+    outcomes = [(name, deps.run(["git", "-C", repo, "branch", "-D", name])) for name in names]
+    deleted = [name for name, (c, _) in outcomes if c == 0]
+    return deleted, "".join(out for _, (c, out) in outcomes if c != 0)
+
+
+def _carry_forward(
+    action: Action, deps: Deps, repo: str, initiative: str, phases: list[str]
+) -> tuple[list[str], Action | None, Result | None]:
+    """Merge main into each carried phase's branch, one throwaway worktree at a time; the repo the running loop
+    imports from is never checked out or switched.
+
+    Returns the phases actually merged, an extra needs_chair action for the first conflict (or None), and a
+    failed Result that stops the clear immediately (or None). At most one of the last two is ever set: a
+    conflict stops the loop without failing the clear, any other failed git step fails it.
+    """
+    merged: list[str] = []
+    for phase in phases:
+        branch = f"epic/{initiative}/{phase}"
+        tmp = tempfile.mkdtemp(prefix="cox-carry-")
+        code, out = deps.run(["git", "-C", repo, "worktree", "add", tmp, branch])
+        if code != 0:
+            return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
+        code, out = deps.run(["git", "-C", tmp, "merge", "--no-edit", "main"])
+        if code != 0:
+            _, diff_out = deps.run(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
+            conflicted = [line for line in diff_out.splitlines() if line.strip()]
+            if not conflicted:
+                deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+                return merged, None, _result(action, "failed", f"git merge --no-edit main in {tmp} ({branch}): {out.strip()}")
+            deps.run(["git", "-C", tmp, "merge", "--abort"])
+            rcode, rout = deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+            if rcode != 0:
+                return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
+            needs_chair: Action = {
+                "kind": "needs_chair", "initiative": initiative, "cause": "carry_conflict", "epoch": action.get("epoch", 0),
+                "reason": f"phase {phase} conflicts with main: {conflicted}",
+            }
+            return merged, needs_chair, None
+        rcode, rout = deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+        if rcode != 0:
+            return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
+        merged.append(phase)
+    return merged, None, None
+
+
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     initiative = action.get("initiative", "")
     pattern = branch_pattern(initiative)
@@ -226,21 +286,25 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     code, listing = deps.run(["git", "-C", repo, "worktree", "list", "--porcelain"])
     if code != 0:
         return _result(action, "failed", f"git worktree list in {repo}: {listing.strip()}")
+    carry = set(action.get("carry", []))
     entries = chair_plan_prune.worktrees_to_prune(listing, initiative)
-    for argv in chair_plan_prune.prune_argv(entries):
+    for argv in chair_plan_prune.prune_argv(entries, carry):
         code, output = deps.run(["git", "-C", repo, *argv[1:]])
         if code != 0:
             return _result(action, "failed", f"{' '.join(argv)} in {repo}: {output.strip()}")
     # The prune already deleted its entries' branches, so the sweep finding nothing after a prune is success, not a miss.
-    swept, error = deps.delete_branches(repo, pattern)
-    deleted = [e["branch"] for e in entries] + swept
+    swept, error = _swept_branches(deps, repo, pattern, carry)
+    deleted = [e["branch"] for e in entries if e["branch"].rsplit("/", 1)[-1] not in carry] + swept
     if error:
         return _result(action, "failed", f"deleted {deleted} in {repo}; git: {error.strip()}")
-    if not deleted:
-        # Nothing stale is the state a clear exists to reach: a relaunch that failed after an earlier clear must not be
-        # skipped forever because that clear already deleted the branches.
-        return _result(action, "done", f"nothing to clear: no branch matched {pattern} in {repo}")
-    return _result(action, "done", f"deleted {deleted} in {repo}")
+    merged, needs_chair, failure = _carry_forward(action, deps, repo, initiative, sorted(carry))
+    if failure is not None:
+        return failure
+    parts = [p for p in (f"deleted {deleted} in {repo}" if deleted else "", f"carried {merged} past main" if merged else "") if p]
+    # Nothing stale or partial is the state a clear exists to reach: a relaunch that failed after an earlier clear
+    # must not be skipped forever because that clear already deleted the branches and carried the phases forward.
+    result = _result(action, "done", "; ".join(parts) if parts else f"nothing to clear: no branch matched {pattern} in {repo}")
+    return {**result, "needs_chair": needs_chair} if needs_chair is not None else result
 
 
 def _lease(action: Action, deps: Deps) -> Result:
@@ -474,6 +538,10 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
+        if action.get("kind") == "clear_branches" and "needs_chair" in result:
+            carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
+            deps.record(_recorded(carried))
+            results.append(carried)
     return results
 
 

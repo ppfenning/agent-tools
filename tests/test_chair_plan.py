@@ -117,6 +117,19 @@ def test_launch_cap_keeps_the_first_relaunches_in_order_and_drops_the_paired_cle
     ]
 
 
+def test_a_relaunch_for_an_initiative_with_a_partial_phase_carries_it_forward():
+    approved = {"id": "a-p-t", "initiative": "a", "repo": "r", "phase": "p", "phase_done": False, "needs": [], "run": "a-1", "needs_fetch": False}
+    facts = _facts(initiatives=[_initiative("a")], run_exited={"a": True}, approved=[approved])
+    assert [a for a in plan_tick(facts) if a["kind"] == "clear_branches"] == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7, "carry": ["p"]}
+    ]
+
+
+def test_a_relaunch_for_an_initiative_with_no_partial_phase_carries_nothing():
+    facts = _facts(initiatives=[_initiative("a")], run_exited={"a": True})
+    assert [a for a in plan_tick(facts) if a["kind"] == "clear_branches"] == [{"kind": "clear_branches", "initiative": "a", "epoch": 7}]
+
+
 def test_relaunches_stop_at_the_free_lanes_of_this_machine():
     facts = _facts(
         dispatch={"max_in_flight": 2, "live_runs": 1, "hosts": []},
