@@ -140,3 +140,44 @@ def test_a_host_with_a_free_lane_launches_an_epic_when_no_local_lane_is_free():
 
 def test_intake_stays_local_when_only_a_host_has_free_lanes():
     assert plan_fill(_hosted(4, intake=["i1", "i2"]), 0) == []
+
+
+def _weighted_dispatch() -> dict:
+    return {
+        "max_in_flight": 4,
+        "live_runs": 0,
+        "hosts": [
+            {"name": "big", "live_runs": 0, "weight": 3, "capacity": 4},
+            {"name": "go-host", "live_runs": 3, "weight": 1, "capacity": 4, "capabilities": ["go"]},
+        ],
+    }
+
+
+def test_hosts_fill_in_proportion_to_weight_whatever_their_order():
+    heavy = {"name": "heavy", "live_runs": 0, "weight": 2}
+    light = {"name": "light", "live_runs": 0, "weight": 1}
+    for order in ([heavy, light], [light, heavy]):
+        dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": order}
+        facts = _facts(dispatch=dispatch, initiatives=[_init("a"), _init("b"), _init("c"), _init("d")])
+        hosts = [a["host"] for a in plan_fill(facts, 0)]
+        assert (hosts.count("heavy"), hosts.count("light")) == (3, 1)
+
+
+def test_a_required_capability_places_only_on_a_host_that_has_it():
+    facts = _facts(
+        dispatch=_weighted_dispatch(),
+        initiatives=[
+            {
+                "id": "a",
+                "started": True,
+                "ready_tasks": [{"id": "t1", "needs": [], "requires": ["go"]}],
+                "landed": set(),
+            }
+        ],
+    )
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "go-host"}]
+
+
+def test_an_initiative_with_no_requires_is_unaffected_by_host_capabilities():
+    facts = _facts(dispatch=_weighted_dispatch(), initiatives=[_init("a")])
+    assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "big"}]
