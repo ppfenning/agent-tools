@@ -1062,9 +1062,13 @@ def _initiative_of(work_root: Path, task_id: str) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def _initiative_of_phase(work_root: Path, phase: str) -> str | None:
-    """The one initiative whose `work/<initiative>/<phase>/` holds a ticket, or
-    `None` when none or several do. The phase record may not name it."""
+def _initiative_of_phase(work_root: Path, phase: str, run_id: str | None = None) -> str | None:
+    """The initiative whose `work/<initiative>/<phase>/` holds a ticket: the run's own (`x-3` is `x`) when it does,
+    else the one initiative that does, else `None`. The phase record may not name it, and a phase name such as `fix`
+    repeats across initiatives."""
+    own = chair_facts.run_initiative(run_id) if run_id else None
+    if own and any(p.name != "initiative.md" for p in (work_root / own / phase).glob("*.md")):
+        return own
     found = {p.parent.parent.name for p in work_root.glob(f"*/{phase}/*.md") if p.name != "initiative.md"}
     return found.pop() if len(found) == 1 else None
 
@@ -1789,7 +1793,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         if phase_record is None:
             print(f"land: no phase record at {searched}")
             return 2
-        initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase)
+        initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase, a.run_id)
         items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase)
                               if initiative else (None, f"{runs_dir.parent / 'work'} (no single initiative holds phase {phase})"))
         if items is None:
