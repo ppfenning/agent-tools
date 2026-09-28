@@ -716,8 +716,8 @@ def stub_harness(monkeypatch, python="/h/python", result=None, error=None):
     return calls
 
 
-def done(code, stdout=""):
-    return types.SimpleNamespace(returncode=code, stdout=stdout, stderr="")
+def done(code, stdout="", stderr=""):
+    return types.SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
 
 
 def test_task_record_runs_the_builders_argv_and_parses_the_output(tmp_path, monkeypatch):
@@ -1007,6 +1007,30 @@ def test_upsert_row_is_true_and_repeating_it_issues_the_same_argv(tmp_path, monk
     row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
     assert (run_store.upsert_row(tmp_path, row), run_store.upsert_row(tmp_path, row)) == (True, True)
     assert calls[0] == calls[1] == run_store._queue_upsert_argv("/h/python", "sqlite:///s.db", row)
+
+
+def test_upsert_row_detail_is_empty_when_the_store_took_the_row(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0))
+    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
+    assert run_store.upsert_row_detail(tmp_path, row) == ""
+
+
+def test_upsert_row_detail_is_the_last_stderr_line_when_the_store_refuses(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1, stderr="Traceback (most recent call last):\nModuleNotFoundError: No module named 'harness'\n"))
+    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
+    assert run_store.upsert_row_detail(tmp_path, row) == "ModuleNotFoundError: No module named 'harness'"
+
+
+def test_upsert_row_detail_names_the_exit_code_when_the_store_fails_silently(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1))
+    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
+    assert run_store.upsert_row_detail(tmp_path, row) == "exit 1"
+
+
+def test_upsert_row_detail_names_a_missing_harness_python(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, python=None)
+    row = {"initiative": "i1", "task_id": "t1", "state": "todo"}
+    assert run_store.upsert_row_detail(tmp_path, row) == "harness python not found"
 
 
 def test_claim_row_returns_the_claim_of_a_free_row(tmp_path, monkeypatch):

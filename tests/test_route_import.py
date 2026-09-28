@@ -72,11 +72,11 @@ def _fake_store(monkeypatch):
     written: dict[tuple, dict] = {}
     monkeypatch.setattr("agent_tools.cli.run_store.read_queue", lambda *_a, **_k: list(written.values()))
 
-    def upsert(_runs_dir, row):
+    def upsert_detail(_runs_dir, row):
         written[(row["initiative"], row["task_id"])] = row  # run_store's upsert contract: keyed (initiative, task_id)
-        return True
+        return ""
 
-    monkeypatch.setattr("agent_tools.cli.run_store.upsert_row", upsert)
+    monkeypatch.setattr("agent_tools.cli.run_store.upsert_row_detail", upsert_detail)
     return written
 
 
@@ -121,14 +121,35 @@ def test_edge_exits_2_and_reports_the_partial_count_when_the_store_refuses(tmp_p
     monkeypatch.setattr("agent_tools.cli.run_store.read_queue", lambda *_a, **_k: [])
     calls = []
 
-    def upsert(_runs_dir, row):
+    def upsert_detail(_runs_dir, row):
         calls.append(row)
-        return len(calls) == 1
+        return "" if len(calls) == 1 else "no module named harness.store_queue"
 
-    monkeypatch.setattr("agent_tools.cli.run_store.upsert_row", upsert)
+    monkeypatch.setattr("agent_tools.cli.run_store.upsert_row_detail", upsert_detail)
 
     rc = main(["route", "import", "--workspace", str(ws)])
     out = capsys.readouterr().out.strip()
 
     assert rc == 2
-    assert out == "written 1, unchanged 0, skipped 0"
+    assert out.splitlines()[-1] == "written 1, unchanged 0, skipped 0"
+
+
+def test_edge_prints_the_failing_rows_key_and_the_store_detail_before_the_summary(tmp_path, monkeypatch, capsys):
+    ws = _workspace(tmp_path)
+    monkeypatch.setattr("agent_tools.cli.run_store.read_queue", lambda *_a, **_k: [])
+    calls = []
+
+    def upsert_detail(_runs_dir, row):
+        calls.append(row)
+        return "" if len(calls) == 1 else "No module named harness.store_queue"
+
+    monkeypatch.setattr("agent_tools.cli.run_store.upsert_row_detail", upsert_detail)
+
+    rc = main(["route", "import", "--workspace", str(ws)])
+    lines = capsys.readouterr().out.strip().splitlines()
+    failing = calls[1]
+
+    key = f"{failing['initiative']}/{failing['task_id']}"
+    assert rc == 2
+    assert lines[0] == f"route import: store refused {key}: No module named harness.store_queue"
+    assert lines[1] == "written 1, unchanged 0, skipped 0"

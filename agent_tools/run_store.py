@@ -1024,6 +1024,18 @@ def upsert_row(runs_dir: Path, row: Mapping[str, Any]) -> bool:
     return done is not None and done.returncode == 0
 
 
+def upsert_row_detail(runs_dir: Path, row: Mapping[str, Any]) -> str:
+    """Edge: "" only when the store took the row; otherwise a non-empty reason: the command's last
+    line of stderr, `exit N` when it failed silently, or "harness python not found"."""
+    done = _queue_run(runs_dir, lambda python, url: _queue_upsert_argv(python, url, row))
+    if done is None:
+        return "harness python not found"
+    if done.returncode == 0:
+        return ""
+    lines = done.stderr.strip().splitlines()
+    return lines[-1] if lines else f"exit {done.returncode}"
+
+
 def release_row(runs_dir: Path, initiative: str, task_id: str, holder: str) -> bool:
     """Edge: True when the claim was cleared, False when `holder` did not hold it or the store could not say."""
     done = _queue_run(runs_dir, lambda python, url: _queue_release_argv(python, url, initiative, task_id, holder))
