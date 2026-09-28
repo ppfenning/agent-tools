@@ -24,12 +24,17 @@ def test_a_host_with_a_blank_beat_at_is_stale():
 
 def test_a_lane_on_a_stale_host_with_no_exit_record_is_lost():
     lane = run_store.Lane("i-2", "h", "2026-09-27T10:00:00Z", "2026-09-27T11:00:00Z")
-    assert lost_runs_of([lane], {"h"}, {}) == {"i": "i-2"}
+    assert lost_runs_of([lane], {"h"}, {}, NOW) == {"i": "i-2"}
 
 
 def test_the_same_lane_is_not_lost_once_its_run_is_exited():
     lane = run_store.Lane("i-2", "h", "2026-09-27T10:00:00Z", "2026-09-27T11:00:00Z")
-    assert lost_runs_of([lane], {"h"}, {"i-2": True}) == {}
+    assert lost_runs_of([lane], {"h"}, {"i-2": True}, NOW) == {}
+
+
+def test_a_lane_on_a_stale_host_that_renewed_its_lease_two_minutes_ago_is_not_lost():
+    lane = run_store.Lane("i-2", "h", "2026-09-27T10:00:00Z", "2026-09-27T11:58:00Z")
+    assert lost_runs_of([lane], {"h"}, {}, NOW) == {}
 
 
 def test_edge_keys_exits_by_run_and_reports_only_the_unexited_lane_on_the_stale_host(tmp_path):
