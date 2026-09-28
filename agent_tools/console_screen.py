@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
 from agent_tools import chair, chair_read_stale, console_plan, draft_list, run_store
@@ -82,11 +82,33 @@ def gather(runs_dir: Path, work_dir: Path, now: str) -> dict[str, list]:
     }
 
 
-def _draft_line(row) -> str:
+def _age(seconds: float) -> str:
+    """`Ns`/`Nm`/`Nh`/`Nd` for a non-negative age in seconds, coarsest unit that is at least 1."""
+    whole = max(int(seconds), 0)
+    if whole < 60:
+        return f"{whole}s"
+    if whole < 3600:
+        return f"{whole // 60}m"
+    if whole < 86400:
+        return f"{whole // 3600}h"
+    return f"{whole // 86400}d"
+
+
+def _clock_and_age(ts: object, now: datetime, tz: tzinfo) -> str:
+    """`ts` (a stored UTC timestamp) as local clock time plus age against `now`, e.g. `8:50 AM  2m ago`;
+    `?` when `ts` does not parse as a timestamp."""
+    parsed = _parse_iso(ts)
+    if parsed is None:
+        return "?"
+    clock = parsed.astimezone(tz).strftime("%I:%M %p").lstrip("0")
+    return f"{clock}  {_age((now - parsed).total_seconds())} ago"
+
+
+def _draft_line(row, now: datetime, tz: tzinfo) -> str:
     return f"{row.id}  {row.proposed_by}  {draft_list.format_age(row.age_seconds)}"
 
 
-def _host_line(row: dict) -> str:
+def _host_line(row: dict, now: datetime, tz: tzinfo) -> str:
     versions = row.get("versions_json")
     if isinstance(versions, str):
         try:
@@ -94,20 +116,22 @@ def _host_line(row: dict) -> str:
         except ValueError:
             versions = {}
     login = {True: "login ok", False: "login lapsed"}.get((versions or {}).get("login_ok"), "login ?")
-    return f"{row.get('name')}  {row.get('state')}  cap={row.get('capacity')}  beat={row.get('beat_at') or 'never'}  {login}"
+    beat = row.get("beat_at")
+    beat_text = _clock_and_age(beat, now, tz) if beat else "never"
+    return f"{row.get('name')}  {row.get('state')}  cap={row.get('capacity')}  beat={beat_text}  {login}"
 
 
-def _lane_line(row) -> str:
-    return f"{row.run}  {row.host or '-'}  beat={row.heartbeat_at}"
+def _lane_line(row, now: datetime, tz: tzinfo) -> str:
+    return f"{row.run}  {row.host or '-'}  beat={_clock_and_age(row.heartbeat_at, now, tz)}"
 
 
-def _chair_line(row: dict) -> str:
+def _chair_line(row: dict, now: datetime, tz: tzinfo) -> str:
     return f"{row.get('session')}  {row.get('host')}  pid={row.get('pid')}"
 
 
-def _needs_chair_line(row: dict) -> str:
+def _needs_chair_line(row: dict, now: datetime, tz: tzinfo) -> str:
     initiative, cause = _needs_chair_key(row)
-    return f"{initiative}  {cause}  {row.get('ts')}"
+    return f"{initiative}  {cause}  {_clock_and_age(row.get('ts'), now, tz)}"
 
 
 _ITEM_LINE = {
@@ -119,10 +143,10 @@ _ITEM_LINE = {
 }
 
 
-def render(sections: dict, selected: int, width: int) -> list[str]:
+def render(sections: dict, selected: int, width: int, now: datetime, tz: tzinfo) -> list[str]:
     """Pure. A header per section then one line per item; `>` marks the selected item among the selectable
     sections (drafts, hosts, lanes, chair, in that order); `needs_chair` rows are shown but never selectable.
-    Every line is cut to `width`."""
+    Every line is cut to `width`; timestamps show as clock time in `tz` plus age against `now`."""
     lines: list[str] = []
     index = 0
     for name in _SECTION_ORDER:
@@ -130,7 +154,7 @@ def render(sections: dict, selected: int, width: int) -> list[str]:
         selectable = name in _SELECTABLE_SECTIONS
         for row in sections.get(name, []):
             marker = "> " if selectable and index == selected else "  "
-            lines.append((marker + _ITEM_LINE[name](row))[:width])
+            lines.append((marker + _ITEM_LINE[name](row, now, tz))[:width])
             if selectable:
                 index += 1
     return lines
@@ -162,12 +186,12 @@ def _last_line(text: str) -> str | None:
     return lines[-1] if lines else None
 
 
-def _draw(stdscr, sections: dict, selected: int, message: str | None) -> None:
+def _draw(stdscr, sections: dict, selected: int, message: str | None, now: datetime, tz: tzinfo) -> None:
     import curses
 
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    lines = render(sections, selected, width)
+    lines = render(sections, selected, width, now, tz)
     if message is not None:
         lines = [*lines, message[:width]]
     for row_i, line in enumerate(lines[:height]):
@@ -207,10 +231,12 @@ def loop(stdscr, runs_dir: Path, work_dir: Path, interval: float) -> int:
     selected = 0
     message: str | None = None
     while True:
-        sections = gather(runs_dir, work_dir, datetime.now(UTC).isoformat())
+        now = datetime.now(UTC)
+        tz = now.astimezone().tzinfo
+        sections = gather(runs_dir, work_dir, now.isoformat())
         total = len(_selectable_rows(sections))
         selected = min(selected, total - 1) if total else 0
-        _draw(stdscr, sections, selected, message)
+        _draw(stdscr, sections, selected, message, now, tz)
         message = None
         ch = stdscr.getch()
         if ch in (ord("q"), ord("Q")):

@@ -4456,9 +4456,10 @@ def _versions(a: argparse.Namespace) -> int:
 
 def _console(a: argparse.Namespace) -> int:
     if a.once or not sys.stdin.isatty():
-        now = datetime.datetime.now(datetime.UTC).isoformat()
-        sections = console_screen.gather(Path(a.runs_dir), Path(a.work_dir), now)
-        print("\n".join(console_screen.render(sections, -1, 120)))
+        now = datetime.datetime.now(datetime.UTC)
+        tz = now.astimezone().tzinfo
+        sections = console_screen.gather(Path(a.runs_dir), Path(a.work_dir), now.isoformat())
+        print("\n".join(console_screen.render(sections, -1, 120, now, tz)))
         return 0
     return console_screen.main(Path(a.runs_dir), Path(a.work_dir), a.interval)
 
