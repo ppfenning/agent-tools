@@ -113,12 +113,13 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
     """None when every item in the phase is landable, else the first reason it
-    is not: every item must be `done` or `dropped`, and every `done` item's
-    task record must be approved (`_approved` returns None)."""
+    is not: every item must be `approved`, `done` or `dropped`, and every
+    `approved` or `done` item's task record must be approved (`_approved`
+    returns None)."""
     for item in items:
         status = item.get("status")
-        if status not in ("done", "dropped"):
-            return f"{item.get('id')} is {status!r}, not done or dropped"
+        if status not in ("approved", "done", "dropped"):
+            return f"{item.get('id')} is {status!r}, not approved, done or dropped"
         if status == "dropped":
             continue
         record = records.get(item.get("id"))
