@@ -91,7 +91,8 @@ def plan_stale_draft(
     stale = set(stale_task_ids)
     updates = {
         "draft": "true",
-        "proposer": _scalar(f"chair (stale since {since}: {reason})"),
+        "proposed_by": _scalar(f"chair (stale since {since}: {reason})"),
+        "proposed_at": _scalar(now),
         "stale_tasks": _sequence(stale_task_ids),
     }
     tickets = {

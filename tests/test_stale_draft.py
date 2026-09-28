@@ -21,7 +21,7 @@ def test_blocked_and_approved_stale_tickets_become_todo_and_initiative_gains_fro
     plan = plan_stale_draft(initiative(), tickets, ["a", "b"], REASON, SINCE, NOW)
     assert plan == Plan(
         initiative_text=HEAD
-        + f'draft: true\nproposer: "chair (stale since {SINCE}: {REASON})"\nstale_tasks: [a, b]\n---\nProse.\n',
+        + f'draft: true\nproposed_by: "chair (stale since {SINCE}: {REASON})"\nproposed_at: "{NOW}"\nstale_tasks: [a, b]\n---\nProse.\n',
         tickets={"a": ticket("a", "todo"), "b": ticket("b", "todo")},
     )
 

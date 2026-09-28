@@ -18,6 +18,11 @@ def test_string_true_from_the_route_parser_is_a_draft():
     assert [r.id for r in list_drafts([{"id": "a", "draft": "true"}, {"id": "b", "draft": "false"}], NOW)] == ["a"]
 
 
+def test_a_draft_that_names_its_proposer_under_the_old_key_still_shows_it():
+    rows = list_drafts([{"id": "a", "draft": True, "proposer": "chair (stale)"}], "2026-09-28T12:00:00Z")
+    assert rows[0].proposed_by == "chair (stale)"
+
+
 def test_oldest_first_then_id_with_undated_last():
     fms = [
         {"id": "new", "draft": True, "proposed_at": "2026-09-26T11:00:00Z"},

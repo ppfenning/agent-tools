@@ -44,7 +44,7 @@ def list_drafts(frontmatters: Sequence[Mapping], now: str) -> list[DraftRow]:
     rows = [
         DraftRow(
             id=str(fm.get("id", "")),
-            proposed_by=str(fm.get("proposed_by") or "unknown"),
+            proposed_by=str(fm.get("proposed_by") or fm.get("proposer") or "unknown"),  # `proposer`: stale drafts written before 2026-09-28
             age_seconds=_age_seconds(fm.get("proposed_at"), now),
         )
         for fm in frontmatters
