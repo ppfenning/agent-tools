@@ -1,5 +1,6 @@
 from agent_tools import run_store
 from agent_tools.chair_read_quarantined import (
+    RUNAWAY_CAUSE,
     attempts_on_current_body,
     body_sha,
     quarantined_from_rows,
@@ -77,3 +78,15 @@ def test_a_quarantined_row_gives_its_fact_with_body_sha_and_cause_from_the_newes
 
 def test_a_row_in_any_other_state_gives_no_fact():
     assert quarantined_from_rows([{**ROW, "state": "ready"}]) == []
+
+
+def test_a_runaway_ceiling_reason_classifies_as_the_runaway_cause():
+    runaway_row = {
+        **ROW,
+        "extra": {"attempts": [{**ROW["extra"]["attempts"][0], "cause": "runaway ceiling $6.00 reached"}]},
+    }
+    assert quarantined_from_rows([runaway_row])[0]["cause"] == RUNAWAY_CAUSE
+
+
+def test_an_ordinary_reason_keeps_its_existing_cause():
+    assert quarantined_from_rows([ROW])[0]["cause"] == "harness"

@@ -10,6 +10,7 @@ from agent_tools import route, run_store
 from agent_tools.stats_chair import frontmatter_item
 
 OPEN_STATES = ("ready", "blocked")
+RUNAWAY_CAUSE = "runaway"
 
 Row = dict[str, str]
 Attempt = Mapping[str, object]
@@ -55,6 +56,12 @@ def quarantined_rows(items: Iterable[Item]) -> list[Row]:
     return rows
 
 
+def _classify_cause(cause: str) -> str:
+    """The fact's cause for an attempt's raw cause text: `RUNAWAY_CAUSE` when it names a runaway-ceiling
+    stop, ahead of every other rule; the text unchanged otherwise."""
+    return RUNAWAY_CAUSE if "runaway ceiling" in cause else cause
+
+
 def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
     """Quarantine facts for rows whose `state` is "quarantined": one row per queue row, in input order.
 
@@ -77,7 +84,7 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
                 "task": str(row.get("task_id") or ""),
                 "run": str(newest.get("run") or ""),
                 "body_sha": body_sha(body),
-                "cause": str(newest.get("cause") or ""),
+                "cause": _classify_cause(str(newest.get("cause") or "")),
             }
         )
     return facts
