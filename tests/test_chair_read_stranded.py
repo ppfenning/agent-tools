@@ -49,6 +49,21 @@ def test_read_stranded_keeps_the_five_key_row_for_a_live_present_repo():
     assert read_stranded(records, items, lambda repo: True) == [
         {"run": "r1", "task": "r1", "phase": "p1", "branch": "b1", "remedy": "cox runs land r1 --task r1 --repo /here"},
     ]
+
+
+def test_read_stranded_drops_a_row_whose_branch_the_predicate_reports_present():
+    records = [{**_stranded_record("r1", "/here"), "branch": "epic/acme/p1"}]
+    items = [_stranded_item("r1")]
+    assert read_stranded(records, items, lambda repo: True, lambda repo, branch: True) == []
+
+
+def test_read_stranded_keeps_a_row_whose_branch_the_predicate_reports_gone():
+    records = [{**_stranded_record("r1", "/here"), "branch": "epic/acme/p1"}]
+    items = [_stranded_item("r1")]
+    assert read_stranded(records, items, lambda repo: True, lambda repo, branch: False) == [
+        {"run": "r1", "task": "r1", "phase": "p1", "branch": "epic/acme/p1",
+         "remedy": "cox runs land r1 --task r1 --repo /here"},
+    ]
 def _record(**over):
     base = {
         "run": "r1", "task": "t1", "phase": "p1", "branch": "b1",

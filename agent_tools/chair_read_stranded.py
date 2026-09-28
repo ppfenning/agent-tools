@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Callable
 
 from agent_tools import runs_stranded
@@ -15,13 +16,22 @@ def keep_stranded_keys(rows: list[dict]) -> list[dict]:
     return [{k: row.get(k) for k in KEYS} for row in rows]
 
 
+def _branch_exists(repo: str, branch: str) -> bool:
+    """A real, git-backed check: whether `branch` is present as a local branch of `repo`."""
+    r = subprocess.run(["git", "-C", repo, "branch", "--list", branch], capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
 def read_stranded(records: list[dict], items: list[dict],
-                   repo_exists: Callable[[str], bool] = os.path.isdir) -> list[dict]:
+                   repo_exists: Callable[[str], bool] = os.path.isdir,
+                   branch_exists: Callable[[str, str], bool] = _branch_exists) -> list[dict]:
     """Edge. `records` and `items` come from the caller: their loaders live in
     cli.py, which this module does not import. `repo_exists` defaults to a
     real directory check so a dropped item or a vanished repository never
-    reaches the chair planner as needs_chair; tests inject a fake."""
-    return keep_stranded_keys(runs_stranded.stranded(records, items, repo_exists))
+    reaches the chair planner as needs_chair; `branch_exists` defaults to a
+    real git check so a task on a still-carried phase branch stops reaching
+    the chair as a stranded quarantine; tests inject fakes for both."""
+    return keep_stranded_keys(runs_stranded.stranded(records, items, repo_exists, branch_exists))
 
 
 def read_missing_repos(records: list[dict], items: list[dict],
