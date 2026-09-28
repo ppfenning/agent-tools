@@ -104,8 +104,15 @@ def _age(beat_at: object, now: datetime.datetime) -> str:
     return f"{seconds // 3600}h ago" if seconds < 86400 else f"{seconds // 86400}d ago"
 
 
-def host_line(row: Row, now: datetime.datetime) -> str:
-    return f"{row['name']}  {row['state']}  cap {row['capacity']}  beat {_age(row.get('beat_at'), now)}  login {_login(row)}"
+def _display_state(row: Row, live_by_host: Mapping[str, int]) -> str:
+    """`draining` with no live lane reads `drained`; every other state is the row's own."""
+    state = str(row["state"])
+    return "drained" if state == "draining" and live_by_host.get(str(row["name"]), 0) == 0 else state
+
+
+def host_line(row: Row, now: datetime.datetime, live_by_host: Mapping[str, int] | None = None) -> str:
+    state = _display_state(row, live_by_host or {})
+    return f"{row['name']}  {state}  cap {row['capacity']}  beat {_age(row.get('beat_at'), now)}  login {_login(row)}"
 
 
 def doctor_line(row: Row | None, now: datetime.datetime) -> str:
@@ -116,8 +123,8 @@ def doctor_line(row: Row | None, now: datetime.datetime) -> str:
     return f"table: {row['state']}  beat {_age(row.get('beat_at'), now)}  login_ok {json.dumps(_versions(row).get('login_ok'))}  workspace {workspace}"
 
 
-def format_host_list(rows: Sequence[Row], now: datetime.datetime) -> list[str]:
-    return [host_line(r, now) for r in rows]
+def format_host_list(rows: Sequence[Row], now: datetime.datetime, live_by_host: Mapping[str, int] | None = None) -> list[str]:
+    return [host_line(r, now, live_by_host) for r in rows]
 
 
 def add_argv(name: str, ssh: str, capacity: int, by: str) -> list[str]:

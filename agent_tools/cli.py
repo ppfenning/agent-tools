@@ -5654,6 +5654,13 @@ def _dispatch_counts(lanes: Sequence[run_store.Lane], local: str, listed: Sequen
     return {"": pidfile_live + sum(n for name, n in by_host.items() if name not in listed), **{name: by_host.get(name, 0) for name in listed}}
 
 
+def _live_by_host_name(lanes: Sequence[run_store.Lane], local: str) -> dict[str, int]:
+    """Live lanes per hosts-table row name. `_live_by_host` files this machine's lanes under "", but `cox host beat` names
+    this machine's row `local`, so the "" count is re-keyed to `local`. Every live lane counts: the pidfile filter
+    `_dispatch_counts` applies exists only because it adds the pidfile runs back, and a host list adds nothing back."""
+    return {(local if name == "" else name): n for name, n in _live_by_host(lanes, local).items()}
+
+
 def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
     """The record file is beaten only by a live run whose lease renewal came back without a refusal."""
     if dry_run:
@@ -6027,7 +6034,9 @@ def _host_list(a: argparse.Namespace) -> int:
     if rc is not None:
         return rc
     rows = run_store.hosts(runs_dir)
-    print("\n".join(host_cmd.format_host_list(rows, datetime.datetime.now(datetime.UTC))) if rows else "no hosts")
+    live_by_host = _live_by_host_name(run_store.live_lanes(runs_dir, _now_iso()), socket.gethostname())
+    lines = host_cmd.format_host_list(rows, datetime.datetime.now(datetime.UTC), live_by_host)
+    print("\n".join(lines) if rows else "no hosts")
     return 0
 
 
