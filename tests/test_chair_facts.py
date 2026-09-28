@@ -95,6 +95,21 @@ def test_a_housekeeping_hours_callable_returning_6_gives_6_point_0():
     assert gather_facts(deps, NOW)["housekeeping_hours"] == 6.0
 
 
+def test_a_fake_stale_candidates_callable_returning_two_rows_gives_facts_holding_them_unchanged():
+    rows = [{"initiative": "i", "task_id": "a"}, {"initiative": "i", "task_id": "b"}]
+    deps = replace(_deps(), stale_candidates=lambda now: rows)
+    assert gather_facts(deps, NOW)["stale_candidates"] == rows
+
+
+def test_a_stale_days_callable_returning_10_gives_stale_days_10():
+    deps = replace(_deps(), stale_days=lambda: 10)
+    assert gather_facts(deps, NOW)["stale_days"] == 10
+
+
+def test_an_absent_stale_days_callable_gives_7():
+    assert gather_facts(_deps(), NOW)["stale_days"] == 7
+
+
 def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
     limits = gather_facts(_deps(weekly_spent=85.0), NOW)["limits"]
     assert limits == {

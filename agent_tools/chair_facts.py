@@ -64,6 +64,10 @@ class FactsDeps:
         Optional, and absent means no history, i.e. housekeeping is due.
     housekeeping_hours: the raw profile value at `chair.housekeeping_hours`, resolved by `resolve_housekeeping_hours`.
         Optional, and absent means 24 hours.
+    stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
+        absent means 7 days.
+    stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
+        `chair_read_stale.read_stale_candidates`. Optional, and absent means no candidates.
     queue: `run_store.read_queue`'s rows for this tick, read once and fed to `chair_read_docket.docket_from_rows`,
         `chair_read_intake.intake_from_rows`, `chair_read_quarantined.quarantined_from_rows` and
         `stranded_records`-paired `chair_read_stranded.stranded_from_rows` to build ready, intake, quarantined and
@@ -103,6 +107,8 @@ class FactsDeps:
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
+    stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
+    stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -299,7 +305,7 @@ def intake_paths_from_rows(rows: Sequence[Row]) -> list[str]:
 
 
 DEFAULT_HOUSEKEEPING_HOURS = 24.0
-DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default; no source gathers stale_candidates or resolves the profile yet
+DEFAULT_STALE_DAYS = 7  # chair.stale_days profile default
 
 
 def resolve_housekeeping_hours(value: object) -> float:
@@ -309,6 +315,14 @@ def resolve_housekeeping_hours(value: object) -> float:
     except (TypeError, ValueError):
         return DEFAULT_HOUSEKEEPING_HOURS
     return hours if hours > 0 else DEFAULT_HOUSEKEEPING_HOURS
+
+
+def resolve_stale_days(value: object) -> int:
+    """The profile's raw `chair.stale_days`, or 7 when it is missing or non-numeric."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_STALE_DAYS
 
 
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
@@ -353,7 +367,6 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
         if deps.housekeeping_hours is not None
         else DEFAULT_HOUSEKEEPING_HOURS,
-        # No source gathers stale candidates or resolves chair.stale_days yet: a later task wires both from real evidence.
-        "stale_candidates": [],
-        "stale_days": DEFAULT_STALE_DAYS,
+        "stale_candidates": list(deps.stale_candidates(now)) if deps.stale_candidates is not None else [],
+        "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
     }
