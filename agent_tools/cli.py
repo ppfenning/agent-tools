@@ -56,6 +56,7 @@ from agent_tools import (
     chair_service,
     cleanup,
     commands,
+    console_screen,
     courier,
     doctor,
     draft_apply,
@@ -4376,6 +4377,15 @@ def _versions(a: argparse.Namespace) -> int:
     return 0
 
 
+def _console(a: argparse.Namespace) -> int:
+    if a.once or not sys.stdin.isatty():
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        sections = console_screen.gather(Path(a.runs_dir), Path(a.work_dir), now)
+        print("\n".join(console_screen.render(sections, -1, 120)))
+        return 0
+    return console_screen.main(Path(a.runs_dir), Path(a.work_dir), a.interval)
+
+
 def _home(a: argparse.Namespace) -> int:
     from agent_tools import home_screen
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
@@ -4616,6 +4626,18 @@ RUNS_COMMANDS = [
 VERSIONS_GROUP = commands.Group(
     name="versions", help="component versions against the manifest", description="", epilog="",
     args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
+)
+
+CONSOLE_GROUP = commands.Group(
+    name="console", help="one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n",
+    description="", epilog="",
+    args=(
+        commands.Arg(("--runs-dir",), {"default": "runs"}),
+        commands.Arg(("--work-dir",), {"default": "."}),
+        commands.Arg(("--interval",), {"type": float, "default": 5}),
+        commands.Arg(("--once",), {"action": "store_true"}),
+    ),
+    fn=_console,
 )
 
 INSTALL_GROUP = commands.Group(
@@ -5170,6 +5192,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("versions")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("console")
     commands.build_parser(rows, [group], sub)
 
     dev = sub.add_parser("dev", help="moved: maintainer commands now run from the coxswain checkout",
@@ -6192,6 +6217,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
+    (CONSOLE_GROUP, []),
     (INSTALL_GROUP, []),
     (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
