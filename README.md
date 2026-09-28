@@ -113,7 +113,7 @@ cox route launch rescue [--profile PROFILE] --initiative INITIATIVE --task TASK 
 cox route launch cos [--profile PROFILE] [--dry-run] [--tier-ceiling cheap|standard|deep] [--effort-ceiling low|high] [--force] [--no-claim] [--label LABEL]   launch the cos graph
 cox route launch sweep --idea IDEA --initiative-id INITIATIVE_ID [--label LABEL] [--dry-run]   launch the sweep graph against an idea
 cox chair run [--once] [--interval INTERVAL] [--dry-run] [--label LABEL] [--profile PROFILE]   beat, gather, plan, perform and report every tick until interrupted
-cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]   write or show the systemd user unit that keeps `cox chair run` alive
+cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST] [--apply]   write or show the systemd user unit that keeps `cox chair run` alive
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish

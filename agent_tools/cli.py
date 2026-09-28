@@ -54,6 +54,7 @@ from agent_tools import (
     chair_report,
     chair_run,
     chair_service,
+    chair_service_host,
     cleanup,
     commands,
     console_screen,
@@ -5954,9 +5955,60 @@ def _chair_service_install(a: argparse.Namespace, path: Path) -> int:
     return 0
 
 
+def _chair_service_host_steps(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> list | int:
+    """The install steps for `a.host`, or an exit code after printing why there are none."""
+    row = next((r for r in run_store.hosts(runs_dir) if r["name"] == a.host), None)
+    if row is None:
+        print(f"unknown host: {a.host}")
+        return 2
+    root = str(Path(profile["workspace_dir"]).expanduser().parent)
+    workspace_remote = _origin_url(str(Path(profile["workspace_dir"]).expanduser())) or ""
+    return chair_service_host.install_steps(
+        str(row["ssh"]), root, _chair_service_host_repos(profile), workspace_remote, _holder_label(a),
+    )
+
+
+def _chair_service_host_print(steps: list) -> int:
+    for argv, run in steps:
+        line = shlex.join(argv)
+        print(line if run else f"{line}  # run by hand")
+    return 0
+
+
+def _chair_service_host_apply(steps: list) -> int:
+    """Runs the runnable steps in order; stops at the first non-zero exit and prints its output, then
+    prints every step still left (runnable or not) as a line for a person to run by hand."""
+    for i, (argv, run) in enumerate(steps):
+        if not run:
+            print(f"{shlex.join(argv)}  # run by hand")
+            continue
+        done = subprocess.run(argv, capture_output=True, text=True)
+        if done.returncode != 0:
+            print((done.stdout + done.stderr).strip())
+            for left_argv, _left_run in steps[i + 1 :]:
+                print(f"{shlex.join(left_argv)}  # run by hand")
+            return done.returncode
+    return 0
+
+
+def _chair_service_host_install(a: argparse.Namespace, profile: Mapping, runs_dir: Path) -> int:
+    steps = _chair_service_host_steps(a, profile, runs_dir)
+    if isinstance(steps, int):
+        return steps
+    if not getattr(a, "apply", False):
+        return _chair_service_host_print(steps)
+    return _chair_service_host_apply(steps)
+
+
 def _chair_service(a: argparse.Namespace) -> int:
     """Edge for the unit text in `chair_service`. Never runs systemctl; `--install` wins when both flags are given."""
     path = chair_service.unit_path(Path.home())
+    host = getattr(a, "host", None)
+    if a.install and host:
+        profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
+        if refuse_rc is not None:
+            return refuse_rc
+        return _chair_service_host_install(a, profile, runs_dir)
     if a.install:
         return _chair_service_install(a, path)
     if a.status:
@@ -6003,6 +6055,8 @@ CHAIR_COMMANDS = [
             commands.Arg(("--interval",), {"type": int, "default": 60, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--environment-file",), {"help": "env file the unit loads (default: ~/.config/agent-tools/garage.env when it exists)"}),
             commands.Arg(("--profile",), {"help": "the routing profile naming workspace_dir, pinned in the unit's ExecStart (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
+            commands.Arg(("--host",), {"help": "a hosts-table name: install or report on that lane host over ssh"}),
+            commands.Arg(("--apply",), {"action": "store_true", "help": "with --install --host, run the steps instead of printing them"}),
         ),
         _chair_service, False, (),
         description=(
@@ -6119,6 +6173,18 @@ def _host_repos(profile: Mapping) -> list[str]:
     """Edge: the harness, cartridges and tools checkouts, the three paths the chair itself runs from."""
     harness = str(Path(profile["harness_dir"]).expanduser()) if profile.get("harness_dir") else ""
     return [p for p in (harness, _cartridges_checkout(profile), str(Path(__file__).resolve().parents[1])) if p]
+
+
+def _origin_url(path: str) -> str | None:
+    """Edge: `git -C path remote get-url origin`, or None when there is no such remote or no checkout there."""
+    done = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def _chair_service_host_repos(profile: Mapping) -> dict[str, str]:
+    """Edge: `{checkout name: origin url}` for each sibling checkout `_host_repos` names, skipping any with no origin."""
+    urls = {Path(p).name: _origin_url(p) for p in _host_repos(profile)}
+    return {name: url for name, url in urls.items() if url is not None}
 
 
 def _package_version() -> str | None:

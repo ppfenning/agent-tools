@@ -1,5 +1,6 @@
 usage: cox chair service [-h] [--install] [--status] [--label LABEL] [--interval INTERVAL]
-                         [--environment-file ENVIRONMENT_FILE] [--profile PROFILE]
+                         [--environment-file ENVIRONMENT_FILE] [--profile PROFILE] [--host HOST]
+                         [--apply]
 
 --install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.
 It does not run systemctl.
@@ -16,3 +17,5 @@ options:
                         exists)
   --profile PROFILE     the routing profile naming workspace_dir, pinned in the unit's ExecStart
                         (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)
+  --host HOST           a hosts-table name: install or report on that lane host over ssh
+  --apply               with --install --host, run the steps instead of printing them
