@@ -524,6 +524,10 @@ def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_non
     assert taken == [("chair-loop", 42, "omarchy")]
 
 
+def test_a_command_past_its_timeout_is_exit_124_not_an_exception() -> None:
+    assert run_argv(["sleep", "5"], timeout=0.2)[0] == 124
+
+
 def test_an_intake_with_an_id_yields_that_id() -> None:
     assert decompose_id("intake/x.md", "alpha") == "alpha"
 
