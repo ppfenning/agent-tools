@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
+from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_types import EASTERN, Action, Facts
 from agent_tools.notify import Notification
 
@@ -53,7 +54,13 @@ def _target(action: Action) -> str:
 
 
 def needs_chair_items(actions: Sequence[Action]) -> list[str]:
-    return [f"{_scope(a)}:{a.get('cause', '?')}" for a in actions if a.get("kind") == "needs_chair"]
+    """Runaway-ceiling entries first, each bare (`RUNAWAY <scope>`); the rest keep `needs chair: <scope>:<cause>`."""
+    chair_actions = [a for a in actions if a.get("kind") == "needs_chair"]
+    runaway = [a for a in chair_actions if a.get("cause") == RUNAWAY_CAUSE]
+    rest = [a for a in chair_actions if a.get("cause") != RUNAWAY_CAUSE]
+    return [f"RUNAWAY {_scope(a)}" for a in runaway] + [
+        f"needs chair: {_scope(a)}:{a.get('cause', '?')}" for a in rest
+    ]
 
 
 def _launched_item(action: Action) -> str:
@@ -151,7 +158,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
-        f"needs chair: {', '.join(needs)}" if needs else "needs chair: none",
+        ", ".join(needs) if needs else "needs chair: none",
         *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),
     ]
     return " | ".join(parts)
