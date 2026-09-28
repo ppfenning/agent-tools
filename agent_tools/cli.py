@@ -5717,9 +5717,22 @@ def _chair_run_deps(
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             with chair.locked(runs_dir):
-                moved, _ = chair.beat(chair.read(runs_dir), session, pid, host, now())
-                if moved is not None:
-                    chair.write(runs_dir, moved)
+                record = chair.read(runs_dir)
+                moved, _ = chair.beat(record, session, pid, host, now())
+                # `renew_lease` returning no refusal already proves this session, pid and host
+                # hold the store lease -- including right after a take_lease reclaim, which
+                # rewrites only the lease sidecar (agent_tools/chair_exec.py `_lease`) and never
+                # chair.json. `chair.beat` then refuses on a record that still names the prior
+                # holder, so `moved` reads None though the lease is genuinely ours; adopt the
+                # record here rather than leave heartbeat_at frozen behind a lease we hold.
+                if moved is None:
+                    stamp = now().isoformat()
+                    moved = {
+                        "session": session, "pid": pid, "host": host,
+                        "taken_at": stamp, "heartbeat_at": stamp,
+                        "runs": [], "claude_session": chair.claude_session_from_env(os.environ),
+                    }
+                chair.write(runs_dir, moved)
         return lost
 
     def live_initiatives() -> list[str]:
