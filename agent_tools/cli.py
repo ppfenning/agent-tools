@@ -1202,7 +1202,30 @@ def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | 
         r.setdefault("run", run_id); r.setdefault("task", p.stem); r.setdefault("phase", phase)
         task_records.append(r)
         task_paths[r["task"]] = str(p)
+    for p in _land_phase_fallback_paths(runs_dir, run_id, phase):
+        if p.stem in task_paths:
+            continue
+        r = json.loads(p.read_text(encoding="utf-8"))
+        task_records.append(r)
+        task_paths[p.stem] = str(p)
     return phase_record, task_records, task_paths, str(phase_path)
+
+
+def _land_phase_fallback_paths(runs_dir: Path, run_id: str, phase: str) -> list[Path]:
+    """Every earlier run of `run_id`'s own initiative that carries a `tasks/<phase>/` directory,
+    newest first, so the caller's own-run-wins, newest-earlier-run-wins search order falls out of
+    a plain skip-if-already-seen loop over this list."""
+    m = re.search(r"-(\d+)$", run_id)
+    if m is None:
+        return []
+    initiative, own_n = chair_facts.run_initiative(run_id), int(m.group(1))
+    sibling_re = re.compile(rf"{re.escape(initiative)}-(\d+)$")
+    matches = (sibling_re.fullmatch(d.name) for d in runs_dir.iterdir() if d.is_dir()) if runs_dir.is_dir() else []
+    earlier_ns = sorted({int(sm.group(1)) for sm in matches if sm and int(sm.group(1)) < own_n}, reverse=True)
+    paths = []
+    for n in earlier_ns:
+        paths.extend(sorted((runs_dir / f"{initiative}-{n}" / "tasks" / phase).glob("*.json")))
+    return paths
 
 
 def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dict] | None, str]:
