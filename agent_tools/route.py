@@ -647,11 +647,31 @@ def _coupling_problems(items) -> list:
     return problems
 
 
+def _phase_needs_problems(items) -> list:
+    """A `needs` edge between two tickets sharing one `phase` always deadlocks a phase land.
+
+    A `needs` id absent from `items` is skipped. Wrong belief to avoid: that
+    some other rule catches it; `reach` checks paths only, and no rule here
+    checks that a `needs` id names a real ticket.
+    """
+    phase_by_task = {item["task"]: item.get("phase") for item in items if "task" in item}
+    return [
+        Problem(
+            item["task"], "phase_needs",
+            f"{item['task']} needs {other} in the same phase {item.get('phase')!r}",
+            "move it to a later phase that needs this one",
+        )
+        for item in items
+        for other in item.get("needs", [])
+        if other in phase_by_task and phase_by_task[other] == item.get("phase")
+    ]
+
+
 def lint_items(items, repo: str | None, grants) -> list:
     """work-shape.md §3: reach, grant, size, cross_repo and coupling over a decomposed
     DAG's parsed ticket items; no model, no I/O."""
     problems = [p for item in items for p in _item_problems(item, repo, grants)]
-    return problems + _coupling_problems(items)
+    return problems + _coupling_problems(items) + _phase_needs_problems(items)
 
 
 def _ordered_union(lists) -> list:
