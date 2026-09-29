@@ -122,6 +122,7 @@ cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilitie
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish
 cox host activate NAME   make a host a lane host again
+cox host capacity NAME N [--json]   change only a host's capacity, leaving ssh, weight and capabilities as they are
 cox host beat [NAME]   record this machine's versions and claude login in the table
 cox host doctor NAME   the table's line for a host, then its doctor over ssh
 cox host sync NAME   git pull --ff-only in the harness, cartridges and tools checkouts on a host

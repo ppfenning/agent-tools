@@ -6,7 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_tools import chair_facts, chair_run, cli
+from agent_tools import chair_facts, chair_run, cli, host_cmd
 
 # Fields the dataclass carries as plain metadata, not as wired sources: never callable, never unwired.
 _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
@@ -177,6 +177,46 @@ def _hosts_table(runs, *rows) -> None:
     conn.close()
 
 
+def _cartridge(root: Path, name: str, text: str) -> None:
+    (root / name).mkdir()
+    (root / name / "cartridge.yaml").write_text(text, encoding="utf-8")
+
+
+def test_a_missing_local_host_row_is_registered_before_dispatch_with_the_cartridge_cap(tmp_path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    _hosts_table(runs)
+    _cartridge(tmp_path, "pat", "policy:\n  dispatch:\n    max_in_flight: 8\n")
+    profile = {"cartridges_dir": str(tmp_path), "team": "pat"}
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: (calls.append(argv), (0, "{}"))[1]))
+
+    cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    assert calls == [host_cmd.local_host_add_argv("h", 8, "chair")]
+
+
+def test_a_local_host_row_already_present_writes_nothing(tmp_path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    _hosts_table(runs, ("h", "h", 5, "active", BEAT))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: (calls.append(argv), (0, "{}"))[1]))
+
+    cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    assert calls == []
+
+
+def test_a_local_host_row_capacity_is_the_free_lane_cap_not_the_cartridge_max(tmp_path) -> None:
+    runs = tmp_path / "runs"
+    _hosts_table(runs, ("h", "h", 2, "active", BEAT))
+    _cartridge(tmp_path, "pat", "policy:\n  dispatch:\n    max_in_flight: 8\n")
+    profile = {"cartridges_dir": str(tmp_path), "team": "pat"}
+
+    deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+
+    assert deps.facts_deps.docket()["max_in_flight"] == 2  # type: ignore[misc]
+
+
 def test_the_dispatch_facts_name_only_the_active_table_hosts_when_the_table_has_rows(tmp_path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
@@ -206,11 +246,14 @@ def test_the_dispatch_facts_carry_weight_and_capabilities_from_the_hosts_row(tmp
     ]
 
 
-def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_chair_says_why(tmp_path) -> None:
+def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_chair_says_why(tmp_path, monkeypatch) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")
     runs = tmp_path / "runs"
     _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("fresh", "fresh", 4, "active", None))
+    # "h" (this test's local host) carries no row here, so `_chair_run_deps` now tries to register it;
+    # stub the write to succeed so that attempt adds no line to `said`, which asserts an exact list below.
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: (0, "{}")))
     said: list[str] = []
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, said.append, profile, "files")
     assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["jarvis"]  # type: ignore[misc]
