@@ -116,3 +116,19 @@ def test_usage_assess_json_passes_the_profiles_parsed_weekly_reset_to_gather_wee
     assert code == 0
     assert d["verdict"] == "go"
     assert captured["reset"] == cli.usage_window.parse_weekly_reset("Sun 04:00 America/New_York")
+
+
+def test_a_fresh_meter_calibrates_against_the_runs_dir(tmp_path, monkeypatch):
+    import datetime as _dt
+    from pathlib import Path as _Path
+
+    from agent_tools import cli as _cli
+    from agent_tools import usage_meter as _um
+
+    now = _dt.datetime.now(_dt.UTC)
+    entry = _um.MeterEntry(used_percentage=40.0, resets_at=now + _dt.timedelta(hours=1))
+    monkeypatch.setattr(_um, "read", lambda *a, **k: _um.Meter(five_hour=entry, seven_day=entry, observed_at=now))
+    seen = []
+    monkeypatch.setattr(_um, "record_implied_ceiling", lambda kind, e, runs_dir, when, *a, **k: seen.append((kind, runs_dir)))
+    _cli._usage_assessment(tmp_path / "runs", window_ceiling_usd=200.0, weekly_ceiling_usd=1380.0)
+    assert seen == [("five_hour", _Path(tmp_path / "runs")), ("weekly", _Path(tmp_path / "runs"))]
