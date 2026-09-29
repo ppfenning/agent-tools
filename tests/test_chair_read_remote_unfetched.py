@@ -1,6 +1,6 @@
 import sqlite3
 
-from agent_tools.chair_read_remote_unfetched import read_remote_unfetched
+from agent_tools.chair_read_remote_unfetched import is_remote_unfetched, read_remote_unfetched
 
 RUNS_COLUMNS = "run_id TEXT PRIMARY KEY, launched_at TEXT"
 
@@ -44,3 +44,11 @@ def test_an_older_remote_unfetched_run_is_reported_despite_a_newer_local_run(tmp
     (tmp_path / "i-2.remote.json").write_text("{}", encoding="utf-8")
     (tmp_path / "i-3").mkdir()
     assert read_remote_unfetched(tmp_path, ["i"]) == {"i": "i-2"}
+
+
+def test_fetched_marker_makes_is_remote_unfetched_false():
+    assert is_remote_unfetched(True, False, False, True) is False
+
+
+def test_no_fetched_marker_makes_is_remote_unfetched_true():
+    assert is_remote_unfetched(True, False, False, False) is True
