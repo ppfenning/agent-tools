@@ -628,6 +628,71 @@ def test_phase_plan_refuses_on_an_unlandable_item():
     assert steps == [{"kind": "refuse", "reason": "seams-task is 'in_progress', not approved, done or dropped"}]
 
 
+# --- land_plan: phase mode refuses to land over a squash missing an approved task's files ---
+
+def _phase_squash_repo(tmp_path, include_b=True):
+    root = tmp_path / "repo"; root.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+    sp.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    (root / "base").write_text("base"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "init"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-qb", "epic/x/seams"], check=True, env=_ENV)
+    (root / "a.py").write_text("a"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "commit", "-qm", "seams-a"], check=True, env=_ENV)
+    if include_b:
+        (root / "b.py").write_text("b"); sp.run(["git", "-C", str(root), "add", "-A"], check=True, env=_ENV)
+        sp.run(["git", "-C", str(root), "commit", "-qm", "seams-b"], check=True, env=_ENV)
+    sp.run(["git", "-C", str(root), "checkout", "-q", "main"], check=True, env=_ENV)
+    return root
+
+
+def _phase_two_task_fixture(tmp_path):
+    (tmp_path / "runs").mkdir(exist_ok=True)
+    (tmp_path / "runs/epic-x-5:seams.json").write_text(
+        json.dumps({"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}),
+        encoding="utf-8")
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
+    for task, files in (("seams-a", ["a.py"]), ("seams-b", ["b.py"])):
+        (task_dir / f"{task}.json").write_text(json.dumps(_record(
+            task=task, proposals=[{"kind": "draft_pr_create", "title": task}], build={"files_touched": files},
+        )), encoding="utf-8")
+    item_dir = tmp_path / "work/x/seams"; item_dir.mkdir(parents=True)
+    for task in ("seams-a", "seams-b"):
+        (item_dir / f"{task}.md").write_text(f"---\nid: {task}\nstate: approved\n---\n\nBody.\n", encoding="utf-8")
+    return item_dir
+
+
+def test_phase_land_proceeds_when_the_squash_carries_every_approved_tasks_files(tmp_path, capsys, monkeypatch):
+    repo = _phase_squash_repo(tmp_path, include_b=True)
+    item_dir = _phase_two_task_fixture(tmp_path)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
+                   "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "push:" in out and "mark_done:" in out
+    assert cli._git_out(repo, "show", "main:a.py") == "a"
+    assert cli._git_out(repo, "show", "main:b.py") == "b"
+    assert "state: done" in (item_dir / "seams-a.md").read_text()
+    assert "state: done" in (item_dir / "seams-b.md").read_text()
+
+
+def test_phase_land_refuses_when_the_squash_is_missing_an_approved_tasks_files(tmp_path, capsys, monkeypatch):
+    repo = _phase_squash_repo(tmp_path, include_b=False)
+    item_dir = _phase_two_task_fixture(tmp_path)
+    monkeypatch.setattr(cli, "_run_checks", lambda checks, cwd: (True, "1 checks passed"))
+    rc = cli.main(["runs", "land", "epic-x-5", "--phase", "seams", "--repo", str(repo),
+                   "--apply", "--gate", "full", "--runs-dir", str(tmp_path / "runs")])
+    out = capsys.readouterr().out
+    assert rc != 0, out
+    assert "push:" not in out and "mark_done:" not in out
+    assert "seams-b: none of b.py is in the squash" in out
+    assert cli._git_out(repo, "show", "main:a.py") is None
+    assert "state: approved" in (item_dir / "seams-a.md").read_text()
+    assert "state: approved" in (item_dir / "seams-b.md").read_text()
+
+
 # --- land_plan: --task mode's clean step is narrowed to its own branch (§7) ---
 
 def test_task_mode_clean_step_names_only_this_tasks_branch():

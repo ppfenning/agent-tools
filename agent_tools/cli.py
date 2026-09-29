@@ -1600,6 +1600,12 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         commit = subprocess.run(["git", "-C", str(wt), "commit", "-qm", step["subject"]], capture_output=True, text=True)
         if commit.returncode != 0:
             return False, commit.stderr.strip() or commit.stdout.strip()
+        squashed_files = (_git_out(wt, "diff", "--name-only", step["from"], "HEAD") or "").splitlines()
+        refusal = land.squash_missing_files(step.get("approved_files", []), squashed_files)
+        if refusal is not None:
+            # Leave the worktree, branch and squash commit local for inspection: nothing is
+            # pushed and no task is marked done until the missing files show up in a rerun.
+            return False, refusal
         ok, detail = _generate_and_amend(wt, step.get("umbrella"), print)
         if not ok and detail.startswith(_GENERATE_FAILED):
             # Keep the worktree, detached, for inspection; free the branch so a rerun starts fresh
