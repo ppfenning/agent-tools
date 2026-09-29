@@ -27,9 +27,9 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
     ]
 
 
-def rsync_push_argv(src_dir: str, dest_location: str) -> list[str]:
-    """Trailing slashes on both ends copy directory contents; never deletes."""
-    return ["rsync", "-a", src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
+def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -> list[str]:
+    """Trailing slashes on both ends copy directory contents; deletes at the destination only when `mirror`."""
+    return ["rsync", "-a", *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
 
 
 def rsync_pull_argv(src_location: str, dest: str) -> list[str]:

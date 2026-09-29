@@ -76,7 +76,7 @@ def test_a_failing_sync_stops_before_the_launch_argv_runs():
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", run, repo="/r")
     assert result == LaunchError("sync", "updating /r on box2 exited 1: the lane would build on a stale main")
     assert calls == [
-        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/r")),
     ]
 
@@ -90,7 +90,7 @@ def test_the_default_location_is_the_ssh_destination_and_path(tmp_path, monkeypa
 def test_launch_plan_is_the_rsync_argv_then_the_ssh_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l") == [
-        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         [
             "ssh",
             "me@box2",
@@ -108,7 +108,7 @@ def test_launch_plan_without_a_repo_returns_todays_two_argv():
 def test_launch_plan_with_a_repo_returns_three_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l", repo="/r") == [
-        ["rsync", "-a", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/r")),
         [
             "ssh",

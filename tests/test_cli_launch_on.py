@@ -245,7 +245,7 @@ def test_the_production_edge_pushes_to_the_ssh_location_from_the_workspace(tmp_p
     rc = main([*argv, "--on", "box", "--label", "lbl"])
     assert rc == 0, capsys.readouterr().out
     remote_calls = [(cmd, cwd) for cmd, cwd in seen if cmd[0] in ("rsync", "ssh")]
-    assert remote_calls[0] == (["rsync", "-a", "work/demo/", f"me@box:{remote}/work/demo/"], ws)
+    assert remote_calls[0] == (["rsync", "-a", "--delete", "work/demo/", f"me@box:{remote}/work/demo/"], ws)
     ssh, cwd = remote_calls[2]  # remote_calls[1] is the sync step that brings the lane host's repo up to date
     assert ssh[:2] == ["ssh", "me@box"] and f"--initiative {remote}/work/demo" in ssh[2] and cwd == ws
     assert (ws / "runs" / "demo-1.remote.json").exists()
