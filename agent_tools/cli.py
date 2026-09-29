@@ -105,6 +105,7 @@ from agent_tools import (
     runs_bar,
     runs_detail,
     runs_detail_screen,
+    runs_move,
     runs_stop,
     runs_stranded,
     runs_top,
@@ -1000,6 +1001,123 @@ def _runs_pause(a: argparse.Namespace) -> int:
 
 def _runs_resume(a: argparse.Namespace) -> int:
     return _runs_pause_resume_outcome("resumed", a.run_id, store_cli.resume(a.run_id), a.json)
+
+
+def _runs_move_pause(run_id: str, reason: str | None) -> tuple[bool, str]:
+    """Edge: `cox runs move`'s pause step, over the same `store_cli.pause` result types
+    `_runs_pause_resume_outcome` already maps."""
+    result = store_cli.pause(run_id, reason=reason)
+    if isinstance(result, store_cli.Paused):
+        return True, ""
+    if isinstance(result, store_cli.PauseRefused):
+        return False, "not in store"
+    if isinstance(result, store_cli.Failed):
+        return False, result.detail
+    return False, "the harness is not installed"
+
+
+def _runs_move_stop(a: argparse.Namespace, run_id: str) -> tuple[bool, str]:
+    """Edge: `cox runs move`'s stop step, wired exactly as `_runs_stop` wires `runs_stop.stop_run`.
+    Resolves the run's current host from its own launch record, independent of `--to`."""
+    runs_dir = Path(a.runs_dir)
+    result = runs_stop.stop_run(
+        run_id, runs_dir, kill_local=os.kill, run_remote=_runs_stop_run_remote,
+        is_ended=_runs_stop_is_ended(runs_dir), sleep=time.sleep, hosts=_runs_stop_hosts(a),
+    )
+    return result["ok"], result.get("reason", "")
+
+
+def _runs_move_repo_for(ws: Path) -> Callable[[dict], str]:
+    """The `chair_exec.Deps.repo_for` `cox runs move`'s clear_branches and relaunch steps run
+    through: the action's own repo, else `repo:` from the initiative's `initiative.md`; "" when
+    either is missing. Mirrors `_chair_run_deps`'s own `repo_for` closure."""
+    def repo_for(action: dict) -> str:
+        if action.get("repo"):
+            return action["repo"]
+        initiative = action.get("initiative", "")
+        if not initiative:
+            return ""
+        try:
+            text = (ws / "work" / initiative / "initiative.md").read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        return route.parse_frontmatter(text)[0].get("repo") or ""
+    return repo_for
+
+
+def _runs_move_exec_deps(ws: Path, runs_dir: Path, harness_python: str) -> chair_exec.Deps:
+    """The `chair_exec.Deps` bundle `cox runs move`'s clear_branches and relaunch steps run through.
+    Records nothing: a needs_chair a step raises is refused by `_runs_move_step` instead."""
+    return chair_exec.edge_deps(
+        runs_dir, ws, "cox-runs-move", os.getpid(),
+        run_id=lambda action: "", repo_for=_runs_move_repo_for(ws), record=lambda action: None,
+        host=socket.gethostname(), harness_python=harness_python,
+    )
+
+
+def _runs_move_step(step: dict, a: argparse.Namespace, exec_deps: chair_exec.Deps) -> tuple[bool, str]:
+    """One `runs_move.move_plan` step through the edge its kind reaches; epoch 0 stamped and matched."""
+    kind = step["kind"]
+    if kind == "pause":
+        return _runs_move_pause(step["run"], step.get("reason"))
+    if kind == "stop":
+        return _runs_move_stop(a, step["run"])
+    if kind in ("clear_branches", "relaunch"):
+        return _runs_move_exec_outcome(
+            kind, chair_exec.perform([{**step, "epoch": 0}], exec_deps, current_epoch=lambda: 0, dry_run=False)[0],
+        )
+    return False, f"unsupported move step {kind!r}"
+
+
+def _runs_move_exec_outcome(kind: str, result: dict) -> tuple[bool, str]:
+    """A done result carrying a needs_chair, such as a clear_branches carry conflict, is a refusal naming it:
+    the loop records that escalation for the chair, and a move must not report success over it."""
+    if result["status"] != "done":
+        return False, result["reason"]
+    if "needs_chair" in result:
+        raised = result["needs_chair"]
+        return False, f"{kind} needs the chair: {raised.get('reason') or raised.get('cause', '')}"
+    return True, result["reason"]
+
+
+def _runs_move_report(a: argparse.Namespace, executed: list[dict], ok: bool, reason: str) -> int:
+    """Edge: one output shape for every outcome of `cox runs move`; exit 0 only when every step was ok."""
+    if a.json:
+        print(json.dumps({"run": a.run_id, "to": a.to, "ok": ok, "reason": reason, "move_plan": executed}))
+    else:
+        print(f"moved {a.run_id} -> {a.to}" if ok else f"refused {a.run_id}: {reason}")
+    return 0 if ok else 1
+
+
+def _runs_move_harness_python(a: argparse.Namespace) -> str:
+    """The harness python `cox runs move`'s clear_branches and relaunch steps run through, read
+    from the profile the same way `_chair_run_deps` reads it; a missing or unreadable profile
+    leaves `python` on the caller's own PATH to resolve."""
+    profile_text = _read_text_or_none(_profile_path(a))
+    try:
+        profile = route.parse_profile(profile_text) if profile_text is not None else {}
+    except route.ProfileError:
+        profile = {}
+    harness_dir = profile.get("harness_dir", "")
+    return str(Path(harness_dir) / ".venv" / "bin" / "python") if harness_dir else "python"
+
+
+def _runs_move(a: argparse.Namespace) -> int:
+    """`cox runs move <run_id> --to <host>`: pause, stop, clear_branches, relaunch, in order,
+    stopping at the first step whose own result is not ok."""
+    if lane_hosts.find_lane_host(_runs_stop_hosts(a), a.to) is None:
+        return _runs_move_report(a, [], False, f"no such host {a.to}")
+    initiative = chair_facts.run_initiative(a.run_id)
+    runs_dir = Path(a.runs_dir)
+    ws = runs_dir.parent
+    exec_deps = _runs_move_exec_deps(ws, runs_dir, _runs_move_harness_python(a))
+    executed: list[dict] = []
+    for step in runs_move.move_plan(a.run_id, initiative, a.to, reason=a.reason):
+        ok, reason = _runs_move_step(step, a, exec_deps)
+        executed.append({"step": step, "ok": ok, "reason": reason})
+        if not ok:
+            return _runs_move_report(a, executed, False, reason)
+    return _runs_move_report(a, executed, True, "")
 
 
 def _stored_trace_calls(calls: list[dict], role: str | None) -> list[tuple[str, dict]]:
@@ -5138,6 +5256,15 @@ RUNS_COMMANDS = [
         "resume", "runs", "mark a paused run resumed in the store",
         (commands.Arg(("run_id",)), commands.Arg(("--json",), {"action": "store_true"})),
         _runs_resume, False, (),
+    ),
+    commands.Command(
+        "move", "runs", "stop a run at its node boundary and relaunch it on another host",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--reason",)),
+            commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--profile",)),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _runs_move, False, (),
     ),
 ]
 

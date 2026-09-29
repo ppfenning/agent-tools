@@ -1,0 +1,14 @@
+usage: cox runs move [-h] --to TO [--reason REASON] [--runs-dir RUNS_DIR] [--profile PROFILE]
+                     [--json]
+                     run_id
+
+positional arguments:
+  run_id
+
+options:
+  -h, --help           show this help message and exit
+  --to TO
+  --reason REASON
+  --runs-dir RUNS_DIR
+  --profile PROFILE
+  --json
