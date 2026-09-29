@@ -21,6 +21,7 @@ from agent_tools.chair_types import (
     EASTERN,
     ApprovedTask,
     DispatchFacts,
+    EmptyDecomposeFacts,
     Facts,
     InitiativeFacts,
     LeaseFacts,
@@ -61,6 +62,10 @@ class FactsDeps:
         record and no local run directory or log. Optional, and absent means no initiative counts.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
         threshold) with no exit record in the store. Optional, and absent means no initiative counts.
+    decomposed_intake: initiative id to its most recent decompose run id, for every initiative whose intake
+        status is decomposed. Optional, and absent means no initiative counts.
+    item_counts: initiative id to the count of task items the work store holds for it. Optional, and absent
+        means every initiative counts as non-empty, so none is reported as empty-decompose.
     newest_run_host: initiative id to its newest run's host, "" meaning the local machine
         (`run_store.newest_run_hosts`). Optional, and absent means no initiative counts.
     hosts: the same seam as `lost_runs`, `run_store.hosts(runs_dir)`'s raw rows from the store's `hosts`
@@ -119,6 +124,8 @@ class FactsDeps:
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
     remote_unfetched: Callable[[], Mapping[str, str]] | None = None
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
+    decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
+    item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
     newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
@@ -281,6 +288,22 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
     ]
 
 
+def empty_decompose_facts(
+    decomposed: Mapping[str, str], live: Collection[str], item_counts: Mapping[str, int]
+) -> list[EmptyDecomposeFacts]:
+    """One entry per decomposed intake whose decompose run has ended and left zero stored task items.
+
+    `decomposed` maps an initiative id to its newest decompose run id, for every initiative whose intake
+    status is decomposed. An initiative in `live` still has that run in flight, so it is left out even
+    though its intake is decomposed. `item_counts` defaults a missing initiative to 1, non-empty, so an
+    initiative this tick knows nothing about is never reported empty by omission."""
+    return [
+        {"initiative": initiative, "run": run}
+        for initiative, run in decomposed.items()
+        if initiative not in live and item_counts.get(initiative, 1) == 0
+    ]
+
+
 def dispatch_facts(
     docket: Row,
     lane_hosts: Sequence[str],
@@ -404,6 +427,11 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
+        "empty_decompose": empty_decompose_facts(
+            dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {},
+            live,
+            dict(deps.item_counts()) if deps.item_counts is not None else {},
+        ),
         "newest_run_host": newest_run_host,
         "login_hosts": deps.hosts(),
         "last_housekeeping_at": deps.history() if deps.history is not None else None,

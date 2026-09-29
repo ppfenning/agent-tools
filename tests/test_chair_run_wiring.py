@@ -20,7 +20,10 @@ _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
 # `history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir)` (line 5774). That is a fact about
 # what `_chair_run_deps` wires today, not an assumption: if a future change starts passing `queue=` or
 # `stranded_records=`, the assertion below fails and names the field to drop from this set.
-_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records"})
+# `decomposed_intake` and `item_counts` join them for the same reason: nothing in `_chair_run_deps` sources a
+# decomposed-intake reader or a work-store item count yet, so `empty_decompose` is always [] in production
+# until a later item wires them.
+_FACTS_DEPS_NONE_GUARDED_FIELDS = frozenset({"queue", "stranded_records", "decomposed_intake", "item_counts"})
 
 
 def test_every_facts_deps_field_the_dataclass_declares_is_wired(tmp_path) -> None:

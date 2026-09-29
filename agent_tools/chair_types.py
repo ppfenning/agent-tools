@@ -118,6 +118,13 @@ class QuarantineFacts(TypedDict):
     rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
 
 
+class EmptyDecomposeFacts(TypedDict):
+    """A decomposed intake whose newest decompose run has ended and left the initiative with no stored task items."""
+
+    initiative: str
+    run: str  # the initiative's most recent decompose run id
+
+
 class StaleCandidate(TypedDict):
     """One task the edge has gathered evidence for; matches chair_stale.stale_reason's parameters exactly."""
 
@@ -171,6 +178,7 @@ class Facts(TypedDict):
     run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
     # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
     lost_runs: dict[str, str]
+    empty_decompose: list[EmptyDecomposeFacts]  # decomposed intakes whose ended decompose run left zero stored task items
     # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
     newest_run_host: dict[str, str]
     # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
