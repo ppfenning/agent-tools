@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from agent_tools import cli
+from agent_tools.chair_plan_land import plan_lands
 
 
 def _land_ns(**overrides):
@@ -257,3 +258,75 @@ MOVED = "moved: run `uv run --frozen python -m devtools <command> ...` from the 
 def test_cox_dev_and_cox_release_print_the_devtools_pointer_and_exit_two(argv, capsys):
     assert cli.main(argv) == 2
     assert capsys.readouterr().out == MOVED + "\n"
+
+
+_STORE_RUN = "x-9"
+_STORE_LISTING = (
+    "drwxr-xr-x          4,096 2026/09/25 05:00:00 .\n"
+    "-rw-r--r--             20 2026/09/25 05:00:00 seams/seams-task.json\n"
+)
+_APPROVED_RECORD = {"review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}}
+
+
+def _store_fetch_world(tmp_path, monkeypatch, *, record):
+    """A store-mode fetch with every seam faked: the remote lists one task, the store holds `record` for it."""
+    ws, host_ws = tmp_path / "chair", tmp_path / "host"
+    (ws / "runs").mkdir(parents=True)
+    (ws / "runs" / f"{_STORE_RUN}.remote.json").write_text(
+        json.dumps({"host": "box", "launched_at": "2026-09-25T04:00:00Z"}), encoding="utf-8",
+    )
+    host = cli.lane_hosts.LaneHost(name="box", ssh="me@box", workspace_dir=str(host_ws))
+    monkeypatch.setattr(cli, "_remote_edge", lambda cwd: (lambda argv: 0, lambda path: path))
+    monkeypatch.setattr(cli, "_remote_capture", lambda cwd: lambda argv: _STORE_LISTING)
+    monkeypatch.setattr(cli, "_remote_fetch_facts", lambda runs_dir, run: (True, "2026-09-25T05:03:46Z"))
+    monkeypatch.setattr(cli.run_store, "run_task_ids", lambda runs_dir, run_id: ["seams-task"] if run_id == _STORE_RUN else [])
+    monkeypatch.setattr(cli.run_store, "task_record_phases", lambda runs_dir, run_id, task: ["seams"])
+    monkeypatch.setattr(cli.run_store, "task_state_of", lambda runs_dir, initiative, task: "ready")
+    monkeypatch.setattr(
+        cli.run_store, "task_record",
+        lambda runs_dir, run_id, phase, task: {**record, "repo": str(host_ws / "repo")},
+    )
+    return ws, host
+
+
+def test_store_mode_fetch_moves_an_approved_task_records_row_to_approved(tmp_path, monkeypatch):
+    ws, host = _store_fetch_world(tmp_path, monkeypatch, record=_APPROVED_RECORD)
+    _work_item(ws / "work", "x", "seams", "seams-task", "ready")
+    moved = []
+
+    def fake_set_state(runs_dir, initiative, task, state, by, expected=None):
+        moved.append((initiative, task, state, expected))
+        return cli.store_cli.StateSet({"state": state})
+
+    monkeypatch.setattr(cli.store_cli, "set_state", fake_set_state)
+    listings = []
+    monkeypatch.setattr(cli, "_remote_capture", lambda cwd: lambda argv: listings.append(argv) or _STORE_LISTING)
+    outcome, _, _ = cli._fetch_one(ws / "runs", [host], _STORE_RUN, mode="store")
+    assert outcome == "fetched"
+    assert moved == [("x", "seams-task", "approved", "ready")]
+    assert len(listings) == 1  # the store-completeness check; the approval read never lists the remote
+
+
+def test_the_approved_task_fact_built_from_a_store_row_carries_the_fetched_run_id(tmp_path, monkeypatch):
+    ws, host = _store_fetch_world(tmp_path, monkeypatch, record=_APPROVED_RECORD)
+    _work_item(ws / "work", "x", "seams", "seams-task", "ready")
+    monkeypatch.setattr(cli.store_cli, "set_state", lambda *a, **k: cli.store_cli.StateSet({"state": "approved"}))
+    records = cli._store_run_rows(ws / "runs", _STORE_RUN)
+    facts = cli._store_approved_task_facts(ws / "runs", ws / "work", _STORE_RUN, records, "tester")
+    assert facts == [{"id": "seams-task", "initiative": "x", "phase": "seams", "run": _STORE_RUN}]
+
+
+def test_a_store_held_approved_row_reaches_the_chair_planner_as_a_land_phase_with_its_run(tmp_path, monkeypatch):
+    ws, _ = _store_fetch_world(tmp_path, monkeypatch, record=_APPROVED_RECORD)
+    (ws / "work" / "x").mkdir(parents=True)
+    (ws / "work" / "x" / "initiative.md").write_text("---\nid: x\nrepo: /r\n---\n", encoding="utf-8")
+    _work_item(ws / "work", "x", "seams", "seams-task", "ready")
+    (ws / "runs" / f"{_STORE_RUN}.fetched.json").write_text(json.dumps({"fetched_at": "t", "repos": ["/r"]}), encoding="utf-8")
+    store_items = [{"initiative": "x", "task_id": "seams-task", "phase": "seams", "state": "approved"}]
+    monkeypatch.setattr(cli.run_store, "work_items", lambda runs_dir, initiative=None: store_items)
+    records, items = cli._chair_stranded_inputs(ws, "store")
+    stranded = cli.chair_read_stranded.read_stranded(records, items, lambda repo: True, lambda repo, branch: False)
+    fetch_facts = cli.chair_read_approved.read_fetch_facts(ws / "runs", stranded)
+    approved = cli.chair_read_approved.with_runs(cli.chair_read_approved.read_approved(ws, "store"), stranded, fetch_facts)
+    actions = plan_lands({"approved": approved, "initiatives": [{"id": "x", "started": True, "ready_tasks": [], "landed": set()}]})
+    assert [(a["kind"], a.get("run")) for a in actions] == [("land_phase", _STORE_RUN)]
