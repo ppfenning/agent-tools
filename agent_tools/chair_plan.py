@@ -47,20 +47,53 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
     return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
 
 
+def _route_homed(
+    actions: list[Action], launch_at: list[int], home: Mapping[str, str], cap: int, host_free: Sequence[HostSlot]
+) -> tuple[dict[int, str], set[int], int, dict[str, int]]:
+    """Route each homed relaunch, retry or rescue straight to home[initiative]: "" claims one of the cap local
+    slots, a named host claims one of its free lanes by name alone, no ranking and no capability check. No
+    free slot there drops the index. Returns host-by-index for the ones placed on a host, the dropped indices,
+    the count of local slots this used, and the per-host lane counts consumed."""
+    host_left = {name: free for name, _, _, free, _ in host_free}
+    homed_at = [n for n in launch_at if actions[n]["initiative"] in home]
+    host_for_index: dict[int, str] = {}
+    dropped: set[int] = set()
+    local_used = 0
+    for n in homed_at:
+        destination = home[actions[n]["initiative"]]
+        if destination == "":
+            if local_used < cap:
+                local_used += 1
+            else:
+                dropped.add(n)
+        elif host_left.get(destination, 0) > 0:
+            host_left[destination] -= 1
+            host_for_index[n] = destination
+        else:
+            dropped.add(n)
+    consumed: dict[str, int] = {}
+    for host in host_for_index.values():
+        consumed[host] = consumed.get(host, 0) + 1
+    return host_for_index, dropped, local_used, consumed
+
+
 def _cap_launches(
-    actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot]
+    actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot], home: Mapping[str, str]
 ) -> tuple[list[Action], dict[str, int]]:
-    """Keep the first cap relaunch, retry and rescue actions local; place relaunch and retry beyond cap on a
-    lane host, ranked exactly as _place_on_hosts ranks a fresh launch_epic (weight, capabilities, free count).
-    rescue never gets a host and is dropped past the cap exactly as before. What no host can take (none
-    eligible, or every host lane full) is dropped as before. A dropped relaunch takes its paired
+    """An initiative in `home` routes only there: see _route_homed. An initiative with no home is placed as
+    before: the first remaining cap relaunch, retry and rescue actions local, relaunch and retry beyond that
+    on a lane host, ranked exactly as _place_on_hosts ranks a fresh launch_epic (weight, capabilities, free
+    count). rescue never gets a host and is dropped past the cap exactly as before. What no host can take
+    (none eligible, or every host lane full) is dropped as before. A dropped relaunch takes its paired
     clear_branches with it; a hosted relaunch keeps its clear_branches, which still runs locally.
 
     Returns the resulting actions and a mapping of host name to the lanes this placement took, for the fill
     step that follows to subtract.
     """
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _LAUNCHES]
-    overflow = launch_at[cap:]
+    homed_host_for_index, homed_dropped, local_used, homed_consumed = _route_homed(actions, launch_at, home, cap, host_free)
+    unhomed_at = [n for n in launch_at if actions[n]["initiative"] not in home]
+    overflow = unhomed_at[max(0, cap - local_used) :]
     hostable = [n for n in overflow if actions[n]["kind"] in ("relaunch", "retry")]
     by_id = {i["id"]: i for i in initiatives}
     rest = [
@@ -70,9 +103,13 @@ def _cap_launches(
         )
         for n in hostable
     ]
-    placed = iter(_place_on_hosts(rest, host_free))
+    reduced_host_free = [
+        (name, weight, capabilities, max(0, free - homed_consumed.get(name, 0)), assigned)
+        for name, weight, capabilities, free, assigned in host_free
+    ]
+    placed = iter(_place_on_hosts(rest, reduced_host_free))
     next_placed = next(placed, None)
-    host_for_index: dict[int, str] = {}
+    host_for_index: dict[int, str] = dict(homed_host_for_index)
     for n in hostable:
         if next_placed is not None and next_placed["initiative"] == actions[n]["initiative"]:
             host_for_index[n] = next_placed["host"]
@@ -80,7 +117,7 @@ def _cap_launches(
     consumed: dict[str, int] = {}
     for host in host_for_index.values():
         consumed[host] = consumed.get(host, 0) + 1
-    dropped = {n for n in overflow if n not in host_for_index}
+    dropped = homed_dropped | {n for n in overflow if n not in host_for_index}
     dropped_initiatives = {actions[n]["initiative"] for n in dropped if actions[n]["kind"] == "relaunch"}
     kept = [
         {**a, "host": host_for_index[n]} if n in host_for_index else a
@@ -223,7 +260,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
-        recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free
+        recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free, facts.get("home", {})
     )
     capped = [_with_carry(a, facts["approved"]) for a in capped_actions]
     # A hosted relaunch or retry takes no local lane, so it must not count against the local free-lane budget.
