@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 
-from agent_tools import dash_feed, usage_meter, usage_window
+from agent_tools import console_screen, dash_feed, usage_meter, usage_window
 from agent_tools.dash_feed import snapshot
 
 
@@ -160,7 +160,7 @@ def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
         calls["console"] += 1
         return {
             "hosts": [{"name": "omarchy"}],
-            "lanes": [{"run": "dash-feed-1"}],
+            "lanes": [console_screen.LaneRow("dash-feed-1", None, "", "p1", "build", 1, 2, 0.1, 0, 2)],
             "chair": [{"holder": "chair@omarchy:1"}],
             "spend": spend,
         }
@@ -183,22 +183,46 @@ def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
 
     result = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T00:00:00Z")
 
-    assert result == snapshot(
-        "2026-09-29T00:00:00Z",
-        {"holder": "chair@omarchy:1"},
-        {"five_hour_fraction": 0.1},
-        [{"name": "omarchy"}],
-        [{"run": "dash-feed-1"}],
-        [
-            {
-                "initiative": "dash-feed",
-                "priority": 1,
-                "phases_landed": 1,
-                "phases_total": 2,
-                "current_phase": "p2",
-            }
-        ],
-        [{"id": "m1", "from": "chair", "to": "pat", "note": "n", "ref": "coxswain://task/x", "ack": False}],
-        [],
-    )
     assert calls == {"console": 1, "queue": 1, "inbox": 1}
+    assert result["runs"][0]["run"] == "dash-feed-1"
+    assert result["queue"][0]["initiative"] == "dash-feed"
+    assert result["inbox"][0]["target"] == "x"
+
+def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatch, tmp_path):
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        fixture = json.load(f)
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@omarchy:42", "epoch": 7}')
+    lane = console_screen.LaneRow(
+        run="r-1", host=None, heartbeat_at="", phase="p1", node="build", attempt=1, turns=3, cost_usd=0.5,
+        phases_landed=0, phases_total=2,
+    )
+    sections = {
+        "chair": [{"holder": "chair-loop", "state": "live", "minutes_ago": 1}],
+        "spend": dict.fromkeys(fixture["spend"]),
+        "hosts": [{
+            "name": "jarvis", "state": "draining", "capacity": 1, "in_use": 0, "beat_at": "2026-09-29T20:59:00Z",
+            "versions_json": {"login_ok": True, "login_checked_at": "2026-09-29T20:41:15Z"},
+        }],
+        "lanes": [lane],
+    }
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir: ("omarchy", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: [
+        {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
+    ])
+    monkeypatch.setattr(dash_feed, "_inbox", lambda work_dir: [
+        {"ref": "coxswain://task/t1", "from": "chair-loop", "to": "chair", "note": "land it", "id": "m1", "ack": False},
+    ])
+
+    feed = json.loads(json.dumps(dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")))
+
+    assert set(feed["chair"]) == set(fixture["chair"]) and set(feed["spend"]) == set(fixture["spend"])
+    for section in ("machines", "runs", "queue", "inbox"):
+        assert set(feed[section][0]) == set(fixture[section][0]), section
+    rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
+    assert all(value is not None for row in rows for value in row.values())
+    assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("omarchy", 7, 60)
+    assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
+    assert feed["machines"][0]["beat_age_s"] == 60
+    assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it"}
