@@ -536,3 +536,104 @@ def test_facts_deps_window_and_weekly_report_est_when_there_is_no_fresh_meter(mo
     assert deps.facts_deps.weekly().spent_usd == 444.0
     assert deps.facts_deps.window_source() == "est"
     assert deps.facts_deps.weekly_source() == "est"
+
+
+def test_dash_once_prints_the_gathered_feed_as_one_json_line(monkeypatch, tmp_path, capsys):
+    feed = {"runs": [], "as_of": "2026-09-29T00:00:00+00:00"}
+    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now: feed)
+    assert cli.main(["dash", "--once", "--runs-dir", str(tmp_path)]) == 0
+    assert capsys.readouterr().out == json.dumps(feed) + "\n"
+
+
+def test_dash_feed_and_once_together_is_rejected(tmp_path, capsys):
+    assert cli.main(["dash", "--feed", "--once", "--runs-dir", str(tmp_path)]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "mutually exclusive" in err
+
+
+def test_dash_feed_loops_printing_one_line_per_pass_until_stopped(monkeypatch, tmp_path, capsys):
+    feed = {"runs": [], "as_of": "x"}
+    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now: feed)
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise StopIteration
+
+    monkeypatch.setattr(cli.time, "sleep", fake_sleep)
+    with pytest.raises(StopIteration):
+        cli.main(["dash", "--feed", "--runs-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert out == (json.dumps(feed) + "\n") * 2
+    assert sleeps == [2.0, 2.0]
+
+
+def test_dash_detail_dispatches_run_with_the_run_id_runs_dir_and_now(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_run, "build", lambda *a: calls.append(a) or {"kind": "run"})
+    assert cli.main(["dash", "--detail", "run", "r1", "--runs-dir", str(tmp_path)]) == 0
+    (run_id, runs_dir, now), = calls
+    assert run_id == "r1" and runs_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "run"}
+
+
+def test_dash_detail_dispatches_initiative_with_the_initiative_id_work_dir_runs_dir_and_now(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_initiative, "build", lambda *a: calls.append(a) or {"kind": "initiative"})
+    assert cli.main([
+        "dash", "--detail", "initiative", "i1", "--runs-dir", str(tmp_path), "--work-dir", str(tmp_path),
+    ]) == 0
+    (initiative_id, work_dir, runs_dir, now), = calls
+    assert initiative_id == "i1" and work_dir == tmp_path and runs_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "initiative"}
+
+
+def test_dash_detail_dispatches_machine_with_the_host_name_runs_dir_and_now(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_machine, "build", lambda *a: calls.append(a) or {"kind": "machine"})
+    assert cli.main(["dash", "--detail", "machine", "host-1", "--runs-dir", str(tmp_path)]) == 0
+    (host_name, runs_dir, now), = calls
+    assert host_name == "host-1" and runs_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "machine"}
+
+
+def test_dash_detail_dispatches_spend_with_runs_dir_and_now_and_no_id(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_spend, "build", lambda *a: calls.append(a) or {"kind": "spend"})
+    assert cli.main(["dash", "--detail", "spend", "--runs-dir", str(tmp_path)]) == 0
+    (runs_dir, now), = calls
+    assert runs_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "spend"}
+
+
+def test_dash_detail_dispatches_health_with_runs_dir_work_dir_and_now_and_no_id(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_health, "build", lambda *a: calls.append(a) or {"kind": "health"})
+    assert cli.main([
+        "dash", "--detail", "health", "--runs-dir", str(tmp_path), "--work-dir", str(tmp_path),
+    ]) == 0
+    (runs_dir, work_dir, now), = calls
+    assert runs_dir == tmp_path and work_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "health"}
+
+
+def test_dash_detail_dispatches_release_with_now_and_no_id(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_release, "build", lambda *a: calls.append(a) or {"kind": "release"})
+    assert cli.main(["dash", "--detail", "release", "--runs-dir", str(tmp_path)]) == 0
+    (now,), = calls
+    assert isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "release"}
+
+
+def test_dash_detail_run_without_an_id_exits_2(tmp_path, capsys):
+    assert cli.main(["dash", "--detail", "run", "--runs-dir", str(tmp_path)]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "an id is required" in err
+
+
+def test_dash_detail_unknown_kind_exits_2_and_prints_nothing(tmp_path, capsys):
+    assert cli.main(["dash", "--detail", "bogus", "x", "--runs-dir", str(tmp_path)]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "unknown kind" in err

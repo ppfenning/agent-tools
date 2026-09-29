@@ -59,6 +59,13 @@ from agent_tools import (
     commands,
     console_screen,
     courier,
+    dash_detail_health,
+    dash_detail_initiative,
+    dash_detail_machine,
+    dash_detail_release,
+    dash_detail_run,
+    dash_detail_spend,
+    dash_feed,
     doctor,
     draft_apply,
     draft_list,
@@ -4758,6 +4765,62 @@ def _console(a: argparse.Namespace) -> int:
     return console_screen.main(runs_dir, Path(a.work_dir), local_name, local_capacity, spend_fn, a.interval)
 
 
+_DASH_DETAIL_KINDS_NEEDING_AN_ID = ("run", "initiative", "machine")
+
+
+def _dash_detail(kind: str, id_: str | None, runs_dir: Path, work_dir: Path, now: str) -> tuple[dict | None, int]:
+    """Edge. Dispatches `--detail <kind> [id]` to the matching `dash_detail_*.build`, each called with the
+    argument order that module actually takes -- the builders differ from one another. A kind that needs an
+    id and got none, or a kind this command does not recognise, prints to stderr and returns exit 2 instead
+    of raising."""
+    if kind in _DASH_DETAIL_KINDS_NEEDING_AN_ID and not id_:
+        print(f"cox dash --detail {kind}: an id is required", file=sys.stderr)
+        return None, 2
+    if kind == "run":
+        return dash_detail_run.build(id_, runs_dir, now), 0
+    if kind == "initiative":
+        return dash_detail_initiative.build(id_, work_dir, runs_dir, now), 0
+    if kind == "machine":
+        return dash_detail_machine.build(id_, runs_dir, now), 0
+    if kind == "spend":
+        return dash_detail_spend.build(runs_dir, now), 0
+    if kind == "health":
+        return dash_detail_health.build(runs_dir, work_dir, now), 0
+    if kind == "release":
+        return dash_detail_release.build(now), 0
+    print(f"cox dash --detail: unknown kind {kind!r}", file=sys.stderr)
+    return None, 2
+
+
+def _dash(a: argparse.Namespace) -> int:
+    """Edge. `--once` prints one `dash_feed.gather_feed` snapshot; `--feed` prints one per pass forever,
+    `interval` seconds apart; `--detail <kind> [id]` prints one `dash_detail_*.build` result. `--feed` and
+    `--once` together is a stderr message and exit 2, never a silent pick of one."""
+    if a.feed and a.once:
+        print("cox dash: --feed and --once are mutually exclusive", file=sys.stderr)
+        return 2
+    runs_dir, work_dir = Path(a.runs_dir), Path(a.work_dir)
+    if a.detail:
+        kind, id_ = a.detail[0], (a.detail[1] if len(a.detail) > 1 else None)
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        result, rc = _dash_detail(kind, id_, runs_dir, work_dir, now)
+        if rc == 0:
+            print(json.dumps(result))
+        return rc
+    if a.once:
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now)))
+        return 0
+    if a.feed:
+        while True:
+            now = datetime.datetime.now(datetime.UTC).isoformat()
+            print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now)))
+            sys.stdout.flush()
+            time.sleep(a.interval)
+    print("cox dash: pass --feed, --once or --detail", file=sys.stderr)
+    return 2
+
+
 def _home(a: argparse.Namespace) -> int:
     from agent_tools import home_screen
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
@@ -5048,6 +5111,21 @@ CONSOLE_GROUP = commands.Group(
         commands.Arg(("--profile",)),
     ),
     fn=_console,
+)
+
+DASH_GROUP = commands.Group(
+    name="dash",
+    help="a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind",
+    description="", epilog="",
+    args=(
+        commands.Arg(("--runs-dir",), {"default": "runs"}),
+        commands.Arg(("--work-dir",), {"default": "."}),
+        commands.Arg(("--feed",), {"action": "store_true"}),
+        commands.Arg(("--once",), {"action": "store_true"}),
+        commands.Arg(("--interval",), {"type": float, "default": 2}),
+        commands.Arg(("--detail",), {"nargs": "+", "metavar": "KIND"}),
+    ),
+    fn=_dash,
 )
 
 INSTALL_GROUP = commands.Group(
@@ -5641,6 +5719,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("console")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("dash")
     commands.build_parser(rows, [group], sub)
 
     dev = sub.add_parser("dev", help="moved: maintainer commands now run from the coxswain checkout",
@@ -6814,6 +6895,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
+    (DASH_GROUP, []),
     (INSTALL_GROUP, []),
     (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
