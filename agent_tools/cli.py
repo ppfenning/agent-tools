@@ -56,6 +56,7 @@ from agent_tools import (
     chair_run,
     chair_service,
     chair_service_host,
+    chair_smoke,
     cleanup,
     commands,
     console_screen,
@@ -6427,6 +6428,62 @@ def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
     return lost == ""
 
 
+def _smoke_revert_failure_result(
+    source: chair_exec.Action, land: chair_smoke.LandTrigger, exc: Exception,
+) -> chair_exec.Result:
+    """The needs_chair Result appended when `run_revert_pr` itself fails. It takes initiative, task_id and epoch
+    from the land action `source`, the initiative-and-cause shape `Action` documents, so the status line names it.
+    `source` is as often a land_phase as a plain land, and a land_phase carries no task_id; `chair_exec._phase_of`
+    folds in `phase` instead, the same way `escalation()` does, so a phase land's needs_chair still names it."""
+    reason = f"revert PR for {land['repo']} #{land['pr']} could not be opened: {exc}"
+    action: chair_exec.Action = {
+        "kind": "needs_chair", "initiative": source.get("initiative", ""), "task_id": source.get("task_id", ""),
+        "cause": "smoke_failed", "epoch": source.get("epoch", 0), "reason": reason, **chair_exec._phase_of(source),
+    }
+    return {"action": action, "status": "escalated", "reason": reason}
+
+
+def _land_action_for(results: list[chair_exec.Result], land: chair_smoke.LandTrigger) -> chair_exec.Action:
+    """The action of the first landed result in `land`'s repo, the one `smoke_targets` built `land` from."""
+    return next(r["action"] for r in results if r["status"] == "landed" and r["action"].get("repo", "") == land["repo"])
+
+
+def _chair_perform_with_smoke(runs_dir: Path, perform: chair_run.Perform) -> chair_run.Perform:
+    """Wraps `perform` with the post-land smoke: a landed coxswain-tools/-graphs PR runs the fixed smoke
+    commands once against the first triggering land's repo. A failure holds a `HoldRecord` and opens (never
+    merges) a revert PR; a pass clears an existing hold, which is how the hold clears on a later good land.
+
+    The revert itself can fail (`run_revert_pr` raises `CalledProcessError` at its first failing step, or
+    `OSError` when a command is missing). That failure is caught here and reported as an extra needs_chair
+    result rather than left to escape: `tick`'s own try block wraps only `format_status`, so an exception out
+    of `deps.perform` would drop every result already performed this tick, including the land that triggered
+    the smoke. The hold already written stays, so the land stays reverted-pending until a human intervenes.
+    """
+
+    def wrapped(
+        actions: list[chair_exec.Action], deps: chair_exec.Deps, current_epoch: Callable[[], int], dry_run_: bool,
+    ) -> list[chair_exec.Result]:
+        results = perform(actions, deps, current_epoch, dry_run_)
+        triggers = chair_exec.smoke_targets(results)
+        if not triggers:
+            return results
+        land = triggers[0]
+        smoke_results = chair_smoke.run_smoke_commands(land["repo"])
+        ok, failing = chair_smoke.smoke_verdict(smoke_results)
+        if not ok:
+            record = chair_smoke.hold_record(land, failing)
+            chair_smoke.write_hold(str(runs_dir), record)
+            try:
+                chair_smoke.run_revert_pr(chair_smoke.revert_pr_argv(land, record["tail"]))
+            except (subprocess.CalledProcessError, OSError) as exc:
+                return [*results, _smoke_revert_failure_result(_land_action_for(results, land), land, exc)]
+        elif chair_smoke.read_hold(str(runs_dir)) is not None:
+            chair_smoke.clear_hold(str(runs_dir))
+        return results
+
+    return wrapped
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -6665,6 +6722,7 @@ def _chair_run_deps(
         beat=beat, current_epoch=epoch,
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,
         release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
+        perform=_chair_perform_with_smoke(runs_dir, chair_exec.perform),
     )
 
 

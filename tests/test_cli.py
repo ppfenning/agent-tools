@@ -651,6 +651,128 @@ def test_facts_deps_window_and_weekly_report_est_when_there_is_no_fresh_meter(mo
     assert deps.facts_deps.weekly_source() == "est"
 
 
+def _land_result(repo: str, pr: int = 9, commit: str = "deadbeef") -> dict:
+    return {
+        "action": {"kind": "land", "repo": repo}, "status": "landed",
+        "reason": f"pr_create: https://example.com/x/pull/{pr}\n", "commit": commit,
+    }
+
+
+def _ok_smoke_result(command: list[str]) -> dict:
+    return {"command": command, "ok": True, "tail": "ok"}
+
+
+def _failing_smoke_result(command: list[str]) -> dict:
+    return {"command": command, "ok": False, "tail": "Traceback (most recent call last):\nboom"}
+
+
+def test_chair_perform_with_smoke_runs_smoke_once_for_a_landed_coxswain_tools_pr(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        cli.chair_smoke, "run_smoke_commands",
+        lambda repo_dir: calls.append(repo_dir) or [_ok_smoke_result(["cox", "route", "context"])],
+    )
+    results = [_land_result("/repos/coxswain-tools")]
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
+
+    got = wrapped([], object(), lambda: 1, False)
+
+    assert got == results
+    assert calls == ["/repos/coxswain-tools"]
+
+
+def test_chair_perform_with_smoke_skips_smoke_for_a_landed_umbrella_repo(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    calls = []
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda repo_dir: calls.append(repo_dir) or [])
+    results = [_land_result("/repos/coxswain-umbrella")]
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
+
+    wrapped([], object(), lambda: 1, False)
+
+    assert calls == []
+
+
+def test_chair_perform_with_smoke_holds_and_reverts_on_a_traceback(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    monkeypatch.setattr(
+        cli.chair_smoke, "run_smoke_commands",
+        lambda repo_dir: [
+            _ok_smoke_result(["cox", "route", "context"]),
+            _failing_smoke_result(["cox", "runs", "top", "--once"]),
+        ],
+    )
+    reverted = []
+    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", reverted.append)
+    results = [_land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")]
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
+
+    wrapped([], object(), lambda: 1, False)
+
+    held = cli.chair_smoke.read_hold(str(runs_dir))
+    assert held["cause"] == "smoke_failed"
+    assert len(reverted) == 1
+
+
+def test_chair_perform_with_smoke_clears_an_existing_hold_on_a_later_clean_pass(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    cli.chair_smoke.write_hold(str(runs_dir), {
+        "land": {"repo": "/repos/coxswain-tools", "pr": 3, "commit": "aaa"},
+        "failing_command": ["cox", "route", "context"], "tail": "Traceback: boom", "cause": "smoke_failed",
+    })
+    monkeypatch.setattr(
+        cli.chair_smoke, "run_smoke_commands",
+        lambda repo_dir: [
+            _ok_smoke_result(["cox", "route", "context"]),
+            _ok_smoke_result(["cox", "runs", "top", "--once"]),
+            _ok_smoke_result(["cox", "chair", "run", "--once", "--dry-run"]),
+        ],
+    )
+    results = [_land_result("/repos/coxswain-tools", pr=10, commit="bbb")]
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
+
+    wrapped([], object(), lambda: 1, False)
+
+    assert cli.chair_smoke.read_hold(str(runs_dir)) is None
+
+
+def test_chair_perform_with_smoke_keeps_the_hold_and_the_land_result_when_the_revert_pr_fails(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    monkeypatch.setattr(
+        cli.chair_smoke, "run_smoke_commands",
+        lambda repo_dir: [_failing_smoke_result(["cox", "runs", "top", "--once"])],
+    )
+
+    def _raise_called_process_error(argv):
+        raise sp.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", _raise_called_process_error)
+    land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
+    # a land_phase, the shape `chair_plan_land.plan_lands` actually emits: it carries `phase` and no `task_id`.
+    land_result["action"] = {
+        **land_result["action"], "kind": "land_phase", "initiative": "smoke-init", "phase": "3-wiring", "epoch": 4,
+    }
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: [land_result])
+
+    got = wrapped([], object(), lambda: 1, False)
+
+    assert land_result in got
+    needs_chair = [r for r in got if r["action"].get("kind") == "needs_chair"]
+    assert len(needs_chair) == 1
+    assert needs_chair[0]["action"]["cause"] == "smoke_failed"
+    assert needs_chair[0]["action"]["initiative"] == "smoke-init"
+    assert needs_chair[0]["action"]["phase"] == "3-wiring"
+    assert "could not be opened" in needs_chair[0]["reason"]
+    held = cli.chair_smoke.read_hold(str(runs_dir))
+    assert held["cause"] == "smoke_failed"
+
+
 def test_dash_once_prints_the_gathered_feed_as_one_json_line(monkeypatch, tmp_path, capsys):
     feed = {"runs": [], "as_of": "2026-09-29T00:00:00+00:00"}
     monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now: feed)

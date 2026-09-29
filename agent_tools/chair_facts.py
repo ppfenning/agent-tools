@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from agent_tools import pacing
+from agent_tools import chair_smoke, pacing
 from agent_tools.chair import lease_holder
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -89,6 +89,8 @@ class FactsDeps:
         "est" for the estimate. Judged from the same per-tick meter read as `window`, so the label cannot
         disagree with the figure. Optional, and absent means "est".
     weekly_source: the same reading as `window_source`, for `weekly`. Optional, and absent means "est".
+    runs_dir: the runs directory `limits_facts` reads `chair.hold.json` from, via `chair_smoke.read_hold`.
+        Optional, and absent means "", so no hold is ever read and `limits.smoke_hold` stays None.
     """
 
     lease: Callable[[], Row]
@@ -126,6 +128,7 @@ class FactsDeps:
     hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
+    runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -166,9 +169,13 @@ def window_start_day(start: datetime) -> str:
 
 def limits_facts(
     assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
-    window_source: str = "est", weekly_source: str = "est",
+    window_source: str = "est", weekly_source: str = "est", runs_dir: str = "",
 ) -> LimitsFacts:
-    """`launch_cap` is the whole lane budget on a launching verdict and none on `hold` or `stop`."""
+    """`launch_cap` is the whole lane budget on a launching verdict and none on `hold` or `stop`.
+
+    `smoke_hold` comes from `chair_smoke.read_hold(runs_dir)`, so a caller such as `chair_plan._launch_cap`
+    or the status line sees a held post-land smoke failure, cause and all, without reading the filesystem
+    itself. An empty `runs_dir` (the default) never touches the filesystem and reads as no hold."""
     fraction = weekly_fraction(weekly)
     return {
         "hard_stop": fraction >= policy.weekly_hard_stop_fraction,
@@ -180,6 +187,7 @@ def limits_facts(
         "window_start_day": window_start_day(weekly.start) if weekly is not None else None,
         "window_source": window_source,
         "weekly_source": weekly_source,
+        "smoke_hold": chair_smoke.read_hold(runs_dir) if runs_dir else None,
     }
 
 
@@ -375,7 +383,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
-            assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source()
+            assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source(),
+            deps.runs_dir(),
         ),
         "dispatch": dispatch,
         "approved": approved,
