@@ -399,6 +399,10 @@ def _capture_assess(monkeypatch):
 def test_usage_assessment_prefers_a_fresh_meter_window_for_both_figures(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _fresh_meter())
     monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: True)
+    monkeypatch.setattr(
+        cli.usage_meter, "usable_percentage",
+        lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: entry.used_percentage,
+    )
 
     def _as_window(entry, now, span):
         return _tagged_window(111.0 if span == timedelta(hours=5) else 333.0)
@@ -423,16 +427,17 @@ def test_usage_assessment_prefers_a_fresh_meter_window_for_both_figures(monkeypa
     assert sorted(recorded) == [("five_hour", Path(tmp_path)), ("weekly", Path(tmp_path))]
 
 
-def test_usage_assessment_falls_back_to_the_estimate_when_the_meter_is_not_fresh(monkeypatch, tmp_path):
+def test_usage_assessment_falls_back_to_the_estimate_when_the_meter_reading_is_past_reset(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _fresh_meter())
     monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: False)
+    monkeypatch.setattr(cli.usage_meter, "usable_percentage", lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: None)
     monkeypatch.setattr(
         cli.usage_meter, "as_window",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no meter window when the meter is not fresh")),
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no meter window when the reading is unusable")),
     )
     monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: 77.0 if kind == "five_hour" else None)
     recorded = []
-    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda *a, **k: recorded.append(a))
+    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda kind, entry, runs_dir, now: recorded.append(kind))
     seen_ceilings: dict = {}
 
     def _gather(runs_dir, now, ceiling_usd=None, usage=None):
@@ -457,6 +462,71 @@ def test_usage_assessment_falls_back_to_the_estimate_when_the_meter_is_not_fresh
     assert recorded == []  # meter not fresh: calibration is never rewritten
 
 
+def test_usage_assessment_uses_a_stale_but_usable_meter_reading(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _fresh_meter())
+    monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: False)
+    monkeypatch.setattr(
+        cli.usage_meter, "usable_percentage",
+        lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: entry.used_percentage + 5.0,
+    )
+    monkeypatch.setattr(
+        cli.usage_meter, "as_window",
+        lambda entry, now, span: _tagged_window(111.0 if span == timedelta(hours=5) else 333.0),
+    )
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: None)
+    recorded = []
+    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda kind, entry, runs_dir, now: recorded.append(kind))
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(222.0))
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _tagged_window(444.0))
+    captured = _capture_assess(monkeypatch)
+
+    cli._usage_assessment(tmp_path, 50.0, 200.0, None)
+
+    # a reading between 15 minutes old and its `resets_at` is not `fresh`, but `usable_percentage`
+    # still carries it forward, so the window stays meter-derived, not the pure-dollar estimate.
+    assert captured["window"].spent_usd == 111.0
+    assert captured["weekly"].spent_usd == 333.0
+    assert recorded == []  # carried forward is not face value: calibration is never rewritten
+
+
+@pytest.mark.parametrize(
+    ("observed_ago", "resets_in", "written"),
+    [
+        (timedelta(0), timedelta(hours=2), True),
+        (timedelta(hours=2), timedelta(hours=2), False),
+        (timedelta(hours=8), -timedelta(hours=1), False),
+    ],
+    ids=["fresh", "stale-but-usable", "past-reset"],
+)
+def test_usage_assessment_writes_the_implied_ceiling_only_from_a_fresh_reading(
+    monkeypatch, tmp_path, observed_ago, resets_in, written,
+):
+    """Runs the real `record_implied_ceiling` against a temp file: spend up to now over an old percentage inflates the ceiling."""
+    now = datetime.now(UTC)
+    meter = cli.usage_meter.Meter(
+        five_hour=cli.usage_meter.MeterEntry(used_percentage=40.0, resets_at=now + resets_in),
+        seven_day=cli.usage_meter.MeterEntry(used_percentage=60.0, resets_at=now + resets_in),
+        observed_at=now - observed_ago,
+    )
+    implied = tmp_path / "implied-ceilings.json"
+    real_record = cli.usage_meter.record_implied_ceiling
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: meter)
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli.usage_meter, "record_implied_ceiling",
+        lambda kind, entry, runs_dir, now: real_record(kind, entry, runs_dir, now, path=implied),
+    )
+    monkeypatch.setattr(cli.usage_meter.run_store, "cost_since", lambda runs_dir, since: 30.0)
+    monkeypatch.setattr(cli.usage_window, "read_usage", lambda *a, **k: None)
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(222.0))
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _tagged_window(444.0))
+    _capture_assess(monkeypatch)
+
+    cli._usage_assessment(tmp_path, 50.0, 200.0, None)
+
+    assert implied.exists() is written
+
+
 def _chair_run_deps_for(tmp_path, profile):
     runs = tmp_path / "runs"
     return cli._chair_run_deps(runs, profile, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
@@ -465,6 +535,10 @@ def _chair_run_deps_for(tmp_path, profile):
 def test_facts_deps_window_and_weekly_report_meter_when_the_meter_is_fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _fresh_meter())
     monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: True)
+    monkeypatch.setattr(
+        cli.usage_meter, "usable_percentage",
+        lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: entry.used_percentage,
+    )
     monkeypatch.setattr(
         cli.usage_meter, "as_window",
         lambda entry, now, span: _tagged_window(111.0 if span == timedelta(hours=5) else 333.0),
@@ -482,13 +556,51 @@ def test_facts_deps_window_and_weekly_report_meter_when_the_meter_is_fresh(monke
     assert deps.facts_deps.weekly_source() == "meter"
 
 
+def test_facts_deps_window_reports_est_for_a_stale_but_usable_meter(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: _fresh_meter())
+    monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: False)
+    monkeypatch.setattr(
+        cli.usage_meter, "usable_percentage",
+        lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: entry.used_percentage + 5.0,
+    )
+    monkeypatch.setattr(
+        cli.usage_meter, "as_window",
+        lambda entry, now, span: _tagged_window(111.0 if span == timedelta(hours=5) else 333.0),
+    )
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda *a, **k: None)
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(222.0))
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _tagged_window(444.0))
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    # the reading is not `fresh`, but `usable_percentage` still carries it forward, so the window
+    # stays meter-derived (111.0/333.0) even though the label stays "est" per the ticket's rule.
+    assert deps.facts_deps.window().spent_usd == 111.0
+    assert deps.facts_deps.weekly().spent_usd == 333.0
+    assert deps.facts_deps.window_source() == "est"
+    assert deps.facts_deps.weekly_source() == "est"
+
+
 def _meter_tick_fakes(monkeypatch, verdicts):
     """Counts meter reads; `fresh` answers from `verdicts` in call order, so a meter that ages past
-    the freshness band mid-tick shows up as a True then a False."""
+    the freshness band mid-tick shows up as a True then a False. `usable_percentage` tracks the same
+    verdict `fresh` last returned, since both are decided once per tick behind `meter_fresh_now`'s cache."""
     reads = []
     answers = iter(verdicts)
+    state: dict = {"fresh": None}
+
+    def _fresh(meter, now, max_age=None):
+        verdict = next(answers)
+        state["fresh"] = verdict
+        return verdict
+
     monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: reads.append(1) or _fresh_meter())
-    monkeypatch.setattr(cli.usage_meter, "fresh", lambda meter, now, max_age=None: next(answers))
+    monkeypatch.setattr(cli.usage_meter, "fresh", _fresh)
+    monkeypatch.setattr(
+        cli.usage_meter, "usable_percentage",
+        lambda kind, entry, observed_at, now, runs_dir, ceiling_usd: entry.used_percentage if state["fresh"] else None,
+    )
     monkeypatch.setattr(
         cli.usage_meter, "as_window",
         lambda entry, now, span: _tagged_window(111.0 if span == timedelta(hours=5) else 333.0),
