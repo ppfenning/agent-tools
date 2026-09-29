@@ -108,14 +108,16 @@ def would_items(results: Sequence[Result]) -> list[str]:
 
 
 def _five_hour(limits: dict) -> str:
-    """LimitsFacts carries no 5-hour field yet; show one when the edge supplies `five_hour_fraction`."""
+    """`5h <fraction> (<source>)`; `5h n/a` when the edge supplies no `five_hour_fraction`."""
     fraction = limits.get("five_hour_fraction")
-    return "5h n/a" if fraction is None else f"5h {fraction:.0%}"
+    if fraction is None:
+        return "5h n/a"
+    return f"5h {fraction:.0%} ({limits.get('window_source', 'est')})"
 
 
 def _weekly(limits: dict) -> str:
-    """`weekly <fraction>/<hard stop fraction>`, with `since <window_start_day>` when the edge supplies one."""
-    base = f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%}"
+    """`weekly <fraction>/<hard stop fraction> (<source>)`, with `since <window_start_day>` when the edge supplies one."""
+    base = f"weekly {limits['weekly_fraction']:.0%}/{limits['hard_stop_fraction']:.0%} ({limits.get('weekly_source', 'est')})"
     window_start_day = limits.get("window_start_day")
     return base if window_start_day is None else f"{base} since {window_start_day}"
 

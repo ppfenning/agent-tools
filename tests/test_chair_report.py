@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_report import (
     Deps,
+    _five_hour,
+    _weekly,
     echo_line,
     format_status,
     housekeeping_fragment,
@@ -15,11 +17,13 @@ from agent_tools.notify import Notification
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 
 
-def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None, window_start_day=None):
+def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None, window_start_day=None,
+           five_hour_source="meter", weekly_source="meter"):
     return {
         "limits": {"hard_stop": hard_stop, "weekly_fraction": weekly, "hard_stop_fraction": 0.9,
                    "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five,
-                   "window_start_day": window_start_day},
+                   "window_start_day": window_start_day, "window_source": five_hour_source,
+                   "weekly_source": weekly_source},
         "dispatch": {"max_in_flight": 4, "live_runs": 2},
         "last_housekeeping_at": last_housekeeping_at,
     }
@@ -33,7 +37,7 @@ def test_holding_line_carries_lanes_lands_limits_and_needs():
     actions = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
     line = format_status(_facts(), actions, [_landed()], NOW)
     assert line == (
-        "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% weekly 61%/90% | holding"
+        "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter) | holding"
         " | needs chair: epic-a:harness | housekeeping never"
     )
 
@@ -56,13 +60,31 @@ def test_standby_line_names_the_holder_and_host():
 
 def test_hard_stop_line_says_hard_stop():
     line = format_status(_facts(hard_stop=True, weekly=0.95), [], [], NOW)
-    assert "weekly 95%/90% hard stop" in line
+    assert "weekly 95%/90% (meter) hard stop" in line
     assert "hard stop" not in format_status(_facts(), [], [], NOW)
 
 
 def test_a_window_start_day_appears_since_it_in_the_weekly_fragment():
     line = format_status(_facts(window_start_day="Sun 04:00"), [], [], NOW)
-    assert "weekly 61%/90% since Sun 04:00" in line
+    assert "weekly 61%/90% (meter) since Sun 04:00" in line
+
+
+def test_five_hour_names_a_meter_source():
+    assert _five_hour({"five_hour_fraction": 0.42, "window_source": "meter"}) == "5h 42% (meter)"
+
+
+def test_five_hour_names_an_est_source():
+    assert _five_hour({"five_hour_fraction": 0.42, "window_source": "est"}) == "5h 42% (est)"
+
+
+def test_weekly_names_a_meter_source():
+    limits = {"weekly_fraction": 0.61, "hard_stop_fraction": 0.9, "weekly_source": "meter", "window_start_day": None}
+    assert _weekly(limits) == "weekly 61%/90% (meter)"
+
+
+def test_weekly_names_an_est_source():
+    limits = {"weekly_fraction": 0.61, "hard_stop_fraction": 0.9, "weekly_source": "est", "window_start_day": None}
+    assert _weekly(limits) == "weekly 61%/90% (est)"
 
 
 def test_dry_run_line_says_dry_run():
