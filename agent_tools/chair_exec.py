@@ -93,6 +93,7 @@ class Deps:
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
     send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
+    ids_mode: str = "slug"  # the routing profile's `ids:` key; "sequence" makes a launch_decompose carry --initiative-id/--task-ids
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -179,10 +180,13 @@ def tail(text: str, limit: int) -> str:
     return rest if newline and rest.strip() else window
 
 
-def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
+def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") -> list[str] | None:
     """The cox argv for a land, fetch, launch or pull action; None for any other kind or a missing required field.
 
     A decompose launch needs `initiative_id`, which `decompose_id` derives from the intake; it is never taken from the path.
+    `ids_mode` is the routing profile's `ids:` key: "sequence" appends `--task-ids ordinal` so the graph's own
+    tasks come out named `<initiative_id>-t1`, `<initiative_id>-t2`, ...; "slug" (or anything else) appends neither
+    flag, today's behaviour.
     """
     kind = action.get("kind")
     # The loop already holds the chair: a command it starts must never claim the loop lease itself (a land that
@@ -198,7 +202,10 @@ def argv_for(action: Action, initiative_id: str = "") -> list[str] | None:
     if kind in ("fetch", "fetch_exit"):
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
-        return ["cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, "--no-claim"] if idea and initiative_id else None
+        task_ids = ["--task-ids", "ordinal"] if ids_mode == "sequence" else []
+        return [
+            "cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, *task_ids, "--no-claim",
+        ] if idea and initiative_id else None
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim"] if initiative and task else None
     if kind in LAUNCH_KINDS:
@@ -429,7 +436,7 @@ def _launch(action: Action, deps: Deps) -> Result:
         return _result(action, "refused", initiative_id.reason)
     if action.get("kind") in ("launch_epic", "relaunch") and action.get("initiative"):
         _merge_and_write(deps.work_dir, action["initiative"])
-    argv = argv_for(action, initiative_id)
+    argv = argv_for(action, initiative_id, deps.ids_mode)
     if argv is None:
         return _result(action, "refused", f"{action.get('kind')} names no initiative, task or intake id")
     code, output = deps.run(argv)
@@ -736,6 +743,7 @@ def edge_deps(
     host: str,
     harness_python: str,
     log_retention_days: int = 7,
+    ids_mode: str = "slug",
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
@@ -756,4 +764,5 @@ def edge_deps(
         check_login=partial(_check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S)),
         log_retention_days=log_retention_days,
         harness_python=harness_python,
+        ids_mode=ids_mode,
     )

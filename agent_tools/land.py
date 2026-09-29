@@ -46,6 +46,7 @@ __all__ = [
     "merge_pages",
     "phase_landable",
     "phase_pr_body",
+    "phase_pr_title",
     "poll_backoff_s",
     "pr_body",
     "recover_plan",
@@ -166,6 +167,15 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
     return "\n".join(lines)
 
 
+def phase_pr_title(initiative_id: str, phase: str, initiative_title: str) -> str:
+    """`epic <id>: <phase> - <title>`, `<id>` being whatever `initiative_id` already is -- a short id under
+    `ids: sequence`, the old slug key under `ids: slug` -- and `<title>` the initiative's own title. The
+    ` - <title>` suffix is dropped when `initiative_title` is empty, since a caller that has not resolved
+    one yet (an older record, or a test literal) should still get a readable subject."""
+    subject = f"epic {initiative_id}: {phase}"
+    return f"{subject} - {initiative_title}" if initiative_title else subject
+
+
 def _phase_approved_files(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """One `{"task": id, "files_touched": [...]}` per `approved` item whose
     record's `build.files_touched` is non-empty, in item order; a `done` or
@@ -203,8 +213,8 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         squash_step,
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
         {"kind": "push", "branch": pr_branch},
-        {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records),
-         "head": pr_branch, "base": default_branch},
+        {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
+         "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
         {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
          "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},

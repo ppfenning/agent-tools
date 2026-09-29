@@ -1294,6 +1294,17 @@ def _initiative_of_phase(work_root: Path, phase: str, run_id: str | None = None)
     return found.pop() if len(found) == 1 else None
 
 
+def _initiative_title(work_root: Path, initiative: str) -> str:
+    """Edge. `work_root/<initiative>/initiative.md`'s own `title:`; "" when the file is missing, unreadable,
+    or carries no title -- the phase land PR title then falls back to its id-and-phase-only form."""
+    try:
+        text = (work_root / initiative / "initiative.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    value = route.parse_frontmatter(text)[0].get("title", "")
+    return value if isinstance(value, str) else ""
+
+
 def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, list[str]]:
     """Commit subjects ahead of `default_branch`, per candidate branch, with
     merge commits excluded by `git` (`--no-merges`) and patch-equivalent
@@ -2144,8 +2155,11 @@ def _runs_land(a: argparse.Namespace) -> int:
         if items is None:
             print(f"land: no work items at {items_path}, expected the phase's tickets")
             return 2
-        plan_steps = land.land_plan({**phase_record, "initiative": initiative}, {}, default_branch, repo_facts,
-                                    items=items, task_records=task_records)
+        initiative_title = _initiative_title(runs_dir.parent / "work", initiative)
+        plan_steps = land.land_plan(
+            {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
+            repo_facts, items=items, task_records=task_records,
+        )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
         lease_task = f"phase:{initiative}/{phase}"
@@ -3755,6 +3769,8 @@ def _route_launch(a: argparse.Namespace) -> int:
                 initiative_md.write_text(initiative_content, encoding="utf-8")
         run_id = route.next_run_id(_taken_run_names(runs_dir), a.initiative_id)
         needs = {"idea": a.idea, "initiative_id": a.initiative_id}
+        if getattr(a, "task_ids", None):
+            needs["task_ids"] = a.task_ids
         env_repo = ""
     else:  # cos
         already = _refuse_if_already_running(runs_dir, "cos")
@@ -6250,6 +6266,7 @@ ROUTE_COMMANDS = [
                 (
                     commands.Arg(("--profile",)), commands.Arg(("--idea",), {"required": True}),
                     commands.Arg(("--initiative-id",), {"required": True}),
+                    commands.Arg(("--task-ids",), {"choices": ["ordinal"], "help": "name the graph's own tasks <initiative-id>-t1, -t2, ..."}),
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
@@ -6748,6 +6765,7 @@ def _chair_run_deps(
         host=host,
         harness_python=harness_python,
         log_retention_days=run_logs.retention_days(profile),
+        ids_mode=profile.get("ids", "slug"),
     )
     return chair_run.RunDeps(
         facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),

@@ -525,7 +525,7 @@ def surface_candidates(body: str, repo: str) -> list[str]:
 def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
     """Build the harness command line, spec §4, from a parsed `profile`
     and the graph-specific `needs` (`initiative`/`repo` for `epic`, plus
-    `task` for `rescue`; `idea`/`initiative_id` for `decompose`). Pure: no Popen, no env reads.
+    `task` for `rescue`; `idea`/`initiative_id`, plus an optional `task_ids`, for `decompose`). Pure: no Popen, no env reads.
     """
     harness_dir = profile["harness_dir"]
     workspace_dir = profile["workspace_dir"]
@@ -558,6 +558,8 @@ def harness_argv(profile: dict, graph: str, run_id: str, **needs) -> list:
             argv += ["--fix-attempts", str(needs["fix_attempts"])]
     elif graph == "decompose":
         argv += ["--idea", needs["idea"], "--initiative-id", needs["initiative_id"]]
+        if needs.get("task_ids"):
+            argv += ["--task-ids", needs["task_ids"]]
     elif graph == "cos":
         # `_KNOWN_KEYS` carries no `max_parallel` field, so a profile can
         # never supply one; the bound is the literal default until the

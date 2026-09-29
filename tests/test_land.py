@@ -621,6 +621,30 @@ def test_phase_plan_squash_phase_step_for_a_two_task_phase():
     }
 
 
+def test_phase_pr_title_renders_id_phase_and_title():
+    assert land.phase_pr_title("I412", "t1", "Widget") == "epic I412: t1 - Widget"
+
+
+def test_phase_pr_title_drops_the_suffix_when_no_title_is_known():
+    assert land.phase_pr_title("x", "seams", "") == "epic x: seams"
+
+
+def test_phase_plan_pr_create_title_carries_the_initiative_title_from_the_record():
+    phase_record = {
+        "run": "I412-5", "phase": "t1", "initiative": "I412", "initiative_title": "Widget",
+        "phase_verdict": {"reasoning": "solid"},
+    }
+    items = [{"id": "t1-task", "status": "done"}]
+    task_records = [{
+        "task": "t1-task", "run": "I412-5", "phase": "t1", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]},
+    }]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    pr = next(s for s in steps if s["kind"] == "pr_create")
+    assert pr["title"] == "epic I412: t1 - Widget"
+
+
 def test_phase_plan_refuses_on_an_unlandable_item():
     phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
     items = [{"id": "seams-task", "status": "in_progress"}]
