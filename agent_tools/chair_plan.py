@@ -2,7 +2,7 @@
 
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
@@ -27,6 +27,12 @@ _LAUNCHES = {"relaunch", "retry", "rescue"}
 
 def _launch_cap(limits: LimitsFacts) -> int:
     return 0 if limits["go_degraded"] or limits.get("smoke_hold") is not None else max(limits["launch_cap"], 0)
+
+
+def initiative_homes(newest_run_host: Mapping[str, str], unfinished: Collection[str]) -> dict[str, str]:
+    """An initiative in `unfinished` (a carried partial phase or an approved task not yet landed) is homed on
+    its newest run's host, "" meaning this machine; an initiative with no unfinished work has no entry."""
+    return {initiative: newest_run_host[initiative] for initiative in unfinished if initiative in newest_run_host}
 
 
 def _lease_gate(lease: LeaseFacts) -> list[Action] | None:

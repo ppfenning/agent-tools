@@ -1,7 +1,7 @@
 import copy
 from datetime import UTC, datetime
 
-from agent_tools.chair_plan import _free_lanes, _launch_cap, plan_stall, plan_tick
+from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_stall, plan_tick
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -607,3 +607,15 @@ def test_a_standby_tick_plans_no_housekeeping():
 def test_a_tick_that_would_emit_two_housekeeping_actions_is_capped_at_one_and_last():
     kinds = _kinds(plan_tick(_facts(approved=[_approved("t1")], initiatives=[_initiative("i")]), _NOW))
     assert (kinds.count("housekeeping"), kinds[-1], "land_phase" in kinds) == (1, "housekeeping", True)
+
+
+def test_an_initiative_with_unfinished_work_is_homed_on_its_newest_runs_host():
+    assert initiative_homes({"demo": "jarvis"}, {"demo"}) == {"demo": "jarvis"}
+
+
+def test_an_initiative_with_no_unfinished_work_has_no_home_entry():
+    assert initiative_homes({"demo": "jarvis"}, set()) == {}
+
+
+def test_an_empty_newest_run_host_maps_to_the_local_machine():
+    assert initiative_homes({"demo": ""}, {"demo"}) == {"demo": ""}
