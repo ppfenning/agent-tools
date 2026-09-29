@@ -120,7 +120,24 @@ def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
         "go_degraded": False,
         "five_hour_fraction": 0.01,
         "window_start_day": "Fri 07:00 EDT",
+        "window_source": "est",
+        "weekly_source": "est",
     }
+
+
+def test_a_meter_backed_window_source_callable_reports_meter_in_limits():
+    deps = replace(_deps(), window_source=lambda: "meter")
+    assert gather_facts(deps, NOW)["limits"]["window_source"] == "meter"
+
+
+def test_a_meter_backed_weekly_source_callable_reports_meter_in_limits():
+    deps = replace(_deps(), weekly_source=lambda: "meter")
+    assert gather_facts(deps, NOW)["limits"]["weekly_source"] == "meter"
+
+
+def test_absent_source_callables_default_to_est_in_limits():
+    limits = gather_facts(_deps(), NOW)["limits"]
+    assert (limits["window_source"], limits["weekly_source"]) == ("est", "est")
 
 
 def test_five_hour_fraction_is_the_assessments_spent_fraction():

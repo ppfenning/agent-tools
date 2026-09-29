@@ -80,6 +80,10 @@ class FactsDeps:
     stranded_records: the raw per-run task records `chair_read_stranded.stranded_from_rows` pairs against `queue`'s
         task rows, the shape `_chair_stranded_inputs` reads from each run's `tasks/*/*.json` file. Optional, and
         absent leaves `stranded` on the file reader even when `queue` has rows.
+    window_source: "meter" when `window` built this tick's figure from a fresh status-line meter entry, else
+        "est" for the estimate. Judged from the same per-tick meter read as `window`, so the label cannot
+        disagree with the figure. Optional, and absent means "est".
+    weekly_source: the same reading as `window_source`, for `weekly`. Optional, and absent means "est".
     """
 
     lease: Callable[[], Row]
@@ -113,6 +117,8 @@ class FactsDeps:
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
+    window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
+    weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -152,7 +158,8 @@ def window_start_day(start: datetime) -> str:
 
 
 def limits_facts(
-    assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int
+    assessment: pacing.Assessment, policy: pacing.Policy, weekly: pacing.Window | None, max_in_flight: int,
+    window_source: str = "est", weekly_source: str = "est",
 ) -> LimitsFacts:
     """`launch_cap` is the whole lane budget on a launching verdict and none on `hold` or `stop`."""
     fraction = weekly_fraction(weekly)
@@ -164,6 +171,8 @@ def limits_facts(
         "go_degraded": assessment.verdict == "go_degraded",
         "five_hour_fraction": assessment.spent_fraction,
         "window_start_day": window_start_day(weekly.start) if weekly is not None else None,
+        "window_source": window_source,
+        "weekly_source": weekly_source,
     }
 
 
@@ -354,7 +363,9 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
-        "limits": limits_facts(assessment, policy, weekly, dispatch["max_in_flight"]),
+        "limits": limits_facts(
+            assessment, policy, weekly, dispatch["max_in_flight"], deps.window_source(), deps.weekly_source()
+        ),
         "dispatch": dispatch,
         "approved": approved,
         "initiatives": initiatives,

@@ -32,6 +32,8 @@ class LimitsFacts(TypedDict):
     go_degraded: bool
     five_hour_fraction: float | None
     window_start_day: str | None  # the weekly window's start in EASTERN, as `Sun 04:00 EDT`; None when there is no weekly window
+    window_source: str  # "meter" when the five-hour figure came from a fresh status-line meter entry, else "est"
+    weekly_source: str  # the same reading as window_source, for the weekly figure
 
 
 class HostLanes(TypedDict):
