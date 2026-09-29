@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -33,11 +34,11 @@ from agent_tools import (
     store_cli,
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
-from agent_tools.chair_types import Action, is_fenced
+from agent_tools.chair_types import Action, LandTrigger, is_fenced
 
 __all__ = [
     "LAUNCH_KINDS", "Deps", "Refusal", "Result", "argv_for", "branch_pattern", "decompose_id", "delete_branches_with", "edge_deps",
-    "escalation", "land_refusal", "landed", "perform", "tail",
+    "escalation", "land_commit", "land_refusal", "landed", "perform", "smoke_targets", "tail",
 ]
 
 Status = Literal[
@@ -55,6 +56,7 @@ class Result(TypedDict):
     host: NotRequired[str]  # a fetch_exit's remote host, read from its <run>.remote.json
     needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
+    commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,14 @@ def _recorded(result: Result) -> Action:
     return {**result["action"], "status": result["status"], "reason": tail(result["reason"], _REASON_CAP)}  # type: ignore[typeddict-item]
 
 
+def _land_result(action: Action, repo: str, code: int, output: str) -> Result:
+    """Same as `_result(action, "landed"/"not_landed", output)`, but a true `landed()` also carries the repo's
+    new origin/main commit from `land_commit`, run right after so nothing else has moved origin/main yet."""
+    if not landed(code, output):
+        return _result(action, "not_landed", output)
+    return {**_result(action, "landed", output), "commit": land_commit(repo)}
+
+
 def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     repo = action.get("repo", "")
     argv = argv_for(action)
@@ -232,7 +242,7 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     if _repo_busy(output):
         return _result(action, "busy", output)
-    return _result(action, "landed" if landed(code, output) else "not_landed", output)
+    return _land_result(action, repo, code, output)
 
 
 def _swept_branches(deps: Deps, repo: str, pattern: str, carry: set[str]) -> tuple[list[str], str]:
@@ -308,7 +318,7 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
     if _repo_busy(output):
         return _result(action, "busy", output)
-    return _result(action, "landed" if landed(code, output) else "not_landed", output)
+    return _land_result(action, repo, code, output)
 
 
 def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
@@ -624,6 +634,29 @@ def _escalate(land: Action, result: Result) -> Result:
     return _result(raised, "escalated", f"land {_land_subject(land)} {result['status']}")
 
 
+_SMOKE_REPOS = frozenset({"coxswain-tools", "coxswain-graphs"})
+_PR_URL_RE = re.compile(r"^pr_create: \S*/pull/(\d+)\s*$", re.MULTILINE)  # only the step line, never a stray /pull/ elsewhere
+
+
+def _pr_from_reason(reason: str) -> int:
+    """The PR number a land's captured output names: its `pr_create: <url>` line (`cli.py`'s `_land_walk`)
+    always runs before `merge:`/`mark_done:` on a true `landed()` result, so it is already in `reason`; 0
+    when no such line is there."""
+    match = _PR_URL_RE.search(reason)
+    return int(match[1]) if match else 0
+
+
+def smoke_targets(results: list[Result]) -> list[LandTrigger]:
+    """A `LandTrigger` for every landed result in coxswain-tools or coxswain-graphs, for the tick wiring's
+    post-land smoke; any other repo, including an umbrella/meta one, is skipped. An action's repo is a checkout
+    path, not a bare name, so the match is on its last component and the trigger keeps the full path for `git -C`."""
+    return [
+        {"repo": r["action"].get("repo", ""), "pr": _pr_from_reason(r["reason"]), "commit": r.get("commit", "")}
+        for r in results
+        if r["status"] == "landed" and Path(r["action"].get("repo", "")).name in _SMOKE_REPOS
+    ]
+
+
 _LOGIN_CHECK_TIMEOUT_S = 60  # an unreachable lane host must not stall a tick
 
 
@@ -636,6 +669,13 @@ def run_argv(argv: list[str], cwd: Path | None = None, timeout: float | None = N
     except subprocess.TimeoutExpired:
         return 124, f"{argv[0] if argv else '<empty argv>'}: timed out after {timeout}s"
     return done.returncode, done.stdout + done.stderr
+
+
+def land_commit(repo_dir: str) -> str:
+    """Edge. `origin/main`'s commit hash in `repo_dir`, read right after a true `landed()` result so it reflects
+    the land that just happened before anything else can move origin/main; "" on any git failure."""
+    code, output = run_argv(["git", "-C", repo_dir, "log", "-1", "--format=%H", "origin/main"])
+    return output.strip() if code == 0 else ""
 
 
 def delete_branches_with(run: Run, repo: str, pattern: str) -> tuple[list[str], str]:
