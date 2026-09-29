@@ -58,7 +58,7 @@ def test_the_loop_s_own_host_is_checked_locally_with_no_ssh(monkeypatch) -> None
     row = check_login_on_host("omarchy", "user@omarchy", {}, NOW, ssh_run, cli_run)
 
     assert calls == [["claude", "auth", "status"]]
-    assert row["versions_json"] == {"login_ok": True, "login_checked_at": NOW}
+    assert row["versions_json"] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth"}
 
 
 def test_a_different_host_than_the_loop_s_own_is_still_checked_over_ssh(monkeypatch) -> None:
@@ -75,3 +75,94 @@ def test_a_different_host_than_the_loop_s_own_is_still_checked_over_ssh(monkeypa
     check_login_on_host("shed", "user@shed", {}, NOW, ssh_run, cli_run)
 
     assert calls == [["ssh", "user@shed", "claude auth status"]]
+
+
+def test_a_claude_code_runner_call_builds_the_same_argv_and_never_calls_env_check_argv(monkeypatch) -> None:
+    calls: list = []
+
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return 0, '{"loggedIn": true}'
+
+    def cli_run(argv: list[str]) -> dict:
+        return {"name": "shed", "versions_json": _versions_arg(argv)}
+
+    def _boom(_var: str) -> list[str]:
+        raise AssertionError("env_check_argv must not be called for the claude-code runner")
+
+    monkeypatch.setattr(chair_login_check, "env_check_argv", _boom)
+
+    row = check_login_on_host("shed", "user@shed", {}, NOW, ssh_run, cli_run, runner="claude-code")
+
+    assert calls == [["ssh", "user@shed", "claude auth status"]]
+    assert row["versions_json"] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth"}
+
+
+def test_an_env_vars_runner_with_every_variable_present_is_logged_in() -> None:
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        return 0, "some-secret-value\n"
+
+    def cli_run(argv: list[str]) -> dict:
+        return {"name": "shed", "versions_json": _versions_arg(argv)}
+
+    row = check_login_on_host(
+        "shed", "user@shed", {}, NOW, ssh_run, cli_run, runner="litellm", env_names=("MY_API_KEY",)
+    )
+
+    versions = row["versions_json"]
+    assert versions["login_ok"] is True
+    assert versions["check"] == "env_vars"
+    assert versions["login_checked_at"] == NOW
+    assert "reason" not in versions
+
+
+def test_an_env_vars_runner_with_a_missing_variable_names_it_in_the_reason() -> None:
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        return 0, ""
+
+    def cli_run(argv: list[str]) -> dict:
+        return {"name": "shed", "versions_json": _versions_arg(argv)}
+
+    row = check_login_on_host(
+        "shed", "user@shed", {}, NOW, ssh_run, cli_run, runner="litellm", env_names=("MY_API_KEY",)
+    )
+
+    versions = row["versions_json"]
+    assert versions["login_ok"] is False
+    assert versions["check"] == "env_vars"
+    assert "MY_API_KEY" in versions["reason"]
+
+
+def test_an_env_vars_runner_on_an_unreachable_host_is_not_logged_in() -> None:
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        return 255, "ssh: connect to host x: Connection refused"
+
+    def cli_run(argv: list[str]) -> dict:
+        return {"name": "shed", "versions_json": _versions_arg(argv)}
+
+    row = check_login_on_host(
+        "shed", "user@shed", {}, NOW, ssh_run, cli_run, runner="litellm", env_names=("MY_API_KEY",)
+    )
+
+    assert row["versions_json"]["login_ok"] is False
+
+
+def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_nothing() -> None:
+    calls: list = []
+
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return 0, "unused"
+
+    def cli_run(argv: list[str]) -> dict:
+        return {"name": "shed", "versions_json": _versions_arg(argv)}
+
+    row = check_login_on_host("shed", "user@shed", {}, NOW, ssh_run, cli_run, runner="litellm")
+
+    assert row["versions_json"] == {
+        "login_ok": False,
+        "login_checked_at": NOW,
+        "check": "env_vars",
+        "reason": "no auth_env or endpoint_env configured",
+    }
+    assert calls == []

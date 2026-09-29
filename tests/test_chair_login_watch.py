@@ -55,7 +55,20 @@ def test_a_never_checked_host_with_login_ok_absent_is_not_blocked():
 def test_merge_login_versions_adds_keys_without_mutating_input():
     versions = {"cox": "0.20.0"}
     merged = merge_login_versions(versions, True, "t")
-    assert merged == {"cox": "0.20.0", "login_ok": True, "login_checked_at": "t"}
+    assert merged == {"cox": "0.20.0", "login_ok": True, "login_checked_at": "t", "check": "claude_auth"}
+    assert versions == {"cox": "0.20.0"}
+
+
+def test_merge_login_versions_carries_check_and_reason_without_mutating_input():
+    versions = {"cox": "0.20.0"}
+    merged = merge_login_versions(versions, False, "t", check="env_vars", reason="missing MY_API_KEY")
+    assert merged == {
+        "cox": "0.20.0",
+        "login_ok": False,
+        "login_checked_at": "t",
+        "check": "env_vars",
+        "reason": "missing MY_API_KEY",
+    }
     assert versions == {"cox": "0.20.0"}
 
 

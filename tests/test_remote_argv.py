@@ -6,6 +6,7 @@ import pytest
 
 from agent_tools.remote_argv import (
     doctor_argv,
+    env_check_argv,
     git_fetch_argv,
     launch_argv,
     rsync_pull_argv,
@@ -25,6 +26,10 @@ def test_ssh_argv_joins_the_remote_command_into_one_quoted_word():
 
 def test_doctor_argv_is_the_cox_setup_doctor_command():
     assert doctor_argv() == ["cox", "setup", "doctor"]
+
+
+def test_env_check_argv_is_printenv_of_the_variable():
+    assert env_check_argv("MY_API_KEY") == ["printenv", "MY_API_KEY"]
 
 
 def test_launch_argv_places_each_value_after_its_flag():

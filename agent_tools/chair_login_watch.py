@@ -72,7 +72,15 @@ def login_needs_chair(hosts: Sequence[Row]) -> list[dict]:
     return [{"kind": "needs_chair", "host": name, "cause": "login_lapsed"} for name in sorted(login_blocked(hosts))]
 
 
-def merge_login_versions(versions: Mapping[str, Any], login_ok: bool, checked_at: str) -> dict:
-    """A new dict carrying every key of `versions` plus `login_ok` and `login_checked_at` set to the
-    given values. `versions` itself is never mutated."""
-    return {**versions, "login_ok": login_ok, "login_checked_at": checked_at}
+def merge_login_versions(
+    versions: Mapping[str, Any],
+    login_ok: bool,
+    checked_at: str,
+    check: str = "claude_auth",
+    reason: str | None = None,
+) -> dict:
+    """A new dict carrying every key of `versions` plus `login_ok`, `login_checked_at` and `check` set to
+    the given values. `reason` is added only when it is not `None`; a `None` reason is dropped, never
+    stored as a null. `versions` itself is never mutated."""
+    merged = {**versions, "login_ok": login_ok, "login_checked_at": checked_at, "check": check}
+    return merged if reason is None else {**merged, "reason": reason}
