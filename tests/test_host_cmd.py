@@ -200,6 +200,49 @@ def test_cox_host_add_names_the_profile_lane_hosts_the_table_now_overrides(tmp_p
     )
 
 
+def test_cox_host_capacity_builds_the_upsert_argv_from_the_stores_own_row(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)
+    (tmp_path / "ws").mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
+    row = {"name": "jarvis", "ssh": "jarvis", "capacity": 8, "state": "active", "weight": 1, "capabilities": None}
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [row])
+    calls: list[list[str]] = []
+
+    def fake_runner(runs_dir):
+        def run(argv: list[str]) -> tuple[int, str]:
+            calls.append(argv)
+            return 0, "{}"
+
+        return run
+
+    monkeypatch.setattr(cli.store_cli, "runner", fake_runner)
+    args = argparse.Namespace(profile=str(profile), name="jarvis", n=0, json=False)
+
+    assert cli._host_capacity(args) == 0
+    assert calls == [host_cmd.capacity_upsert_argv(row, 0, "unlabeled")]
+    assert "--capacity" in calls[0] and calls[0][calls[0].index("--capacity") + 1] == "0"
+    assert "--ssh" in calls[0] and calls[0][calls[0].index("--ssh") + 1] == "jarvis"
+
+
+def test_cox_host_capacity_refuses_a_host_absent_from_the_table(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ws").mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [])
+
+    def _refuse_runner(runs_dir):
+        raise AssertionError("store_cli must not run for a host absent from the table")
+
+    monkeypatch.setattr(cli.store_cli, "runner", _refuse_runner)
+    args = argparse.Namespace(profile=str(profile), name="ghost", n=4, json=False)
+
+    code = cli._host_capacity(args)
+
+    assert code == 1
+    assert capsys.readouterr().out.strip() == "refused ghost: no such host"
+
+
 def _on(tmp_path, versions_json):
     import sqlite3
 

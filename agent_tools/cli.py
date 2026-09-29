@@ -6209,6 +6209,13 @@ def _chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else _CHAIR_MAX_IN_FLIGHT
 
 
+def _local_max_in_flight(runs_dir: Path, profile: dict, hostname: str) -> int:
+    """The local lane cap: the hosts-table row's own `capacity` when one exists for `hostname`, else
+    `_chair_max_in_flight`'s existing cartridge, then pacing-file, then default-3 chain."""
+    row = next((r for r in run_store.hosts(runs_dir) if r.get("name") == hostname), None)
+    return _chair_max_in_flight(runs_dir, profile) if row is None or row.get("capacity") is None else int(row["capacity"])
+
+
 def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]:
     """Edge. The inputs of `runs_stranded.stranded`. Item states come from the store under mode "store", as the docket's do.
 
@@ -6292,7 +6299,7 @@ def _chair_run_deps(
 
     def docket() -> dict:
         if not snapshot:
-            snapshot.append(chair_read_docket.read_docket(ws, mode, _chair_max_in_flight(runs_dir, profile)))
+            snapshot.append(chair_read_docket.read_docket(ws, mode, _local_max_in_flight(runs_dir, profile, host)))
         return snapshot[0]
 
     def beat() -> object:
@@ -6376,6 +6383,13 @@ def _chair_run_deps(
     shadow = _shadowed_note(profile_text, [str(r["name"]) for r in startup_rows])
     if shadow:
         echo(f"chair run: {shadow}")
+    if not dry_run and host_cmd.local_host_missing(startup_rows, host):
+        register_argv = host_cmd.local_host_add_argv(host, _chair_max_in_flight(runs_dir, profile), session)
+        register_code, register_output = store_cli.runner(runs_dir)(register_argv)
+        if register_code != 0:
+            # A write failure (missing harness interpreter, unreachable store) must not stop the tick: the
+            # loop falls back to the cartridge cap exactly as it does when the table carries no local row.
+            echo(f"chair run: could not register this host in the table: store_cli exit {register_code}: {register_output.strip()}")
 
     def dispatch(row: dict) -> chair_facts.DispatchFacts:
         stamp = now_text()
@@ -6785,6 +6799,29 @@ def _host_activate(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.set_state_argv(a.name, "active", _holder_label(a)))
 
 
+def _host_capacity(a: argparse.Namespace) -> int:
+    """Changes only capacity, leaving the row's own ssh, weight and capabilities as they are. This only ever
+    writes the store row: a lane already running on the host keeps running either way, and a capacity of 0
+    only suspends new placement."""
+    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    row = next((r for r in run_store.hosts(runs_dir) if r.get("name") == a.name), None)
+    if row is None:
+        print(f"refused {a.name}: no such host")
+        return 1
+    argv = host_cmd.capacity_upsert_argv(row, a.n, _holder_label(a))
+    if not a.json:
+        return _host_store_write(a, argv)
+    code, output = store_cli.runner(runs_dir)(argv)
+    try:
+        written = json.loads(output) if code == 0 else None
+    except json.JSONDecodeError:
+        written = None
+    print(json.dumps(written, indent=2) if written is not None else f"host: store_cli exit {code}: {output.strip()}")
+    return 0 if written is not None else 1
+
+
 def _host_list(a: argparse.Namespace) -> int:
     _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
     if rc is not None:
@@ -6903,6 +6940,15 @@ HOST_COMMANDS = [
     commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), _host_list, False, ()),
     commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), _host_drain, False, ()),
     commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), _host_activate, False, ()),
+    commands.Command(
+        "capacity", "host", "change only a host's capacity, leaving ssh, weight and capabilities as they are",
+        (
+            commands.Arg(("name",)),
+            commands.Arg(("n",), {"type": int, "help": "lanes the host may run at once; 0 suspends new placement"}),
+            commands.Arg(("--json",), {"action": "store_true", "help": "print the row as JSON"}),
+        ),
+        _host_capacity, False, (),
+    ),
     commands.Command(
         "beat", "host", "record this machine's versions and claude login in the table",
         (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), _host_beat, False, (),
