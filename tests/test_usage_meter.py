@@ -69,7 +69,7 @@ def test_as_window_produces_the_hand_worked_numbers():
     window = usage_meter.as_window(entry, now, span)
 
     assert window.start == datetime(2026, 9, 28, 14, 41, 31, tzinfo=UTC)
-    assert window.end == now
+    assert window.end == resets_at
     assert window.spent_usd == 16.0
     assert window.ceiling_usd == 100.0
     assert window.burn_usd_per_hour == 8.0
@@ -133,3 +133,72 @@ def test_read_parses_a_valid_file_the_same_as_parse(tmp_path):
     path = tmp_path / "rate-limits.json"
     path.write_text(json.dumps(_VALID_DOC))
     assert usage_meter.read(path) == usage_meter.parse(_VALID_DOC)
+
+
+def test_record_implied_ceiling_writes_at_five_percent_floor(tmp_path):
+    path = tmp_path / "implied.json"
+    entry = usage_meter.MeterEntry(used_percentage=5.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
+    estimate_window = _window(3.0)
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+
+    doc = json.loads(path.read_text())
+    assert doc["five_hour"]["ceiling_usd"] == 60.0
+    assert doc["five_hour"]["observed_at"] == now.isoformat()
+
+
+def test_record_implied_ceiling_one_point_below_floor_writes_nothing(tmp_path):
+    path = tmp_path / "implied.json"
+    entry = usage_meter.MeterEntry(used_percentage=4.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
+    estimate_window = _window(3.0)
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+
+    assert path.exists() is False
+
+
+def test_record_implied_ceiling_merges_with_an_existing_kind(tmp_path):
+    path = tmp_path / "implied.json"
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    path.write_text(json.dumps({"weekly": {"ceiling_usd": 200.0, "observed_at": now.isoformat()}}))
+    entry = usage_meter.MeterEntry(used_percentage=10.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
+    estimate_window = _window(5.0)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+
+    doc = json.loads(path.read_text())
+    assert doc["weekly"]["ceiling_usd"] == 200.0
+    assert doc["five_hour"]["ceiling_usd"] == 50.0
+
+
+def test_implied_ceiling_returns_the_value_at_exactly_seven_days(tmp_path):
+    path = tmp_path / "implied.json"
+    observed_at = datetime(2026, 9, 21, 16, 41, 31, tzinfo=UTC)
+    path.write_text(json.dumps({"five_hour": {"ceiling_usd": 60.0, "observed_at": observed_at.isoformat()}}))
+    now = observed_at + timedelta(days=7)
+
+    assert usage_meter.implied_ceiling("five_hour", now, path=path) == 60.0
+
+
+def test_implied_ceiling_returns_none_one_second_past_seven_days(tmp_path):
+    path = tmp_path / "implied.json"
+    observed_at = datetime(2026, 9, 21, 16, 41, 31, tzinfo=UTC)
+    path.write_text(json.dumps({"five_hour": {"ceiling_usd": 60.0, "observed_at": observed_at.isoformat()}}))
+    now = observed_at + timedelta(days=7, seconds=1)
+
+    assert usage_meter.implied_ceiling("five_hour", now, path=path) is None
+
+
+def test_implied_ceiling_returns_none_for_a_missing_kind(tmp_path):
+    path = tmp_path / "implied.json"
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    path.write_text(json.dumps({"weekly": {"ceiling_usd": 200.0, "observed_at": now.isoformat()}}))
+
+    assert usage_meter.implied_ceiling("five_hour", now, path=path) is None
+
+
+def test_implied_ceiling_returns_none_for_a_missing_file(tmp_path):
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    assert usage_meter.implied_ceiling("five_hour", now, path=tmp_path / "implied.json") is None

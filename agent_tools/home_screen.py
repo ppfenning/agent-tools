@@ -15,10 +15,20 @@ import json
 import socket
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_tools import home_layout, home_model, leader, leader_chat, route, runs_top_screen, theme, usage_window
+from agent_tools import (
+    home_layout,
+    home_model,
+    leader,
+    leader_chat,
+    route,
+    runs_top_screen,
+    theme,
+    usage_meter,
+    usage_window,
+)
 from agent_tools.home_model import Span
 from agent_tools.pacing import assess
 
@@ -80,7 +90,14 @@ def _send_chat(runs_dir, text: str) -> None:
 
 
 def _read_window(runs_dir, now_dt: datetime, window_ceiling_usd: float | None = None) -> dict:
-    window = usage_window.gather(runs_dir, now_dt, ceiling_usd=window_ceiling_usd)
+    estimate_window = usage_window.gather(runs_dir, now_dt, ceiling_usd=window_ceiling_usd)
+    meter = usage_meter.read()
+    meter_window = (
+        usage_meter.as_window(meter.five_hour, now_dt, timedelta(hours=5))
+        if meter is not None and usage_meter.fresh(meter, now_dt)
+        else None
+    )
+    window = usage_meter.prefer(meter_window, estimate_window)
     result = assess(window, usage_window.DEFAULT_POLICY, now_dt)
     return {
         "tier": result.tier_ceiling,
@@ -91,6 +108,7 @@ def _read_window(runs_dir, now_dt: datetime, window_ceiling_usd: float | None = 
         "block_left": usage_window.block_remaining(window, now_dt)[1],
         "ceiling_left": usage_window.ceiling_remaining(window),
         "ceiling_usd": window.ceiling_usd,
+        "source": "meter" if meter_window is not None else "estimate",
     }
 
 

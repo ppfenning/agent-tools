@@ -1,12 +1,14 @@
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 
-from agent_tools import home_layout, home_model, leader_chat, theme
+from agent_tools import home_layout, home_model, leader_chat, pacing, theme, usage_meter
 from agent_tools.home_model import Span
 from agent_tools.home_screen import (
     _key_for,
     _paint,
     _panel,
+    _read_window,
     _read_with_timeout,
     _send_chat,
     draw,
@@ -85,6 +87,46 @@ def test_facts_keeps_the_cached_window_when_its_reader_times_out(tmp_path, monke
 
     assert result.window == stale_window
     assert new_cache["_status"]["window"] == "stale"
+
+
+def _estimate_window(spent: float, now_dt: datetime) -> pacing.Window:
+    return pacing.Window(
+        start=now_dt - timedelta(hours=1), end=now_dt,
+        spent_usd=spent, ceiling_usd=100.0, burn_usd_per_hour=spent, runs_in_flight=0,
+    )
+
+
+def test_read_window_prefers_a_fresh_meter_over_the_estimate(tmp_path, monkeypatch):
+    now_dt = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    meter = usage_meter.Meter(
+        five_hour=usage_meter.MeterEntry(used_percentage=16.0, resets_at=now_dt + timedelta(hours=3)),
+        seven_day=usage_meter.MeterEntry(used_percentage=35.0, resets_at=now_dt + timedelta(days=5)),
+        observed_at=now_dt,
+    )
+    monkeypatch.setattr("agent_tools.home_screen.usage_meter.read", lambda *a, **k: meter)
+    monkeypatch.setattr(
+        "agent_tools.home_screen.usage_window.gather", lambda *a, **k: _estimate_window(2.0, now_dt),
+    )
+
+    result = _read_window(tmp_path, now_dt)
+
+    assert result["spent_usd"] == 16.0
+    assert result["time_to_reset"] == "180m"
+    assert result["block_left"] == 0.6
+    assert result["source"] == "meter"
+
+
+def test_read_window_falls_back_to_the_estimate_when_the_meter_is_absent(tmp_path, monkeypatch):
+    now_dt = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    monkeypatch.setattr("agent_tools.home_screen.usage_meter.read", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "agent_tools.home_screen.usage_window.gather", lambda *a, **k: _estimate_window(2.0, now_dt),
+    )
+
+    result = _read_window(tmp_path, now_dt)
+
+    assert result["spent_usd"] == 2.0
+    assert result["source"] == "estimate"
 
 
 class _FakeStdscr:

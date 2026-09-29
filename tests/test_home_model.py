@@ -133,6 +133,12 @@ def test_window_pane_reads_zero_percent_left_when_spend_is_over_the_ceiling():
     assert lines[2] == (Span("spent $108.15 of $60 ceiling  0% left"),)
 
 
+def test_window_pane_shows_a_meter_window_as_percent_of_plan_limit_not_dollars():
+    window = {**_WINDOW, "spent_usd": 16.0, "ceiling_usd": 100.0, "ceiling_left": 0.84, "source": "meter"}
+    lines = window_pane(_facts(window=window), 80)
+    assert lines[2] == (Span("used 16% of plan limit  84% left"),)
+
+
 def test_step_t_returns_talk_and_only_talk():
     state = State(plugin_dir="/plugins/coxswain", leader_liveness="none", other_holder=None)
     _, effect = step(state, "t")

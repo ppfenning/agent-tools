@@ -255,15 +255,21 @@ def time_to_reset(end: datetime.datetime, now: datetime.datetime) -> str:
     return f"{max(int((end - now).total_seconds() // 60), 0)}m"
 
 
+def _spend_line(w: Mapping) -> str:
+    """A `source` of "meter" carries plan-limit percent in `spent_usd`, not dollars."""
+    ceiling_usd = w.get("ceiling_usd")
+    if w.get("source") == "meter":
+        return f"used {w.get('spent_usd', 0):.0f}% of plan limit  {w.get('ceiling_left', 0):.0%} left"
+    if ceiling_usd:
+        return f"spent ${w.get('spent_usd', 0):.2f} of ${ceiling_usd:.0f} ceiling  {w.get('ceiling_left', 0):.0%} left"
+    return f"spent ${w.get('spent_usd', 0):.2f}  no ceiling set"
+
+
 def window_pane(facts: Facts, width: int) -> tuple[Line, ...]:
     w = facts.window
     verdict = f"tier {w.get('tier', '')} effort {w.get('effort_ceiling', '')}"
     block = f"block {w.get('block_left', 0):.0%} left  resets in {w.get('time_to_reset', '')}"
-    ceiling_usd = w.get("ceiling_usd")
-    spend = (
-        f"spent ${w.get('spent_usd', 0):.2f} of ${ceiling_usd:.0f} ceiling  {w.get('ceiling_left', 0):.0%} left"
-        if ceiling_usd else f"spent ${w.get('spent_usd', 0):.2f}  no ceiling set"
-    )
+    spend = _spend_line(w)
     reason = w.get("reason", "")
     lines = (verdict, block, spend, reason) if reason else (verdict, block, spend)
     return tuple(_cut_span(line, width) for line in lines)
