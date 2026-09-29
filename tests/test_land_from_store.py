@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_tools import cli, run_store, store_cli
+from agent_tools import cli, land, run_store, store_cli
 
 _ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
 _RECORD = {
@@ -99,7 +99,7 @@ def _land(repo, tmp_path, monkeypatch, store, *, work_state="store", fail_at=Non
         (tmp_path / "runs/epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
         item_text = _APPROVED.replace("approved", "done")
     store.item = tmp_path / "work/x/seams/seams-task.md"
-    store.item.parent.mkdir(parents=True)
+    store.item.parent.mkdir(parents=True, exist_ok=True)
     if item_text is not None:
         store.item.write_text(item_text, encoding="utf-8")
     provider = tmp_path / "provider.yaml"
@@ -230,12 +230,16 @@ def test_a_store_that_says_approved_is_set_done_whatever_the_local_file_holds(re
     assert (store.item.read_text(encoding="utf-8") if store.item.exists() else None) == item_text
 
 
-def test_a_phase_land_under_store_takes_one_phase_lease_and_reads_no_task_state(repo, tmp_path, monkeypatch, store, capsys):
+def test_a_phase_land_under_store_takes_one_phase_lease_and_reads_task_state_from_the_store(repo, tmp_path, monkeypatch, store, capsys):
     rc, ran = _land(repo, tmp_path, monkeypatch, store, extra=("--phase", "seams"), phase=True)
     assert (rc, ran[-1]) == (0, "mark_done")
-    # The repo-scoped lease (acquired first, released last) wraps the one phase-scoped lease this test names.
-    assert store.calls == [("acquire", f"land:{repo}"), ("acquire", "land:phase:x/seams"), ("renew", "land:phase:x/seams", 7),
-                           ("renew", "land:phase:x/seams", 7), ("release", "land:phase:x/seams", 7), ("release", f"land:{repo}", 1)]
+    # `_phase_items` reads the phase's one item's status from the store before any lease is taken, and now
+    # reads "approved" rather than the file's "done", so `mark_done` sets it done through the store too; the
+    # repo-scoped lease (acquired first, released last) wraps the one phase-scoped lease this test names.
+    assert store.calls == [("task_state", "x", "seams-task"), ("acquire", f"land:{repo}"), ("acquire", "land:phase:x/seams"),
+                           ("renew", "land:phase:x/seams", 7), ("renew", "land:phase:x/seams", 7),
+                           ("set_state", "x", "seams-task", "done", "approved"),
+                           ("release", "land:phase:x/seams", 7), ("release", f"land:{repo}", 1)]
     assert "leases the phase as phase:x/seams; its items are already done, so there is no approved check" in capsys.readouterr().out
 
 
@@ -254,6 +258,86 @@ def test_files_mode_reads_no_task_state_and_takes_no_lease_and_sets_no_expectati
                            ("release", f"land:{repo}", 1)]  # the existing unconditional mirror, no --expect
     assert "state: done" in store.item.read_text(encoding="utf-8")
     assert "land: state from" not in capsys.readouterr().err
+
+
+def test_backfill_writes_missing_task_record_files_from_the_store_and_they_plan(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / "epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
+    monkeypatch.setattr(run_store, "run_task_ids", lambda runs_dir, run_id: ["a-task", "b-task"])
+    monkeypatch.setattr(run_store, "task_record",
+                         lambda runs_dir, run_id, phase, task: {"task": task, "phase": phase, "run": run_id})
+    cli._backfill_phase_task_files(runs_dir, "epic-x-5", "seams")
+    phase_dir = runs_dir / "epic-x-5" / "tasks" / "seams"
+    assert sorted(p.name for p in phase_dir.glob("*.json")) == ["a-task.json", "b-task.json"]
+    assert json.loads((phase_dir / "a-task.json").read_text(encoding="utf-8")) == {"task": "a-task", "phase": "seams", "run": "epic-x-5"}
+    _, task_records, task_paths, _ = cli._land_phase_record(runs_dir, "epic-x-5", "seams")
+    assert sorted(r["task"] for r in task_records) == ["a-task", "b-task"]
+    assert set(task_paths) == {"a-task", "b-task"}
+
+
+def test_a_store_mode_phase_land_with_no_record_files_backfills_both_from_the_store_and_lands(repo, tmp_path, monkeypatch, store):
+    records = {task: {**_RECORD, "task": task} for task in ("other-task", "seams-task")}
+    monkeypatch.setattr(run_store, "run_task_ids", lambda runs_dir, run_id: sorted(records))
+    monkeypatch.setattr(run_store, "task_record", lambda runs_dir, run_id, phase, task: records[task] if phase == "seams" else None)
+    (tmp_path / "work/x/seams").mkdir(parents=True)
+    (tmp_path / "work/x/seams/other-task.md").write_text("---\nid: other-task\nstate: ready\n---\nBody.\n", encoding="utf-8")
+    rc, ran = _land(repo, tmp_path, monkeypatch, store, extra=("--phase", "seams"), phase=True, filed=False)
+    assert (rc, ran[-1]) == (0, "mark_done")
+    task_dir = tmp_path / "runs/epic-x-5/tasks/seams"
+    assert sorted(p.name for p in task_dir.glob("*.json")) == ["other-task.json", "seams-task.json"]
+    assert {k: v for k, v in json.loads((task_dir / "other-task.json").read_text(encoding="utf-8")).items() if k != "landed"} == records["other-task"]
+
+
+def test_a_store_mode_phase_land_refuses_naming_a_ticket_with_no_work_items_row(repo, tmp_path, monkeypatch, store, capsys):
+    store.states = [None]
+    rc, ran = _land(repo, tmp_path, monkeypatch, store, extra=("--phase", "seams"), phase=True)
+    assert rc == 2 and "mark_done" not in ran
+    assert "refused: seams-task is None, not approved, done or dropped" in capsys.readouterr().out
+
+
+def test_backfill_never_overwrites_an_existing_task_record_file(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    phase_dir = runs_dir / "epic-x-5" / "tasks" / "seams"
+    phase_dir.mkdir(parents=True)
+    local = '{"task": "a-task", "phase": "seams", "run": "epic-x-5", "local": true}'
+    (phase_dir / "a-task.json").write_text(local, encoding="utf-8")
+    monkeypatch.setattr(run_store, "run_task_ids", lambda runs_dir, run_id: ["a-task"])
+    monkeypatch.setattr(run_store, "task_record",
+                         lambda runs_dir, run_id, phase, task: {"task": task, "phase": phase, "run": run_id, "local": False})
+    cli._backfill_phase_task_files(runs_dir, "epic-x-5", "seams")
+    assert (phase_dir / "a-task.json").read_text(encoding="utf-8") == local
+
+
+def test_phase_items_in_store_mode_reads_status_from_work_items_and_plans(tmp_path, monkeypatch):
+    work_root = tmp_path / "work"
+    (work_root / "x" / "seams").mkdir(parents=True)
+    (work_root / "x" / "seams" / "a-task.md").write_text("---\nid: a-task\nstate: ready\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setattr(run_store, "task_state_of", lambda runs_dir, initiative, task: "approved")
+    items, _ = cli._phase_items(work_root, "x", "seams", runs_dir=tmp_path / "runs", land_mode="store")
+    assert items == [{"id": "a-task", "status": "approved", "file": str(work_root / "x" / "seams" / "a-task.md")}]
+    assert land.phase_landable(items, {"a-task": _RECORD}) is None
+
+
+def test_phase_items_in_store_mode_refuses_naming_the_task_with_no_work_items_row(tmp_path, monkeypatch):
+    work_root = tmp_path / "work"
+    (work_root / "x" / "seams").mkdir(parents=True)
+    (work_root / "x" / "seams" / "a-task.md").write_text("---\nid: a-task\nstate: ready\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setattr(run_store, "task_state_of", lambda runs_dir, initiative, task: None)
+    items, _ = cli._phase_items(work_root, "x", "seams", runs_dir=tmp_path / "runs", land_mode="store")
+    assert items[0]["status"] is None
+    assert land.phase_landable(items, {}) == "a-task is None, not approved, done or dropped"
+
+
+def test_phase_items_in_files_mode_still_reads_status_from_the_ticket_file(tmp_path, monkeypatch):
+    work_root = tmp_path / "work"
+    (work_root / "x" / "seams").mkdir(parents=True)
+    (work_root / "x" / "seams" / "a-task.md").write_text("---\nid: a-task\nstate: ready\n---\nBody.\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(run_store, "task_state_of", lambda *args: calls.append(args) or "approved")
+    items, _ = cli._phase_items(work_root, "x", "seams")
+    assert items == [{"id": "a-task", "status": "ready", "file": str(work_root / "x" / "seams" / "a-task.md")}]
+    assert calls == []
 
 
 def test_a_record_only_in_the_store_lands_and_mark_done_writes_the_file_from_it(repo, tmp_path, monkeypatch, store, capsys):
