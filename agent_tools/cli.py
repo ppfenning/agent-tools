@@ -97,6 +97,7 @@ from agent_tools import (
     runs_bar,
     runs_detail,
     runs_detail_screen,
+    runs_stop,
     runs_stranded,
     runs_top,
     runs_top_screen,
@@ -915,6 +916,82 @@ def _runs_cause(a: argparse.Namespace) -> int:
     items[0].write_text(updated, encoding="utf-8")
     print(f"{a.task_id}: attempt {a.run_id} cause = {a.cause}")
     return 0
+
+
+def _runs_stop_run_remote(argv: list[str]) -> bool:
+    """Edge: the one real subprocess call for a remote `runs stop`; ok only when it exits 0."""
+    return subprocess.run(argv).returncode == 0
+
+
+def _runs_stop_is_ended(runs_dir: Path) -> Callable[[str], bool]:
+    """Closes over `runs_dir`. Reads the run's local pidfile when present, passing pid 0
+    when it is not, so a remote run with no local pidfile still falls through to
+    `epic.run_live`'s lease-first check."""
+    def is_ended(run_id: str) -> bool:
+        pidfile = runs_dir / f"{run_id}.pid"
+        pid_text = _read_text_or_none(pidfile)
+        pid = int(pid_text.strip()) if pid_text is not None else 0
+        return not epic.run_live(pid, pidfile)
+    return is_ended
+
+
+def _runs_stop_hosts(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost, ...]:
+    """The profile's `lane_hosts`, the way `_setup_doctor_host` reads them; a missing or
+    unreadable profile just leaves a local-only stop with nothing to look up."""
+    text = _read_text_or_none(_profile_path(a))
+    if text is None:
+        return ()
+    parsed = _profile_lane_hosts(text)
+    return () if isinstance(parsed, lane_hosts.LaneHostError) else parsed
+
+
+def _runs_stop(a: argparse.Namespace) -> int:
+    runs_dir = Path(a.runs_dir)
+    result = runs_stop.stop_run(
+        a.run_id, runs_dir, kill_local=os.kill, run_remote=_runs_stop_run_remote,
+        is_ended=_runs_stop_is_ended(runs_dir), sleep=time.sleep, hosts=_runs_stop_hosts(a),
+    )
+    if a.json:
+        print(json.dumps(result))
+    elif result["ok"]:
+        print(f"stopped {a.run_id}")
+    else:
+        print(f"refused {a.run_id}: {result['reason']}")
+    return 0 if result["ok"] else 1
+
+
+def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) -> int:
+    """Shared print/exit mapping for `runs pause`/`runs resume`, over every store_cli result
+    type: `Paused`/`Resumed` prints `<verbed> <run_id>` and exits 0 (with a `reason:` line
+    when `Paused.reason` is set); `PauseRefused`/`ResumeRefused` -- the run is not in the
+    store -- prints `refused <run_id>: not in store` and exits 3; `Failed` -- the store ran
+    but refused or errored -- and `NotAvailable` -- no harness to run it -- both print
+    `failed <run_id>: ...` to stderr and exit 1, neither is "not in store"."""
+    if isinstance(result, store_cli.Paused | store_cli.Resumed):
+        outcome, code, stream, message = verbed, 0, sys.stdout, f"{verbed} {run_id}"
+    elif isinstance(result, store_cli.PauseRefused | store_cli.ResumeRefused):
+        outcome, code, stream, message = "refused", 3, sys.stdout, f"refused {run_id}: not in store"
+    elif isinstance(result, store_cli.Failed):
+        outcome, code, stream = "failed", 1, sys.stderr
+        message = f"failed {run_id}: {result.detail} (exit {result.code})"
+    else:
+        outcome, code, stream = "failed", 1, sys.stderr
+        message = f"failed {run_id}: the harness is not installed"
+    if as_json:
+        print(json.dumps({"outcome": outcome, "run": run_id, **dataclasses.asdict(result)}))
+        return code
+    print(message, file=stream)
+    if outcome == verbed and isinstance(result, store_cli.Paused) and result.reason:
+        print(f"reason: {result.reason}")
+    return code
+
+
+def _runs_pause(a: argparse.Namespace) -> int:
+    return _runs_pause_resume_outcome("paused", a.run_id, store_cli.pause(a.run_id, reason=a.reason), a.json)
+
+
+def _runs_resume(a: argparse.Namespace) -> int:
+    return _runs_pause_resume_outcome("resumed", a.run_id, store_cli.resume(a.run_id), a.json)
 
 
 def _stored_trace_calls(calls: list[dict], role: str | None) -> list[tuple[str, dict]]:
@@ -4928,6 +5005,24 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
         ),
         _runs_cause, False, (),
+    ),
+    commands.Command(
+        "stop", "runs", "stop a run's process, local or remote, and wait for it to exit",
+        (
+            commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--profile",)),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _runs_stop, False, (),
+    ),
+    commands.Command(
+        "pause", "runs", "mark a run paused in the store",
+        (commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--json",), {"action": "store_true"})),
+        _runs_pause, False, (),
+    ),
+    commands.Command(
+        "resume", "runs", "mark a paused run resumed in the store",
+        (commands.Arg(("run_id",)), commands.Arg(("--json",), {"action": "store_true"})),
+        _runs_resume, False, (),
     ),
 ]
 
