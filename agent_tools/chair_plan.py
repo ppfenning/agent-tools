@@ -262,6 +262,14 @@ def _login_needs_chair_actions(facts: Facts) -> list[Action]:
     return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
 
 
+def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
+    """One needs_chair per empty_decompose entry: a decomposed intake whose ended decompose run left zero stored task items."""
+    return [
+        {"kind": "needs_chair", "initiative": entry["initiative"], "run": entry["run"], "cause": "empty_decompose"}
+        for entry in facts.get("empty_decompose", [])
+    ]
+
+
 def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     """One check_login per due host; requires the tick's clock, like housekeeping."""
     if now is None:
@@ -309,6 +317,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
+    empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
@@ -320,7 +329,15 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
     if facts["limits"]["hard_stop"]:
-        return [*lands, *fetch_exits, *stale, *stall, *_needs_chair_only(recovered), *login_needs_chair]
+        return [
+            *lands,
+            *fetch_exits,
+            *stale,
+            *stall,
+            *_needs_chair_only(recovered),
+            *login_needs_chair,
+            *empty_decompose_needs_chair,
+        ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
@@ -338,7 +355,16 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         | lost
     )
     filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed)
-    return [*lands, *fetch_exits, *stale, *stall, *capped, *filled, *login_needs_chair]
+    return [
+        *lands,
+        *fetch_exits,
+        *stale,
+        *stall,
+        *capped,
+        *filled,
+        *login_needs_chair,
+        *empty_decompose_needs_chair,
+    ]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:
