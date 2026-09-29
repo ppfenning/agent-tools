@@ -36,7 +36,9 @@ def launch_plan(
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
     remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
-    rsync_step = rsync_push_argv(src, place(remote_dir))
+    # The local work/<initiative> is the source: a ticket moved or dropped here must not linger on the lane host,
+    # where a second copy of one id fails the run's DAG check.
+    rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
     launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
     if repo is None:
         return [rsync_step, launch_step]

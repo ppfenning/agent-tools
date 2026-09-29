@@ -43,6 +43,12 @@ def test_rsync_push_argv_has_one_trailing_slash_each_and_no_delete():
     ]
 
 
+def test_rsync_push_argv_deletes_at_the_destination_only_when_mirroring():
+    assert rsync_push_argv("/tmp/src", "me@box:/srv/dest", mirror=True) == [
+        "rsync", "-a", "--delete", "/tmp/src/", "me@box:/srv/dest/",
+    ]
+
+
 def test_rsync_pull_argv_passes_the_locations_through():
     assert rsync_pull_argv("me@box:/srv/run/out.json", "/tmp/here") == [
         "rsync", "-a", "me@box:/srv/run/out.json", "/tmp/here",
