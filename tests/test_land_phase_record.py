@@ -52,3 +52,18 @@ def test_a_ticket_recorded_nowhere_is_absent_from_the_result(tmp_path, monkeypat
 
     assert "D" not in {r["task"] for r in task_records}
     assert "D" not in task_paths
+
+
+def test_a_fallback_record_with_no_task_key_defaults_run_to_the_earlier_run_it_was_read_from(tmp_path, monkeypatch):
+    monkeypatch.setattr(chair_facts, "run_initiative", lambda run: "zephyr")
+    runs_dir = tmp_path / "runs"
+    d = runs_dir / "zephyr-2" / "tasks" / "seams"
+    d.mkdir(parents=True)
+    (d / "A.json").write_text(json.dumps({"status": "done"}))
+    _write_manifest(runs_dir, "zephyr-4", "seams")
+
+    _phase_record, task_records, _task_paths, _searched = cli._land_phase_record(runs_dir, "zephyr-4", "seams")
+
+    a_record = next(r for r in task_records if r["task"] == "A")
+    assert a_record["run"] == "zephyr-2"
+    assert a_record["phase"] == "seams"

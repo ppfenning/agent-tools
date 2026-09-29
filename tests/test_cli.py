@@ -97,6 +97,37 @@ def test_task_flag_forces_task_mode_even_when_the_phase_has_two_records(phase_ru
     assert steps == [{"kind": "refuse", "reason": "no branch is exactly one commit ahead of main", "found": {}}]
 
 
+@pytest.fixture
+def two_run_phase_dir(tmp_path):
+    runs_dir = tmp_path / "runs"
+    early, later = runs_dir / "x-2" / "tasks" / "seams", runs_dir / "x-3" / "tasks" / "seams"
+    early.mkdir(parents=True)
+    later.mkdir(parents=True)
+    early_tasks = [f"a{i}" for i in range(1, 5)]
+    later_tasks = [f"b{i}" for i in range(1, 4)]
+    for task_id, task_dir in [(t, early) for t in early_tasks] + [(t, later) for t in later_tasks]:
+        (task_dir / f"{task_id}.json").write_text(json.dumps({
+            "status": "done", "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+            "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]}, "title": task_id,
+        }), encoding="utf-8")
+        _work_item(tmp_path / "work", "x", "seams", task_id, "done")
+    (runs_dir / "x-3:seams.json").write_text(json.dumps({
+        "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "ok"},
+    }), encoding="utf-8")
+    (runs_dir / "policy.gate.json").write_text(json.dumps({"level": "full"}), encoding="utf-8")
+    return runs_dir
+
+
+def test_phase_mode_lands_seven_tasks_split_across_an_earlier_and_the_current_run(two_run_phase_dir, tmp_path, capsys):
+    repo = tmp_path / "repo"; repo.mkdir()
+    ns = _land_ns(run_id="x-3", repo=str(repo), phase="seams", runs_dir=str(two_run_phase_dir))
+    rc = cli._runs_land(ns)
+    steps = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert not any(s["kind"] == "refuse" for s in steps)
+    assert sum(1 for s in steps if s["kind"] == "mark_done") == 7
+
+
 def test_resolved_gate_level_defaults_to_ticket_when_the_file_is_absent(tmp_path):
     assert cli._resolved_gate_level(tmp_path) == "ticket"
 
