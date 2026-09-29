@@ -1,7 +1,7 @@
 import copy
 from datetime import UTC, datetime
 
-from agent_tools.chair_plan import _free_lanes, plan_tick
+from agent_tools.chair_plan import _free_lanes, plan_stall, plan_tick
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -27,6 +27,7 @@ def _facts(**overrides) -> Facts:
         "housekeeping_hours": 24.0,
         "stale_days": 7,
         "stale_candidates": [],
+        "stall_candidates": [],
     }
     return {**base, **overrides}  # type: ignore[return-value]
 
@@ -208,6 +209,54 @@ def test_a_stale_to_draft_is_kept_at_the_hard_stop_alongside_needs_chair(monkeyp
         last_housekeeping_at="2026-09-27T11:00:00+00:00",
     )
     assert plan_tick(facts, _NOW) == [{**_STALE, "epoch": 7}, {**_NEEDS_CHAIR_BARE, "epoch": 7}]
+
+
+_STALLED_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:29:00Z"}
+_FRESH_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:31:00Z"}
+_STALL_REASON = "builder t1, idle 31m"
+
+
+def _stall_candidate(**overrides) -> dict:
+    return {
+        "run": "r1",
+        "initiative": "i",
+        "local": True,
+        "started_at": "2026-09-27T11:00:00Z",
+        "last_call": _STALLED_LAST_CALL,
+        "usr1_sent": False,
+        **overrides,
+    }
+
+
+def test_a_local_candidate_not_yet_signalled_plans_one_stalled_usr1():
+    assert plan_stall([_stall_candidate()], _NOW) == [{"kind": "stalled_usr1", "run": "r1", "initiative": "i"}]
+
+
+def test_a_local_candidate_already_signalled_plans_stalled_stop_and_needs_chair():
+    assert plan_stall([_stall_candidate(usr1_sent=True)], _NOW) == [
+        {"kind": "stalled_stop", "run": "r1", "initiative": "i"},
+        {"kind": "needs_chair", "initiative": "i", "run": "r1", "cause": "stalled", "reason": _STALL_REASON},
+    ]
+
+
+def test_a_local_candidate_idle_under_the_threshold_plans_nothing():
+    assert plan_stall([_stall_candidate(last_call=_FRESH_LAST_CALL)], _NOW) == []
+
+
+def test_a_remote_candidate_plans_only_needs_chair_regardless_of_usr1_sent():
+    remote = _stall_candidate(local=False, usr1_sent=True)
+    assert plan_stall([remote], _NOW) == [
+        {"kind": "needs_chair", "initiative": "i", "run": "r1", "cause": "stalled", "reason": _STALL_REASON},
+    ]
+
+
+def test_a_stalled_run_passes_through_plan_tick_uncounted_at_the_hard_stop():
+    facts = _facts(
+        limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 0, "go_degraded": False},
+        stall_candidates=[_stall_candidate()],
+        last_housekeeping_at="2026-09-27T11:00:00+00:00",
+    )
+    assert plan_tick(facts, _NOW) == [{"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 7}]
 
 
 def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():

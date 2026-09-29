@@ -4,12 +4,21 @@ Pure. Takes the facts and the tick's clock, returns actions each stamped with th
 """
 from datetime import datetime, timedelta
 
-from agent_tools import chair_login_watch, chair_plan_prune
+from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
 from agent_tools.chair_plan_fill import plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
 from agent_tools.chair_plan_stale import plan_stale
-from agent_tools.chair_types import Action, DispatchFacts, Facts, LeaseFacts, LimitsFacts, stamp
+from agent_tools.chair_types import (
+    Action,
+    DispatchFacts,
+    Facts,
+    LastCall,
+    LeaseFacts,
+    LimitsFacts,
+    StallCandidate,
+    stamp,
+)
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
 
@@ -121,12 +130,48 @@ def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     return [{"kind": "check_login", "host": name} for name in chair_login_watch.due_for_login_check(login_hosts, now.isoformat())]
 
 
+def _stall_reason(last_call: LastCall | None, idle: float) -> str:
+    minutes = round(idle)
+    called = f"{last_call['role']} {last_call['task']}" if last_call is not None else "no node call yet"
+    return f"{called}, idle {minutes}m"
+
+
+def _stall_needs_chair(candidate: StallCandidate, idle: float) -> Action:
+    return {
+        "kind": "needs_chair",
+        "initiative": candidate["initiative"],
+        "run": candidate["run"],
+        "cause": "stalled",
+        "reason": _stall_reason(candidate["last_call"], idle),
+    }
+
+
+def plan_stall(candidates: list[StallCandidate], now: datetime) -> list[Action]:
+    """stalled_usr1 for a local run's first stall, stalled_stop plus needs_chair for its second, needs_chair alone for a remote run."""
+    actions: list[Action] = []
+    for candidate in candidates:
+        last_call = candidate["last_call"]
+        idle = chair_stall.idle_minutes(last_call["ts"] if last_call is not None else None, candidate["started_at"], now)
+        started = chair_stall.started_minutes(candidate["started_at"], now)
+        if not chair_stall.is_stalled(idle, started):
+            continue
+        if not candidate["local"]:
+            actions.append(_stall_needs_chair(candidate, idle))
+        elif not candidate["usr1_sent"]:
+            actions.append({"kind": "stalled_usr1", "run": candidate["run"], "initiative": candidate["initiative"]})
+        else:
+            actions.append({"kind": "stalled_stop", "run": candidate["run"], "initiative": candidate["initiative"]})
+            actions.append(_stall_needs_chair(candidate, idle))
+    return actions
+
+
 def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
+    stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
     ordinary = _withhold_lost_runs(plan_recover(facts), lost)
@@ -135,7 +180,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
     recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
     if facts["limits"]["hard_stop"]:
-        return [*lands, *fetch_exits, *stale, *_needs_chair_only(recovered), *login_needs_chair]
+        return [*lands, *fetch_exits, *stale, *stall, *_needs_chair_only(recovered), *login_needs_chair]
     cap = _launch_cap(facts["limits"])
     capped = [_with_carry(a, facts["approved"]) for a in _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))]
     kept = sum(a["kind"] in _LAUNCHES for a in capped)
@@ -148,7 +193,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         | lost
     )
     filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)
-    return [*lands, *fetch_exits, *stale, *capped, *filled, *login_needs_chair]
+    return [*lands, *fetch_exits, *stale, *stall, *capped, *filled, *login_needs_chair]
 
 
 def _parse_utc(ts: str | None) -> datetime | None:

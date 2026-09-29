@@ -2,7 +2,8 @@
 
 Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
 the facts and executes the actions; the planners in between are pure. `stale_candidates` is
-filled in by the facts edge and consumed by the stale planner.
+filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
+consumed by the stall planner.
 """
 from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
@@ -102,6 +103,23 @@ class StaleCandidate(TypedDict):
     quarantine_non_harness_count: int  # count of non-harness quarantine causes recorded for the task
 
 
+class LastCall(TypedDict):
+    role: str
+    task: str
+    ts: str
+
+
+class StallCandidate(TypedDict):
+    """One live run, local or remote; matches chair_stall's idle_minutes/started_minutes parameters."""
+
+    run: str
+    initiative: str
+    local: bool
+    started_at: str
+    last_call: LastCall | None
+    usr1_sent: bool  # a stalled_usr1 action was already recorded for this run
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -111,6 +129,7 @@ class Facts(TypedDict):
     initiatives: list[InitiativeFacts]
     quarantines: list[QuarantineFacts]
     stale_candidates: list[StaleCandidate]  # gathered by the facts edge, consumed by the stale planner
+    stall_candidates: list[StallCandidate]  # one entry per currently live run, local and remote; a later task fills it
     intake: list[str]  # oldest first
     work_store_ready: bool
     sources_configured: bool
@@ -146,6 +165,8 @@ ActionKind = Literal[
     "stale_to_draft",
     "mark_lost",
     "check_login",
+    "stalled_usr1",
+    "stalled_stop",
 ]
 
 
