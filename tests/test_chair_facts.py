@@ -326,6 +326,11 @@ def test_dispatch_facts_defaults_weight_and_capabilities_with_no_row():
     assert facts["hosts"] == [{"name": "h1", "live_runs": 0, "weight": 1, "capabilities": []}]
 
 
+def test_dispatch_facts_never_places_the_local_host_among_the_hosts():
+    facts = dispatch_facts({"max_in_flight": 4}, ["omarchy", "jarvis"], {}, local="omarchy")
+    assert facts["hosts"] == [{"name": "jarvis", "live_runs": 0, "weight": 1, "capabilities": []}]
+
+
 def test_a_ready_tasks_requires_frontmatter_reaches_the_facts():
     def row(task: str, frontmatter: str) -> dict:
         parsed = queue_rows.parse_item("task", ("i", "p1", f"{task}.md"), f"---\n{frontmatter}---\n")

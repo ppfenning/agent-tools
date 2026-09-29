@@ -92,6 +92,18 @@ def test_a_draining_row_is_never_a_lane_host_no_matter_how_many_lanes_it_still_h
     assert host_cmd.host_rows_to_lane_hosts([row]) == ()
 
 
+def test_the_local_row_is_never_a_lane_host_candidate():
+    rows = [JARVIS, {**JARVIS, "name": "omarchy", "ssh": "omarchy"}]
+    assert host_cmd.host_rows_to_lane_hosts(rows, [LaneHost("jarvis", "x", "/w")], local="omarchy") == (
+        LaneHost("jarvis", "jarvis", "/w"),
+    )
+
+
+def test_the_local_rows_workspace_dir_resolves_to_the_profiles_own_instead_of_refusing():
+    rows = [{**JARVIS, "name": "omarchy", "versions_json": None}]
+    assert host_cmd.local_workspace_dir(rows, "omarchy", "/srv/ws") == "/srv/ws"
+
+
 def test_the_host_list_counts_this_machines_own_lanes_under_its_own_row_name():
     lanes = [run_store.Lane("r1", None, "t", "t"), run_store.Lane("r2", "jarvis", "t", "t"), run_store.Lane("r3", "pi", "t", "t")]
     live = cli._live_by_host_name(lanes, "jarvis")

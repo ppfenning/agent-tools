@@ -311,10 +311,13 @@ def dispatch_facts(
     capacity: Mapping[str, int] | None = None,
     weight: Mapping[str, int] | None = None,
     capabilities: Mapping[str, Sequence[str]] | None = None,
+    local: str = "",
 ) -> DispatchFacts:
     """live_by_host maps a host name to its live lanes; the local machine is under the empty name. A host in `capacity`
     carries its own cap. `weight` and `capabilities` come from the same hosts table row; a name missing from either
-    mapping (an older store, or a profile-only host with no row at all) defaults to weight 1 and no capabilities."""
+    mapping (an older store, or a profile-only host with no row at all) defaults to weight 1 and no capabilities.
+    `local` names the machine running this loop: an entry in `lane_hosts` equal to it is never added to the
+    returned `hosts`, since the loop's own machine is never a remote lane-host candidate for itself."""
     caps = capacity or {}
     weights = weight or {}
     abilities = capabilities or {}
@@ -330,6 +333,7 @@ def dispatch_facts(
                 "capabilities": list(abilities.get(name, [])),
             }
             for name in lane_hosts
+            if name != local
         ],
     }
 
