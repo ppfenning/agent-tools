@@ -211,6 +211,34 @@ def test_a_stale_to_draft_is_kept_at_the_hard_stop_alongside_needs_chair(monkeyp
     assert plan_tick(facts, _NOW) == [{**_STALE, "epoch": 7}, {**_NEEDS_CHAIR_BARE, "epoch": 7}]
 
 
+def _hosted_dispatch() -> dict:
+    return {"max_in_flight": 1, "live_runs": 1, "hosts": [{"name": "jarvis", "live_runs": 0}]}
+
+
+def test_a_relaunch_past_the_local_cap_carries_the_free_lane_hosts_name(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
+
+
+def test_only_one_of_two_overflow_launches_gets_the_single_free_host_lane(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}, _RETRY])
+    facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
+
+
+def test_a_rescue_past_the_cap_is_dropped_even_with_a_free_lane_host(monkeypatch):
+    _recovering(monkeypatch, [_RESCUE])
+    facts = _facts(dispatch=_hosted_dispatch())
+    assert plan_tick(facts) == []
+
+
 _STALLED_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:29:00Z"}
 _FRESH_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:31:00Z"}
 _STALL_REASON = "builder t1, idle 31m"
