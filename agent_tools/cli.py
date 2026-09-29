@@ -859,8 +859,16 @@ def _runs_notify(a: argparse.Namespace) -> int:
                             heartbeat_minutes=_leader_heartbeat_minutes(), replay=a.replay)
 
 
+def _resolved_run_id(runs_dir: Path, token: str) -> str:
+    """A run command's token, resolved: `token` may already be a short run id or the old run key, and
+    `run_store.resolve_id` maps either to the same run record. Falls back to `token` unchanged when the
+    store or the harness cannot resolve it, so an unresolvable token still reaches the command as before."""
+    record = run_store.resolve_id(runs_dir, token)
+    return token if record is None else record.get("run_id", token)
+
+
 def _runs_detail(a: argparse.Namespace) -> int:
-    d = runs_detail.detail(**runs_detail_screen.facts_for(a.runs_dir, a.run_id))
+    d = runs_detail.detail(**runs_detail_screen.facts_for(a.runs_dir, _resolved_run_id(Path(a.runs_dir), a.run_id)))
     if a.json:
         print(json.dumps(dataclasses.asdict(d)))
     else:
@@ -958,16 +966,17 @@ def _runs_stop_hosts(a: argparse.Namespace) -> tuple[lane_hosts.LaneHost, ...]:
 
 def _runs_stop(a: argparse.Namespace) -> int:
     runs_dir = Path(a.runs_dir)
+    run_id = _resolved_run_id(runs_dir, a.run_id)
     result = runs_stop.stop_run(
-        a.run_id, runs_dir, kill_local=os.kill, run_remote=_runs_stop_run_remote,
+        run_id, runs_dir, kill_local=os.kill, run_remote=_runs_stop_run_remote,
         is_ended=_runs_stop_is_ended(runs_dir), sleep=time.sleep, hosts=_runs_stop_hosts(a),
     )
     if a.json:
         print(json.dumps(result))
     elif result["ok"]:
-        print(f"stopped {a.run_id}")
+        print(f"stopped {run_id}")
     else:
-        print(f"refused {a.run_id}: {result['reason']}")
+        print(f"refused {run_id}: {result['reason']}")
     return 0 if result["ok"] else 1
 
 
@@ -998,11 +1007,17 @@ def _runs_pause_resume_outcome(verbed: str, run_id: str, result, as_json: bool) 
 
 
 def _runs_pause(a: argparse.Namespace) -> int:
-    return _runs_pause_resume_outcome("paused", a.run_id, store_cli.pause(a.run_id, reason=a.reason), a.json)
+    runs_dir = Path(a.runs_dir)
+    run_id = _resolved_run_id(runs_dir, a.run_id)
+    store_url = run_store._store_url(runs_dir)
+    return _runs_pause_resume_outcome("paused", run_id, store_cli.pause(run_id, reason=a.reason, store_url=store_url), a.json)
 
 
 def _runs_resume(a: argparse.Namespace) -> int:
-    return _runs_pause_resume_outcome("resumed", a.run_id, store_cli.resume(a.run_id), a.json)
+    runs_dir = Path(a.runs_dir)
+    run_id = _resolved_run_id(runs_dir, a.run_id)
+    store_url = run_store._store_url(runs_dir)
+    return _runs_pause_resume_outcome("resumed", run_id, store_cli.resume(run_id, store_url=store_url), a.json)
 
 
 def _runs_move_pause(run_id: str, reason: str | None) -> tuple[bool, str]:
@@ -2091,14 +2106,15 @@ def _runs_land(a: argparse.Namespace) -> int:
     if runs_dir is None:
         print(f"land: {reason}")
         return 2
+    run_id = _resolved_run_id(runs_dir, a.run_id)
     if a.task and _land_done_before_fetch(runs_dir, a.task, work_state.work_state_mode(_lake_provider(a)[0])):
         print(_land_approval_stop("store", "done", None))
         return 3
     # A remote run fetched before the marker existed has none, so land refuses with the fetch hint; a re-fetch is
     # idempotent (rsync -a and git fetch of the same refs).
-    fetched = remote_lane.fetched_record_path(runs_dir, a.run_id).exists()
-    if remote_lane.land_needs_fetch(remote_lane.remote_record_path(runs_dir, a.run_id).exists(), fetched):
-        print(f"land: {a.run_id} is a remote run; run cox runs fetch {a.run_id}, then cox runs land {a.run_id} again")
+    fetched = remote_lane.fetched_record_path(runs_dir, run_id).exists()
+    if remote_lane.land_needs_fetch(remote_lane.remote_record_path(runs_dir, run_id).exists(), fetched):
+        print(f"land: {run_id} is a remote run; run cox runs fetch {run_id}, then cox runs land {run_id} again")
         return 2
     if a.apply:
         guard_rc = _leader_guard_or_refuse(runs_dir, _holder_label(a), a.force, claim=not a.no_claim)
@@ -2112,17 +2128,17 @@ def _runs_land(a: argparse.Namespace) -> int:
         return 2
     default_branch = "main"
     repo_facts = {"venv_python": (repo / ".venv" / "bin" / "python").exists(), "uv_lock": (repo / "uv.lock").exists()}
-    phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, a.run_id))
+    phase = getattr(a, "phase", None) or (None if a.task else _phase_needing_land(runs_dir, run_id))
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     if phase:
         if land_mode == "store":
-            _backfill_phase_task_files(runs_dir, a.run_id, phase)
-        phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, a.run_id, phase)
+            _backfill_phase_task_files(runs_dir, run_id, phase)
+        phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, run_id, phase)
         if phase_record is None:
             print(f"land: no phase record at {searched}")
             return 2
-        initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase, a.run_id)
+        initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase, run_id)
         items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase, runs_dir=runs_dir, land_mode=land_mode)
                               if initiative else (None, f"{runs_dir.parent / 'work'} (no single initiative holds phase {phase})"))
         if items is None:
@@ -2134,7 +2150,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                               umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
         lease_task = f"phase:{initiative}/{phase}"
     else:
-        record, searched, count, source = _land_load(runs_dir, a.run_id, a.task)
+        record, searched, count, source = _land_load(runs_dir, run_id, a.task)
         if record is None:
             print(f"land: looked in {searched}, found {count} task records, expected 1")
             return 2
@@ -2216,7 +2232,7 @@ def _runs_land(a: argparse.Namespace) -> int:
                                lambda: _land_store_stop(runs_dir, record, item_path) if record else None, walk)
     rc, reached, pr = walked if walked is not None else (2, [], "")  # a refused lease stops before any step, and is logged too
     task = record["task"] if record else None
-    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), a.run_id, task, reached, rc, pr))
+    _append_land_log(runs_dir, land.land_log_row(datetime.datetime.now(datetime.UTC).isoformat(), run_id, task, reached, rc, pr))
     _lake_after_land(a, runs_dir, rc, reached)
     return rc
 
@@ -4928,7 +4944,7 @@ def _dash_detail(kind: str, id_: str | None, runs_dir: Path, work_dir: Path, now
         print(f"cox dash --detail {kind}: an id is required", file=sys.stderr)
         return None, 2
     if kind == "run":
-        return dash_detail_run.build(id_, runs_dir, now), 0
+        return dash_detail_run.build(_resolved_run_id(runs_dir, id_), runs_dir, now), 0
     if kind == "initiative":
         return dash_detail_initiative.build(id_, work_dir, runs_dir, now), 0
     if kind == "machine":
@@ -5259,12 +5275,15 @@ RUNS_COMMANDS = [
     ),
     commands.Command(
         "pause", "runs", "mark a run paused in the store",
-        (commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--json",), {"action": "store_true"})),
+        (
+            commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--runs-dir",), {"default": "runs"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
         _runs_pause, False, (),
     ),
     commands.Command(
         "resume", "runs", "mark a paused run resumed in the store",
-        (commands.Arg(("run_id",)), commands.Arg(("--json",), {"action": "store_true"})),
+        (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
         _runs_resume, False, (),
     ),
     commands.Command(

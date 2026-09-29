@@ -39,7 +39,7 @@ except ImportError:
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "hosts", "last_call_at", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "harness_python", "hosts", "last_call_at", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_id", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
 
@@ -925,6 +925,25 @@ def run_task_ids(runs_dir: Path, run_id: str) -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     return _phases_from(done.stdout) if done.returncode == 0 else []
+
+
+def _resolve_id_argv(python: str, url: str, token: str) -> list[str]:
+    """Pure: the argv that resolves a short run id or an old run key to its run record, printed as one JSON object."""
+    return [python, "-m", "harness.store_ids", "resolve", url, token, "--json"]
+
+
+def resolve_id(runs_dir: Path, token: str) -> dict | None:
+    """Edge: the run record `harness.store_ids resolve` names for `token` -- a short run id (`I412-7`) or an old
+    run key both resolve to the same record. None when the harness, the call, or the output cannot say."""
+    python = _harness_python()
+    if python is None:
+        return None
+    argv = _resolve_id_argv(str(python), _store_url(Path(runs_dir)), token)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _task_record_from(done.stdout) if done.returncode == 0 else None
 
 
 _WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")

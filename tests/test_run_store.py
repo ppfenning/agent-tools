@@ -766,6 +766,35 @@ def test_task_record_is_none_when_no_row_matches(tmp_path, monkeypatch):
     assert run_store.task_record(tmp_path, "r-1", "p1", "t1") is None
 
 
+def test_resolve_id_argv_binds_the_token_after_the_store_url():
+    argv = run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "I412-7")
+    assert argv == ["/h/python", "-m", "harness.store_ids", "resolve", "sqlite:///s.db", "I412-7", "--json"]
+
+
+def test_resolve_id_maps_a_short_id_and_an_old_key_to_the_same_run_record(tmp_path, monkeypatch):
+    record = {"run_id": "I412-7", "old_key": "2026-09-29-widget-run"}
+    calls = stub_harness(monkeypatch, result=done(0, json.dumps(record) + "\n"))
+    by_short_id = run_store.resolve_id(tmp_path, "I412-7")
+    by_old_key = run_store.resolve_id(tmp_path, "2026-09-29-widget-run")
+    assert by_short_id == record
+    assert by_old_key == record
+    assert calls == [
+        run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "I412-7"),
+        run_store._resolve_id_argv("/h/python", "sqlite:///s.db", "2026-09-29-widget-run"),
+    ]
+
+
+def test_resolve_id_is_none_without_a_harness_python_and_runs_nothing(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.resolve_id(tmp_path, "I412-7") is None
+    assert calls == []
+
+
+def test_resolve_id_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(1, '{"run_id": "I412-7"}'))
+    assert run_store.resolve_id(tmp_path, "I412-7") is None
+
+
 def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
     db = tmp_path / "s.db"
     conn = sqlite3.connect(db)

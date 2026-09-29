@@ -1,9 +1,10 @@
-usage: cox runs pause [-h] [--reason REASON] [--json] run_id
+usage: cox runs pause [-h] [--reason REASON] [--runs-dir RUNS_DIR] [--json] run_id
 
 positional arguments:
   run_id
 
 options:
-  -h, --help       show this help message and exit
+  -h, --help           show this help message and exit
   --reason REASON
+  --runs-dir RUNS_DIR
   --json

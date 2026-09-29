@@ -1,8 +1,9 @@
-usage: cox runs resume [-h] [--json] run_id
+usage: cox runs resume [-h] [--runs-dir RUNS_DIR] [--json] run_id
 
 positional arguments:
   run_id
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help           show this help message and exit
+  --runs-dir RUNS_DIR
   --json

@@ -67,6 +67,17 @@ def test_phase_mode_dry_run_step_list_has_no_checkout_step(phase_runs_dir, tmp_p
     assert mark_done["path"] == str(phase_runs_dir / "epic-x-5" / "tasks" / "seams" / "seams-task.json")
 
 
+def test_phase_mode_resolves_a_short_id_to_the_run_the_phase_record_lives_under(phase_runs_dir, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "epic-x-5"} if token == "I999-1" else None)
+    repo = tmp_path / "repo"; repo.mkdir()
+    ns = _land_ns(repo=str(repo), run_id="I999-1", phase="seams", runs_dir=str(phase_runs_dir))
+    rc = cli._runs_land(ns)
+    steps = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    mark_done = next(s for s in steps if s["kind"] == "mark_done")
+    assert mark_done["path"] == str(phase_runs_dir / "epic-x-5" / "tasks" / "seams" / "seams-task.json")
+
+
 def test_phase_mode_dry_run_never_touches_the_filesystem_for_its_checks_step(phase_runs_dir, tmp_path, capsys, monkeypatch):
     calls = []
     monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda *a, **k: calls.append(1) or str(tmp_path / "unused"))
@@ -813,6 +824,16 @@ def test_dash_detail_dispatches_run_with_the_run_id_runs_dir_and_now(monkeypatch
     assert json.loads(capsys.readouterr().out) == {"kind": "run"}
 
 
+def test_dash_detail_run_resolves_a_short_id_before_dispatching(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(cli.dash_detail_run, "build", lambda *a: calls.append(a) or {"kind": "run"})
+    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "canonical-1"} if token == "I412-7" else None)
+    assert cli.main(["dash", "--detail", "run", "I412-7", "--runs-dir", str(tmp_path)]) == 0
+    (run_id, runs_dir, now), = calls
+    assert run_id == "canonical-1" and runs_dir == tmp_path and isinstance(now, str)
+    assert json.loads(capsys.readouterr().out) == {"kind": "run"}
+
+
 def test_dash_detail_dispatches_initiative_with_the_initiative_id_work_dir_runs_dir_and_now(monkeypatch, tmp_path, capsys):
     calls = []
     monkeypatch.setattr(cli.dash_detail_initiative, "build", lambda *a: calls.append(a) or {"kind": "initiative"})
@@ -866,6 +887,22 @@ def test_dash_detail_run_without_an_id_exits_2(tmp_path, capsys):
     assert cli.main(["dash", "--detail", "run", "--runs-dir", str(tmp_path)]) == 2
     out, err = capsys.readouterr()
     assert out == "" and "an id is required" in err
+
+
+def test_runs_detail_resolves_a_short_id_before_reading_facts(monkeypatch, tmp_path, capsys):
+    calls = []
+
+    def fake_facts_for(runs_dir, run, *a, **k):
+        calls.append((runs_dir, run))
+        return {"run": run, "alive": False, "events": [], "calls": [], "record": {}, "tail": []}
+
+    monkeypatch.setattr(cli.runs_detail_screen, "facts_for", fake_facts_for)
+    monkeypatch.setattr(cli.run_store, "resolve_id", lambda rd, token: {"run_id": "canonical-1"} if token == "I412-7" else None)
+    ns = argparse.Namespace(runs_dir=str(tmp_path), run_id="I412-7", json=True)
+    rc = cli._runs_detail(ns)
+    assert rc == 0
+    assert calls == [(str(tmp_path), "canonical-1")]
+    assert json.loads(capsys.readouterr().out)["run"] == "canonical-1"
 
 
 def test_dash_detail_unknown_kind_exits_2_and_prints_nothing(tmp_path, capsys):
