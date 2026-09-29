@@ -131,6 +131,18 @@ def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any
     return None
 
 
+def squash_missing_files(approved_files: Sequence[dict[str, Any]], squashed_files: Sequence[str]) -> str | None:
+    """None when every entry in `approved_files` (`{"task": id, "files_touched":
+    [...]}`, one per approved task whose record names any) has at least one of
+    its files among `squashed_files`, else the first entry's refusal naming the
+    task and its files, comma-joined in the order stored on the task record."""
+    for entry in approved_files:
+        files = entry["files_touched"]
+        if not any(f in squashed_files for f in files):
+            return f"{entry['task']}: none of {', '.join(files)} is in the squash"
+    return None
+
+
 def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any]]) -> str:
     """The phase PR body (§2): the phase's own verdict reasoning, then one
     block per landed ticket, dropped tickets listed last with their reason."""
@@ -154,6 +166,17 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
     return "\n".join(lines)
 
 
+def _phase_approved_files(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One `{"task": id, "files_touched": [...]}` per `approved` item whose
+    record's `build.files_touched` is non-empty, in item order; a `done` or
+    `dropped` item, or one with no or empty `files_touched`, contributes
+    nothing — its files already landed in an earlier squash, or there is
+    nothing to check."""
+    approved = [item.get("id") for item in items if item.get("status") == "approved"]
+    files_by_task = [(task, (records.get(task) or {}).get("build", {}).get("files_touched")) for task in approved]
+    return [{"task": task, "files_touched": files} for task, files in files_by_task if files]
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main") -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
@@ -162,17 +185,22 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     an up-to-date branch to merge and a phase branch cut from an older main
     cannot land as it is; `checks` and everything after run off that PR
     branch, not the phase branch itself."""
-    refusal = phase_landable(items, {r.get("task"): r for r in task_records})
+    records = {r.get("task"): r for r in task_records}
+    refusal = phase_landable(items, records)
     if refusal is not None:
         return [{"kind": "refuse", "reason": refusal}]
     run, phase, initiative = phase_record.get("run"), phase_record.get("phase"), phase_record.get("initiative")
     phase_branch = f"epic/{initiative}/{phase}"
     pr_branch = f"pr/{initiative}--{phase}"
     landed_tasks = [r.get("task") for r in task_records if r.get("status") != "dropped"]
+    squash_step = {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
+                   "subject": f"epic {initiative}: {phase}"}
+    approved_files = _phase_approved_files(items, records)
+    if approved_files:
+        squash_step = {**squash_step, "approved_files": approved_files}
     return [
         {"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"},
-        {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
-         "subject": f"epic {initiative}: {phase}"},
+        squash_step,
         {"kind": "checks", "checks": checks_argv(repo_facts or {}), "worktree_of": pr_branch},
         {"kind": "push", "branch": pr_branch},
         {"kind": "pr_create", "title": f"epic {initiative}: {phase}", "body": phase_pr_body(phase_record, task_records),
