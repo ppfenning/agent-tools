@@ -745,6 +745,21 @@ def test_a_decompose_argv_keeps_the_path_as_idea_and_uses_the_derived_id() -> No
     assert argv_for(action) is None
 
 
+def test_a_decompose_argv_under_sequence_ids_carries_initiative_id_and_task_ids_ordinal() -> None:
+    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
+    assert argv_for(action, "I412", "sequence") == [
+        "cox", "route", "launch", "decompose", "--idea", "intake/x.md",
+        "--initiative-id", "I412", "--task-ids", "ordinal", "--no-claim",
+    ]
+
+
+def test_a_decompose_argv_under_slug_ids_carries_no_task_ids_flag() -> None:
+    action = {"kind": "launch_decompose", "intake_ids": ["intake/x.md"]}
+    assert argv_for(action, "I412", "slug") == [
+        "cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "I412", "--no-claim",
+    ]
+
+
 def _ticket(tmp_path, initiative: str, phase: str, ticket_id: str, title: str, body: str, surfaces: list[str], state: str = "ready"):
     path = tmp_path / "work" / initiative / phase / f"{ticket_id}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -823,6 +838,16 @@ def test_a_decompose_without_an_id_field_launches_under_the_stem() -> None:
     calls: list = []
     perform([{"kind": "launch_decompose", "intake_ids": ["intake/my-idea.md"], "epoch": 1}], _deps(calls), lambda: 1, False)
     assert _touched(calls) == [("run", ["cox", "route", "launch", "decompose", "--idea", "intake/my-idea.md", "--initiative-id", "my-idea", "--no-claim"])]
+
+
+def test_a_decompose_under_sequence_ids_mode_launches_with_task_ids_ordinal() -> None:
+    calls: list = []
+    deps = replace(_deps(calls), intake_id=lambda path: "I412", ids_mode="sequence")
+    perform([{"kind": "launch_decompose", "intake_ids": ["intake/x.md"], "epoch": 1}], deps, lambda: 1, False)
+    assert _touched(calls) == [(
+        "run",
+        ["cox", "route", "launch", "decompose", "--idea", "intake/x.md", "--initiative-id", "I412", "--task-ids", "ordinal", "--no-claim"],
+    )]
 
 
 def test_prune_available_probes_the_harness_python() -> None:
