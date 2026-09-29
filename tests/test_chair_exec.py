@@ -1,5 +1,6 @@
 import json
 import signal
+import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -13,9 +14,11 @@ from agent_tools.chair_exec import (
     argv_for,
     decompose_id,
     delete_branches_with,
+    land_commit,
     land_refusal,
     perform,
     run_argv,
+    smoke_targets,
     tail,
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
@@ -1037,6 +1040,64 @@ def test_a_needs_chair_action_with_cause_stalled_is_recorded_through_the_generic
     results = perform([action], _deps(calls), lambda: 1, False)
     assert results[0]["status"] == "recorded"
     assert ("record", "needs_chair") in calls
+
+
+def test_land_commit_matches_git_log_on_a_fixture_repo(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda argv: subprocess.run(argv, cwd=repo, capture_output=True, text=True, check=True)  # noqa: E731
+    run(["git", "init", "-q"])
+    run(["git", "config", "user.email", "a@b.c"])
+    run(["git", "config", "user.name", "tester"])
+    (repo / "f.txt").write_text("one", encoding="utf-8")
+    run(["git", "add", "f.txt"])
+    run(["git", "commit", "-q", "-m", "first"])
+    run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"])
+    expected = run(["git", "log", "-1", "--format=%H", "origin/main"]).stdout.strip()
+    assert land_commit(str(repo)) == expected
+
+
+def test_land_commit_is_empty_on_a_git_failure(tmp_path) -> None:
+    assert land_commit(str(tmp_path / "no-such-repo")) == ""
+
+
+def _landed_result(repo: str, pr_url: str, commit: str) -> dict:
+    reason = f"merge: ok\npr_create: {pr_url}\nmark_done: ok\n"
+    return {"action": {"kind": "land", "repo": repo}, "status": "landed", "reason": reason, "commit": commit}
+
+
+def test_smoke_targets_keeps_only_the_named_repos() -> None:
+    # An action's repo is the initiative frontmatter's checkout path, e.g. `repo: /home/x/repos/coxswain-tools`.
+    tools = _landed_result("/x/coxswain-tools", "https://github.com/org/coxswain-tools/pull/42", "abc123")
+    umbrella = _landed_result("/x/coxswain", "https://github.com/org/coxswain/pull/9", "def456")
+    assert smoke_targets([tools, umbrella]) == [{"repo": "/x/coxswain-tools", "pr": 42, "commit": "abc123"}]
+
+
+def test_smoke_targets_matches_graphs_by_checkout_path_with_a_trailing_slash() -> None:
+    graphs = _landed_result("/x/coxswain-graphs/", "https://github.com/org/coxswain-graphs/pull/7", "fed321")
+    assert [t["pr"] for t in smoke_targets([graphs])] == [7]
+
+
+def test_smoke_targets_reads_the_pr_from_the_land_step_lines_it_prints() -> None:
+    # The shape `cli._land_walk` prints: one `<kind>: <detail>` line per step, `pr_create`'s detail being gh's PR URL.
+    reason = (
+        "forge: github\npick_branch: agents/r/t1 (Add seams)\ncherry_pick: cherry-picked a1b2c3d4 onto pr/t1\n"
+        "checks: ok\npush: pushed pr/t1\npr_create: https://github.com/org/coxswain-tools/pull/118\n"
+        "wait_checks: green\nmerge: merged\nclean: removed agents/r/t1\nmark_done: t1 done\n"
+    )
+    landed_result = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "landed", "reason": reason, "commit": "c0ffee"}
+    assert smoke_targets([landed_result])[0]["pr"] == 118
+
+
+def test_smoke_targets_ignores_a_pull_path_outside_the_pr_create_line() -> None:
+    reason = "checks: see https://github.com/org/other/pull/5\npr_create: https://github.com/org/coxswain-tools/pull/9\nmerge: ok\nmark_done: ok\n"
+    landed_result = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "landed", "reason": reason, "commit": "c"}
+    assert smoke_targets([landed_result])[0]["pr"] == 9
+
+
+def test_smoke_targets_skips_results_that_did_not_land() -> None:
+    not_landed = {"action": {"kind": "land", "repo": "/x/coxswain-tools"}, "status": "not_landed", "reason": "boom"}
+    assert smoke_targets([not_landed]) == []
 
 
 def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_ready(tmp_path) -> None:

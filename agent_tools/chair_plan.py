@@ -26,7 +26,7 @@ _LAUNCHES = {"relaunch", "retry", "rescue"}
 
 
 def _launch_cap(limits: LimitsFacts) -> int:
-    return 0 if limits["go_degraded"] else max(limits["launch_cap"], 0)
+    return 0 if limits["go_degraded"] or limits.get("smoke_hold") is not None else max(limits["launch_cap"], 0)
 
 
 def _lease_gate(lease: LeaseFacts) -> list[Action] | None:

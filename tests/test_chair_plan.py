@@ -1,7 +1,7 @@
 import copy
 from datetime import UTC, datetime
 
-from agent_tools.chair_plan import _free_lanes, plan_stall, plan_tick
+from agent_tools.chair_plan import _free_lanes, _launch_cap, plan_stall, plan_tick
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -343,6 +343,35 @@ def test_free_lanes_is_the_smaller_of_the_cap_and_dispatch_room_after_kept_launc
 
 def test_free_lanes_floors_at_zero_when_live_runs_exceed_max_in_flight():
     assert _free_lanes(5, 0, {"max_in_flight": 2, "live_runs": 4}) == 0
+
+
+def test_launch_cap_is_zero_when_a_smoke_hold_is_present():
+    limits = {
+        "hard_stop": False,
+        "weekly_fraction": 0.1,
+        "hard_stop_fraction": 0.9,
+        "launch_cap": 3,
+        "go_degraded": False,
+        "smoke_hold": {
+            "land": {"repo": "r", "pr": 1, "commit": "abc123"},
+            "failing_command": ["pytest", "-q"],
+            "tail": "AssertionError: boom",
+            "cause": "smoke_failed",
+        },
+    }
+    assert _launch_cap(limits) == 0
+
+
+def test_launch_cap_is_unaffected_when_smoke_hold_is_none():
+    limits = {
+        "hard_stop": False,
+        "weekly_fraction": 0.1,
+        "hard_stop_fraction": 0.9,
+        "launch_cap": 3,
+        "go_degraded": False,
+        "smoke_hold": None,
+    }
+    assert _launch_cap(limits) == 3
 
 
 def test_a_negative_launch_cap_launches_nothing():
