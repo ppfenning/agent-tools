@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_tools import pacing
 from agent_tools.chair import lease_holder
+from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
@@ -60,6 +61,8 @@ class FactsDeps:
         record and no local run directory or log. Optional, and absent means no initiative counts.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
         threshold) with no exit record in the store. Optional, and absent means no initiative counts.
+    newest_run_host: initiative id to its newest run's host, "" meaning the local machine
+        (`run_store.newest_run_hosts`). Optional, and absent means no initiative counts.
     hosts: the same seam as `lost_runs`, `run_store.hosts(runs_dir)`'s raw rows from the store's `hosts`
         table, one per host, keys name, state, versions_json, and whatever else that table carries. Stored
         verbatim under the `login_hosts` fact for the login watch to read. Defaults to a callable returning [].
@@ -114,6 +117,7 @@ class FactsDeps:
     run_exited: Callable[[], Mapping[str, bool]] | None = None  # initiative to whether its newest run has an exit record; absent means {}
     remote_unfetched: Callable[[], Mapping[str, str]] | None = None
     lost_runs: Callable[[], Mapping[str, str]] | None = None  # initiative to run id, for a lane whose host is stale and whose run has no exit record; absent means {}
+    newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
@@ -361,6 +365,10 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
     initiatives = initiative_facts({"initiatives": ready}, live)
+    newest_run_host = dict(deps.newest_run_host()) if deps.newest_run_host is not None else {}
+    # An approved row is, by construction, an approved task not yet landed; `chair_plan_prune.phases_to_carry`
+    # draws its carried-partial-phase set from these same rows, so their initiatives cover both cases home tracks.
+    unfinished = {r["initiative"] for r in approved}
     quarantined = quarantined_from_rows(rows) if rows else list(deps.quarantined())
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
@@ -371,6 +379,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "dispatch": dispatch,
         "approved": approved,
+        "home": initiative_homes(newest_run_host, unfinished),
         "initiatives": initiatives,
         "quarantines": quarantine_facts(
             quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
@@ -386,6 +395,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
+        "newest_run_host": newest_run_host,
         "login_hosts": deps.hosts(),
         "last_housekeeping_at": deps.history() if deps.history is not None else None,
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())

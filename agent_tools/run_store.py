@@ -265,6 +265,24 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
     return [Lane(r["run_id"], r["host"], r["launched_at"], beat) for r, beat in joined if r is not None]
 
 
+def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, str]:
+    """Edge. Each initiative's newest run's `runs.host` ("" when the column is absent or the row's host is blank).
+
+    An initiative with no run row is omitted. Empty with no store or an unreadable one."""
+    opened = _open(runs_dir)
+    if opened is None:
+        return {}
+    conn, token = opened
+    try:
+        host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
+        rows = {i: _newest_run(conn, token, f"runs:{i}", host_expr) for i in initiatives}
+    except _DB_ERRORS:
+        return {}
+    finally:
+        conn.close()
+    return {i: (r["host"] or "") for i, r in rows.items() if r is not None}
+
+
 def hosts(runs_dir: Path) -> list[dict]:
     """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
     try:

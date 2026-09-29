@@ -80,6 +80,24 @@ def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
 
 
+def test_a_newest_run_host_callables_mapping_appears_under_newest_run_host():
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "jarvis"})
+    assert gather_facts(deps, NOW)["newest_run_host"] == {"i": "jarvis"}
+
+
+def test_an_absent_newest_run_host_callable_gives_an_empty_mapping():
+    assert gather_facts(_deps(), NOW)["newest_run_host"] == {}
+
+
+def test_home_maps_an_initiative_with_an_unlanded_approved_task_to_its_newest_run_host():
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "jarvis"})
+    assert gather_facts(deps, NOW)["home"] == {"i": "jarvis"}
+
+
+def test_home_has_no_entry_when_newest_run_host_is_unknown():
+    assert gather_facts(_deps(), NOW)["home"] == {}
+
+
 def test_a_history_callable_returning_a_timestamp_is_held_as_last_housekeeping_at():
     deps = replace(_deps(), history=lambda: "2026-09-25T00:00:00Z")
     assert gather_facts(deps, NOW)["last_housekeeping_at"] == "2026-09-25T00:00:00Z"

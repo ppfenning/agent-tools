@@ -171,6 +171,11 @@ class Facts(TypedDict):
     run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
     # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
     lost_runs: dict[str, str]
+    # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
+    newest_run_host: dict[str, str]
+    # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
+    # landed) maps to that run's host, "" meaning this machine; nothing consumes this yet.
+    home: dict[str, str]
 
 
 ActionKind = Literal[

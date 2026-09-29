@@ -688,6 +688,11 @@ def test_live_lanes_is_empty_with_no_store(tmp_path):
     assert run_store.live_lanes(tmp_path, NOW) == []
 
 
+def test_newest_run_hosts_maps_each_initiative_to_its_newest_runs_host(tmp_path):
+    lane_store(tmp_path, [lane_run("demo-1", "2026-09-25T09:00:00Z")], [], host_column=True)
+    assert run_store.newest_run_hosts(tmp_path, ["demo"]) == {"demo": "h"}
+
+
 def test_remote_lanes_drops_a_local_run_and_keeps_the_rest_in_order():
     a, b, c = (run_store.Lane(run, None, "t", "t") for run in ("a-1", "b-1", "c-1"))
     assert run_store.remote_lanes([a, b, c], {"b-1"}) == [a, c]

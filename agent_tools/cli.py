@@ -6644,6 +6644,7 @@ def _chair_run_deps(
             runs_dir, [row["id"] for row in docket()["initiatives"]]
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
+        newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
