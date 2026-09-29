@@ -17,6 +17,10 @@ def auth_status_argv() -> list[str]:
     return ["claude", "auth", "status"]
 
 
+def env_check_argv(var: str) -> list[str]:
+    return ["printenv", var]
+
+
 def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
     return [
         "cox", "route", "launch", "epic",
