@@ -18,9 +18,9 @@ Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
 
 __all__ = [
-    "add_argv", "beat_argv", "beat_versions", "dispatchable", "doctor_line", "format_host_list", "host_line",
-    "host_rows_to_lane_hosts", "recorded_repos", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed",
-    "sync_host", "versions_report",
+    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "dispatchable", "doctor_line", "format_host_list",
+    "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "recorded_repos", "row_capabilities",
+    "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
 ]
 
 
@@ -158,6 +158,29 @@ def add_argv(name: str, ssh: str, capacity: int, weight: int, capabilities: str,
         "host", "upsert", name, "--ssh", ssh, "--capacity", str(capacity),
         "--weight", str(weight), "--capabilities", capabilities, "--by", by,
     ]
+
+
+def capacity_upsert_argv(row: Row, n: int, by: str) -> list[str]:
+    """`cox host add`'s argv with only capacity changed: ssh, weight and capabilities come from `row`, absent ones as its defaults.
+
+    No `--state`: no `host upsert` caller here sends one, and state moves only through `set-state`, so it is left as it is.
+    """
+    weight = row.get("weight")
+    caps = row.get("capabilities")
+    return add_argv(
+        str(row["name"]), str(row["ssh"]), n, 1 if weight is None else int(weight),  # type: ignore[call-overload]
+        "" if caps is None else ",".join(_capability_list(caps)), by,
+    )
+
+
+def local_host_missing(rows: Sequence[Row], hostname: str) -> bool:
+    """True when no row in `rows` names `hostname`."""
+    return not any(r.get("name") == hostname for r in rows)
+
+
+def local_host_add_argv(hostname: str, capacity: int, by: str) -> list[str]:
+    """The `host upsert` argv to add the local machine: `--ssh` is its own hostname, since it has no separate ssh destination."""
+    return ["host", "upsert", hostname, "--ssh", hostname, "--capacity", str(capacity), "--by", by]
 
 
 def set_state_argv(name: str, state: str, by: str) -> list[str]:
