@@ -1,5 +1,6 @@
 """Plan lands for approved tasks whose phase is done: dependency order, one repository at a time."""
 import heapq
+from collections.abc import Collection
 
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
 
@@ -59,6 +60,16 @@ def _run_suffix(run: str) -> int:
     return int(run.rsplit("-", 1)[-1])
 
 
+def newest_run(runs: Collection[str]) -> str:
+    """The one run, or the highest-suffixed of several: fetching an older run of a carried phase leaves the newest absent."""
+    return next(iter(runs)) if len(runs) == 1 else max(runs, key=_run_suffix)
+
+
+def fetch_action(run: str, repo: str, initiative: str) -> Action:
+    """The fetch a remote run's branches take before anything builds on them; plan_tick stamps the epoch."""
+    return {"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None}  # type: ignore[typeddict-item]
+
+
 def plan_lands(facts: Facts) -> list[Action]:
     """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
 
@@ -72,14 +83,13 @@ def plan_lands(facts: Facts) -> list[Action]:
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
     for (initiative, phase), group in groups.items():
         repo = group[0]["repo"]
-        runs = list({t["run"] for t in group})
-        run = runs[0] if len(runs) == 1 else max(runs, key=_run_suffix)
+        run = newest_run({t["run"] for t in group})
         if not run:
             actions.append({"kind": "needs_chair", "initiative": initiative, "cause": "no_run"})
             continue
         # The fetch follows the run the land names: fetching an older run of a carried phase leaves the land's run absent.
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
-            actions.append({"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None})
+            actions.append(fetch_action(run, repo, initiative))
             fetched.add(run)
         actions.append({"kind": "land_phase", "initiative": initiative, "phase": phase, "repo": repo, "run": run, "epoch": None})
     return actions

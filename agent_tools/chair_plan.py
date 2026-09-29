@@ -7,11 +7,12 @@ from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
-from agent_tools.chair_plan_land import plan_lands
+from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_types import (
     Action,
+    ApprovedTask,
     DispatchFacts,
     Facts,
     InitiativeFacts,
@@ -77,54 +78,117 @@ def _route_homed(
     return host_for_index, dropped, local_used, consumed
 
 
+def _drained_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
+    """Names of rows whose state is 'draining': out of service, so a home there stays stuck past this tick,
+    unlike a merely busy `active` host whose lanes will free up on their own."""
+    return frozenset(str(row.get("name") or "") for row in login_hosts if row.get("state") == "draining")
+
+
+def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
+    """Indices whose home host is drained, login-lapsed, or whose lane is lost: these relocate instead of
+    routing home."""
+    login_hosts = facts.get("login_hosts", [])
+    stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts)
+    lost = frozenset(facts.get("lost_runs", {}))
+    return {
+        n
+        for n in launch_at
+        if actions[n]["initiative"] in home
+        and (home[actions[n]["initiative"]] in stuck_hosts or actions[n]["initiative"] in lost)
+    }
+
+
+def _home_fetch(initiative: str, approved: list[ApprovedTask]) -> Action | None:
+    """plan_lands' fetch for the initiative's newest run among its approved rows, the run its home was placed
+    by; None when no row names a run, so there is nothing to fetch the move from."""
+    rows = [t for t in approved if t["initiative"] == initiative and t["run"]]
+    if not rows:
+        return None
+    run = newest_run({t["run"] for t in rows})
+    return fetch_action(run, next(t["repo"] for t in rows if t["run"] == run), initiative)
+
+
 def _cap_launches(
-    actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot], home: Mapping[str, str]
+    actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot], home: Mapping[str, str],
+    facts: Facts,
 ) -> tuple[list[Action], dict[str, int]]:
-    """An initiative in `home` routes only there: see _route_homed. An initiative with no home is placed as
-    before: the first remaining cap relaunch, retry and rescue actions local, relaunch and retry beyond that
-    on a lane host, ranked exactly as _place_on_hosts ranks a fresh launch_epic (weight, capabilities, free
-    count). rescue never gets a host and is dropped past the cap exactly as before. What no host can take
-    (none eligible, or every host lane full) is dropped as before. A dropped relaunch takes its paired
-    clear_branches with it; a hosted relaunch keeps its clear_branches, which still runs locally.
+    """An initiative in `home` routes only there: see _route_homed. A homed initiative whose host is drained,
+    login-lapsed, or whose lane is lost is relocated instead: routed like a homeless relaunch or retry (ranked
+    by _place_on_hosts, its own old home host excluded from the candidates, never a local lane), with a fetch
+    for its newest run's branches planned right before its own first action; with no run to fetch it is dropped
+    and a needs_chair names it instead. An initiative with no home, and no
+    stuck home, is placed as before: the first remaining cap relaunch, retry and rescue actions local, relaunch
+    and retry beyond that on a lane host, ranked exactly as _place_on_hosts ranks a fresh launch_epic (weight,
+    capabilities, free count). rescue never gets a host and is dropped past the cap, or when its home is stuck,
+    exactly as before. What no host can take (none eligible, or every host lane full) is dropped as before. A
+    dropped relaunch takes its paired clear_branches with it; a hosted or relocated relaunch keeps its
+    clear_branches, which still runs locally.
 
     Returns the resulting actions and a mapping of host name to the lanes this placement took, for the fill
     step that follows to subtract.
     """
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _LAUNCHES]
-    homed_host_for_index, homed_dropped, local_used, homed_consumed = _route_homed(actions, launch_at, home, cap, host_free)
-    unhomed_at = [n for n in launch_at if actions[n]["initiative"] not in home]
+    stuck = _stuck_homes(actions, launch_at, home, facts)
+    stuck_initiatives = {actions[n]["initiative"] for n in stuck}
+    routed_home = {i: h for i, h in home.items() if i not in stuck_initiatives}
+    homed_host_for_index, homed_dropped, local_used, homed_consumed = _route_homed(actions, launch_at, routed_home, cap, host_free)
+    unhomed_at = [n for n in launch_at if actions[n]["initiative"] not in routed_home and n not in stuck]
     overflow = unhomed_at[max(0, cap - local_used) :]
     hostable = [n for n in overflow if actions[n]["kind"] in ("relaunch", "retry")]
+    movable = {actions[n]["initiative"] for n in stuck if actions[n]["kind"] in ("relaunch", "retry")}
+    fetches = {i: _home_fetch(i, facts["approved"]) for i in movable}
+    unfetchable = {i for i, fetch in fetches.items() if fetch is None}
+    stuck_hostable = [n for n in stuck if actions[n]["initiative"] in movable - unfetchable and actions[n]["kind"] != "rescue"]
     by_id = {i["id"]: i for i in initiatives}
+    ordered = [*stuck_hostable, *hostable]
     rest = [
         (
             actions[n]["initiative"],
             _required_capabilities(by_id[actions[n]["initiative"]]) if actions[n]["initiative"] in by_id else frozenset(),
         )
-        for n in hostable
+        for n in ordered
     ]
+    excluded = {home[actions[n]["initiative"]] for n in stuck if home.get(actions[n]["initiative"])}
     reduced_host_free = [
         (name, weight, capabilities, max(0, free - homed_consumed.get(name, 0)), assigned)
         for name, weight, capabilities, free, assigned in host_free
+        if name not in excluded
     ]
     placed = iter(_place_on_hosts(rest, reduced_host_free))
     next_placed = next(placed, None)
     host_for_index: dict[int, str] = dict(homed_host_for_index)
-    for n in hostable:
+    for n in ordered:
         if next_placed is not None and next_placed["initiative"] == actions[n]["initiative"]:
             host_for_index[n] = next_placed["host"]
             next_placed = next(placed, None)
     consumed: dict[str, int] = {}
     for host in host_for_index.values():
         consumed[host] = consumed.get(host, 0) + 1
-    dropped = homed_dropped | {n for n in overflow if n not in host_for_index}
+    dropped = homed_dropped | {n for n in stuck if n not in host_for_index} | {n for n in overflow if n not in host_for_index}
     dropped_initiatives = {actions[n]["initiative"] for n in dropped if actions[n]["kind"] == "relaunch"}
-    kept = [
-        {**a, "host": host_for_index[n]} if n in host_for_index else a
+    kept_at = [
+        n
         for n, a in enumerate(actions)
         if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in dropped_initiatives)
     ]
-    return kept, consumed
+    relocated = {actions[n]["initiative"] for n in stuck_hostable if n in host_for_index}
+    # The fetch goes ahead of the moved initiative's first kept action, a mark_lost or its clear_branches.
+    fetch_before = {
+        min(n for n in kept_at if actions[n].get("initiative") == i): fetch
+        for i, fetch in fetches.items()
+        if i in relocated and fetch is not None
+    }
+    kept = [
+        action
+        for n in kept_at
+        for action in (
+            *([fetch_before[n]] if n in fetch_before else []),
+            {**actions[n], "host": host_for_index[n]} if n in host_for_index else actions[n],
+        )
+    ]
+    # A stuck home with no run to fetch from never moves blind: the chair hears why the relaunch was dropped.
+    unmoved: list[Action] = [{"kind": "needs_chair", "initiative": i, "cause": "home_unfetchable"} for i in sorted(unfetchable)]
+    return [*kept, *unmoved], consumed
 
 
 def _needs_chair_only(actions: list[Action]) -> list[Action]:
@@ -260,7 +324,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
     capped_actions, consumed = _cap_launches(
-        recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free, facts.get("home", {})
+        recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free, facts.get("home", {}), facts
     )
     capped = [_with_carry(a, facts["approved"]) for a in capped_actions]
     # A hosted relaunch or retry takes no local lane, so it must not count against the local free-lane budget.
