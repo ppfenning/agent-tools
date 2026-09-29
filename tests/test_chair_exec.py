@@ -1,4 +1,5 @@
 import json
+import signal
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -962,6 +963,80 @@ def test_a_dry_run_stale_to_draft_performs_nothing(tmp_path) -> None:
     assert results[0]["status"] == "dry_run"
     assert calls == []
     assert not (tmp_path / "courier.jsonl").exists()
+
+
+def _signal_deps(calls: list, tmp_path) -> Deps:
+    return replace(_deps(calls), runs_dir=tmp_path, send_signal=lambda pid, sig: calls.append(("signal", pid, sig)))
+
+
+def test_a_stalled_usr1_with_a_pidfile_signals_the_pid_and_is_recorded_done(tmp_path) -> None:
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    calls: list = []
+    action = {"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 1}
+    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
+    assert results[0]["status"] == "done"
+    assert ("signal", 4242, signal.SIGUSR1) in calls
+    assert ("record", "stalled_usr1") in [c for c in calls if c[0] == "record"]
+
+
+def test_a_stalled_usr1_with_no_pidfile_signals_nothing_and_fails(tmp_path) -> None:
+    calls: list = []
+    action = {"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 1}
+    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
+    assert results[0]["status"] == "failed"
+    assert results[0]["reason"] == "no pidfile"
+    assert [c for c in calls if c[0] == "signal"] == []
+
+
+def test_a_stalled_stop_with_a_pidfile_signals_sigterm_and_is_recorded_done(tmp_path) -> None:
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    calls: list = []
+    action = {"kind": "stalled_stop", "run": "r1", "initiative": "i", "epoch": 1}
+    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, False)
+    assert results[0]["status"] == "done"
+    assert ("signal", 4242, signal.SIGTERM) in calls
+
+
+def test_a_stalled_stop_whose_pid_is_gone_is_recorded_failed_and_the_tick_goes_on(tmp_path) -> None:
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    calls: list = []
+
+    def gone(pid: int, sig: int) -> None:
+        raise ProcessLookupError(3, "No such process")
+
+    deps = replace(_deps(calls), runs_dir=tmp_path, send_signal=gone)
+    actions = [{"kind": "stalled_stop", "run": "r1", "initiative": "i", "epoch": 1}, {"kind": "standby", "epoch": 1}]
+    results = perform(actions, deps, lambda: 1, False)
+    assert [(r["action"]["kind"], r["status"]) for r in results] == [("stalled_stop", "failed"), ("standby", "recorded")]
+    assert calls == [("record", "stalled_stop"), ("record", "standby")]
+
+
+@pytest.mark.parametrize("kind", ["stalled_usr1", "stalled_stop"])
+def test_a_fenced_stalled_action_is_fenced_and_signals_nothing(tmp_path, kind: str) -> None:
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    calls: list = []
+    action = {"kind": kind, "run": "r1", "initiative": "i", "epoch": 1}
+    results = perform([action], _signal_deps(calls, tmp_path), lambda: 2, False)
+    assert results[0]["status"] == "fenced"
+    assert [c for c in calls if c[0] == "signal"] == []
+
+
+@pytest.mark.parametrize("kind", ["stalled_usr1", "stalled_stop"])
+def test_a_dry_run_stalled_action_performs_nothing(tmp_path, kind: str) -> None:
+    (tmp_path / "r1.pid").write_text("4242", encoding="utf-8")
+    calls: list = []
+    action = {"kind": kind, "run": "r1", "initiative": "i", "epoch": 1}
+    results = perform([action], _signal_deps(calls, tmp_path), lambda: 1, True)
+    assert results[0]["status"] == "dry_run"
+    assert calls == []
+
+
+def test_a_needs_chair_action_with_cause_stalled_is_recorded_through_the_generic_path() -> None:
+    calls: list = []
+    action = {"kind": "needs_chair", "initiative": "i", "cause": "stalled", "epoch": 1}
+    results = perform([action], _deps(calls), lambda: 1, False)
+    assert results[0]["status"] == "recorded"
+    assert ("record", "needs_chair") in calls
 
 
 def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_ready(tmp_path) -> None:

@@ -101,6 +101,12 @@ def test_a_fake_stale_candidates_callable_returning_two_rows_gives_facts_holding
     assert gather_facts(deps, NOW)["stale_candidates"] == rows
 
 
+def test_a_fake_stall_candidates_callable_returning_two_rows_gives_facts_holding_them_unchanged():
+    rows = [{"run": "i-1", "initiative": "i"}, {"run": "i-2", "initiative": "i"}]
+    deps = replace(_deps(), stall_candidates=lambda now: rows)
+    assert gather_facts(deps, NOW)["stall_candidates"] == rows
+
+
 def test_a_stale_days_callable_returning_10_gives_stale_days_10():
     deps = replace(_deps(), stale_days=lambda: 10)
     assert gather_facts(deps, NOW)["stale_days"] == 10
@@ -307,8 +313,7 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
-    # stall_candidates is declared on Facts but not yet filled here: a later task teaches gather_facts to fill it.
-    assert set(facts) == (set(Facts.__annotations__) | {"login_hosts"}) - {"stall_candidates"}
+    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True

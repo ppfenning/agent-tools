@@ -15,7 +15,7 @@ import socket
 import time
 from pathlib import Path
 
-from agent_tools import chair, epic, run_store, runs_top
+from agent_tools import chair, chair_stall, epic, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
@@ -56,7 +56,17 @@ def _call(path: Path) -> dict | None:
     if result is None:
         return None
     return {"node": m.group(1), "attempt": int(m.group(2)),
-            "cost_usd": result.get("total_cost_usd", 0.0), "turns": result.get("num_turns", 0)}
+            "cost_usd": result.get("total_cost_usd", 0.0), "turns": result.get("num_turns", 0),
+            "ts": _mtime_ts(path)}
+
+
+def _mtime_ts(path: Path) -> str | None:
+    """When a trace file was last written, as `%Y-%m-%dT%H:%M:%SZ`. The `result` line carries no timestamp of its own."""
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(written, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def calls_from_usage(usage_calls: list[dict]) -> list[dict]:
@@ -64,7 +74,7 @@ def calls_from_usage(usage_calls: list[dict]) -> list[dict]:
     roles = [str(c.get("role") or "unknown") for c in usage_calls]
     return [
         {"node": role, "attempt": 1 + roles[:i].count(role),
-         "cost_usd": c.get("cost_usd", 0.0), "turns": c.get("turns", 0)}
+         "cost_usd": c.get("cost_usd", 0.0), "turns": c.get("turns", 0), "ts": c.get("ts")}
         for i, (c, role) in enumerate(zip(usage_calls, roles))
     ]
 
@@ -110,7 +120,31 @@ def _heartbeat_age(lease: tuple[str, str, str] | None, run: str, now: datetime.d
         return None
 
 
+def _stall_ts(value: str | None) -> str | None:
+    """An ISO timestamp reformatted to `chair_stall`'s `%Y-%m-%dT%H:%M:%SZ`; None when absent or unparseable."""
+    if value is None:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=datetime.UTC)
+    return aware.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _node_call_stalled(calls: list[dict], started_at: str | None, now: datetime.datetime) -> bool:
+    """True once the newest of the already-loaded `calls` (or the run's own start, with none yet) and the
+    run's start both clear `chair_stall.STALL_MINUTES`; False outright with no stored `started_at`."""
+    if started_at is None:
+        return False
+    newest_ts = _stall_ts(calls[-1]["ts"]) if calls else None
+    idle = chair_stall.idle_minutes(newest_ts, started_at, now)
+    started = chair_stall.started_minutes(started_at, now)
+    return chair_stall.is_stalled(idle, started)
+
+
 def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = None) -> dict:
+    now = now or datetime.datetime.now(datetime.UTC)
     lines = _read_lines(root / f"{run}.log")
     trace_dir = root / f"{run}-trace"
     trace_paths = sorted(trace_dir.glob("*.jsonl"), key=_written_at) if trace_dir.exists() else []
@@ -118,9 +152,11 @@ def _fact(root: Path, run: str, alive: bool, now: datetime.datetime | None = Non
     names = [p.name for p in trace_paths] or [f"{c['node']}-{c['attempt']}.jsonl" for c in stored]
     events = events_module.from_log(run, lines) + events_module.from_trace_names(run, names)
     calls = [c for c in (_call(p) for p in trace_paths) if c is not None] or stored
+    started_at = _stall_ts(run_store.run_started(root, run))
     return {"run": run, "alive": alive, "phases": _phases(root, run), "events": events, "calls": calls,
             "ceiling": _ceiling(root, run), "launched_by": _launched_by(root, run),
-            "heartbeat_age": _heartbeat_age(run_store.lease(root, run), run, now or datetime.datetime.now(datetime.UTC))}
+            "heartbeat_age": _heartbeat_age(run_store.lease(root, run), run, now),
+            "node_call_stalled": _node_call_stalled(calls, started_at, now)}
 
 
 def facts(runs_dir, now_alive=None) -> list[dict]:
@@ -183,7 +219,7 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     chair_state = chair_now(runs_dir, heartbeat_minutes)
     host = socket.gethostname()
     local = [runs_top.row(f["run"], f["alive"], f["phases"], f["events"], f["calls"], f["ceiling"], f["launched_by"], chair_state,
-                          f["heartbeat_age"], host)
+                          f["heartbeat_age"], host, f["node_call_stalled"])
              for f in facts(runs_dir)]
     lanes = run_store.live_lanes(root, now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     return [*local, *_remote_rows(root, lanes, now)]

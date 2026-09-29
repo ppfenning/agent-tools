@@ -38,11 +38,13 @@ class Row:
     ceiling: str = ""
     launched_by: str = ""
     heartbeat_age: int | None = None
+    node_call_stalled: bool = False
     host: str | None = None
     remote: bool = False
 
 
-def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None) -> str:
+def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None,
+            node_call_stalled: bool = False) -> str:
     if any(e.kind == "task_quarantined" for e in events):
         return "quarantined"
     if any(e.kind == "budget_stop" for e in events):
@@ -51,7 +53,7 @@ def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_
         return "exited"
     if orphaned:
         return "orphaned"
-    if heartbeat_age is not None and heartbeat_age >= STALL_S:
+    if (heartbeat_age is not None and heartbeat_age >= STALL_S) or node_call_stalled:
         return "stalled"
     return "running"
 
@@ -74,7 +76,8 @@ def _orphaned(alive: bool, launched_by: str, chair: dict | None) -> bool:
 
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
-        launched_by: str = "", chair: dict | None = None, heartbeat_age: int | None = None, host: str | None = None) -> Row:
+        launched_by: str = "", chair: dict | None = None, heartbeat_age: int | None = None, host: str | None = None,
+        node_call_stalled: bool = False) -> Row:
     """Pure: the one row a run's events and finished calls make; `host` is the machine it runs on."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -90,10 +93,11 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         turns=sum(c["turns"] for c in calls),
         cost_usd=sum(c["cost_usd"] for c in calls),
         verdict=verdict,
-        status=_status(events, alive, _orphaned(alive, launched_by, chair), heartbeat_age),
+        status=_status(events, alive, _orphaned(alive, launched_by, chair), heartbeat_age, node_call_stalled),
         ceiling=_ceiling_label(ceiling),
         launched_by=launched_by,
         heartbeat_age=heartbeat_age,
+        node_call_stalled=node_call_stalled,
         host=host,
     )
 

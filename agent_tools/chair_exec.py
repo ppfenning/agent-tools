@@ -6,6 +6,8 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
 import uuid
@@ -88,6 +90,7 @@ class Deps:
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
+    send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -521,6 +524,23 @@ def _check_login(action: Action, deps: Deps) -> Result:
     return _result(action, "recorded", json.dumps(row, sort_keys=True))
 
 
+def _stalled(action: Action, deps: Deps, sig: int) -> Result:
+    """Edge. One `sig` to the pid in `<run>.pid`; a missing pidfile or a failed send is a failed result, never a raise."""
+    pidfile = Path(deps.runs_dir) / f'{action.get("run", "")}.pid'
+    try:
+        text = pidfile.read_text(encoding="utf-8")
+    except OSError:
+        return _result(action, "failed", "no pidfile")
+    pid = route.parse_pid(text)
+    if pid is None:
+        return _result(action, "failed", "no pidfile")
+    try:
+        deps.send_signal(pid, sig)
+    except OSError as exc:
+        return _result(action, "failed", f"signal {pid}: {exc}")
+    return _result(action, "done")
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if kind == "land":
@@ -543,6 +563,10 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _housekeeping(action, deps)
     if kind == "stale_to_draft":
         return _stale_to_draft(action, deps)
+    if kind == "stalled_usr1":
+        return _stalled(action, deps, signal.SIGUSR1)
+    if kind == "stalled_stop":
+        return _stalled(action, deps, signal.SIGTERM)
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 

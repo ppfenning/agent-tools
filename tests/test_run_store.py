@@ -98,6 +98,19 @@ def test_cost_since_is_none_for_a_store_without_a_node_calls_table(tmp_path):
     assert run_store.cost_since(tmp_path, "2026-09-25") is None
 
 
+def test_last_call_at_maps_each_run_to_its_own_newest_ts(tmp_path):
+    store(
+        tmp_path,
+        {**ROW, "call_id": "a", "run_id": "r1", "ts": "2026-09-25T04:00:00+00:00"},
+        {**ROW, "call_id": "b", "run_id": "r1", "ts": "2026-09-25T05:00:00+00:00"},
+        {**ROW, "call_id": "c", "run_id": "r2", "ts": "2026-09-25T02:00:00+00:00"},
+    )
+    assert run_store.last_call_at(tmp_path, ["r1", "r2"]) == {
+        "r1": "2026-09-25T05:00:00+00:00",
+        "r2": "2026-09-25T02:00:00+00:00",
+    }
+
+
 def test_build_counts_counts_build_calls_per_task_and_leaves_out_tasks_with_none(tmp_path):
     store(tmp_path, {**ROW, "call_id": "a", "role": "build", "task_id": "t1"}, {**ROW, "call_id": "b", "role": "build", "task_id": "t2"},
           {**ROW, "call_id": "c", "role": "build", "task_id": "t2"}, {**ROW, "call_id": "d", "role": "review", "task_id": "t3"})
