@@ -10,6 +10,7 @@ import datetime
 import json
 import os
 import re
+import subprocess
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -21,6 +22,7 @@ from agent_tools.pacing import Assessment
 __all__ = [
     "Problem",
     "ProfileError",
+    "allocate_intake_id",
     "child_env",
     "context_document",
     "context_from_rows",
@@ -39,6 +41,7 @@ __all__ = [
     "merge_same_phase",
     "next_run_id",
     "overlay",
+    "parse_allocate_id",
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
@@ -82,6 +85,7 @@ _KNOWN_KEYS = {
     "tracker",
     "umbrella_dir",
     "log_retention_days",  # run logs and traces kept locally, in days; run_logs.DEFAULT_RETENTION_DAYS when absent
+    "ids",  # `slug` (default) or `sequence`; `intake_file`'s own id source, spec's `route file --intake`
 }
 
 _JSON_KEYS = {"sources", "repo_map"}
@@ -393,21 +397,72 @@ def initiative_text(id: str, title: str, repo: str, intake: str, body: str) -> s
     return _frontmatter([("id", id), ("title", title), ("repo", repo), ("intake", intake)], body)
 
 
-def intake_file(title: str, body: str, repo: str, date: str, *, source: str = "", link: str = "") -> dict:
+def _allocate_id_argv(python: str) -> list[str]:
+    """argv for the harness id allocation, the `python -m harness.<module>` shape `run_store` uses."""
+    return [python, "-m", "harness.store_ids", "allocate", "--json"]
+
+
+def parse_allocate_id(code: int, stdout: str) -> str:
+    """The `id` of exit 0 with a JSON object holding a non-empty string `id`; otherwise raises naming the exit and output."""
+    parsed = None
+    if code == 0:
+        try:
+            parsed = json.loads(stdout)
+        except ValueError:
+            parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("id"), str) and parsed["id"]:
+        return parsed["id"]
+    raise ValueError(f"id allocation failed (exit {code}): {stdout.strip() or 'no JSON object on stdout'}")
+
+
+def allocate_intake_id() -> str:
+    """Edge: `python -m harness.store_ids allocate --json`; raises when the harness python is missing or the call fails."""
+    python = run_store._harness_python()
+    if python is None:
+        raise ValueError("id allocation failed: harness python is not available")
+    try:
+        done = subprocess.run(_allocate_id_argv(str(python)), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"id allocation failed to run: {exc}") from exc
+    return parse_allocate_id(done.returncode, done.stdout or done.stderr)
+
+
+def intake_file(
+    title: str,
+    body: str,
+    repo: str,
+    date: str,
+    *,
+    source: str = "",
+    link: str = "",
+    ids: str = "slug",
+    allocate: Callable[[], str] | None = None,
+) -> dict:
     """Content for `route file --intake` (spec §3):
     `intake/<date>-<slug>.md`, same frontmatter shape as the initiative
     file. `date` arrives as a string (e.g. `2026-09-03`) so this stays
     pure — no clock reads here. A pulled file also carries `source` and `link`.
+
+    Under `ids="sequence"` the file is `intake/<id>.md` with the id from `allocate`; a failed allocation raises, never slugifies.
     """
-    slug = _slug_or_raise(title)
     text = body if body else title
     origin = [("source", source), ("link", link)] if link else []
+    if ids == "sequence":
+        id_ = (allocate or allocate_intake_id)()
+        return {f"intake/{id_}.md": _frontmatter([("id", id_), ("title", title), *origin], text)}
+    slug = _slug_or_raise(title)
     file_text = _frontmatter([("id", slug), ("title", title), ("repo", repo), *origin], text)
     return {f"intake/{date}-{slug}.md": file_text}
 
 
 def pull_plan(
-    candidates: Sequence, taken_links: frozenset[str], profile_repos: Mapping[str, str], *, date: str, source: str
+    candidates: Sequence,
+    taken_links: frozenset[str],
+    profile_repos: Mapping[str, str],
+    *,
+    date: str,
+    source: str,
+    ids: str = "slug",
 ) -> tuple[list[dict], list[str], list[str]]:
     """Intake files, PR links to review, and refusals; an unmapped repo is refused, never guessed, and a second candidate on one path is refused, never dropped."""
     reviews = [c.link for c in candidates if c.kind == "pr"]
@@ -416,7 +471,7 @@ def pull_plan(
     mapped = [c for c in fresh if c.repo in profile_repos]
     unnamed = [_pull_refusal(c, "title has no alphanumeric characters to slugify") for c in mapped if not slugify(c.title)]
     planned = [
-        (c, intake_file(c.title, c.body, profile_repos[c.repo], date, source=source, link=c.link))
+        (c, intake_file(c.title, c.body, profile_repos[c.repo], date, source=source, link=c.link, ids=ids))
         for c in mapped
         if slugify(c.title)
     ]

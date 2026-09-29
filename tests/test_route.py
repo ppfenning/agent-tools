@@ -337,6 +337,66 @@ def test_intake_file_refuses_a_title_that_slugifies_to_empty():
         route.intake_file("!!!", "body", "repo-url", "2026-09-03")
 
 
+def test_parse_profile_reads_the_ids_key_as_sequence():
+    text = VALID_PROFILE + "ids: sequence\n"
+    assert route.parse_profile(text)["ids"] == "sequence"
+
+
+def test_intake_file_with_ids_sequence_writes_the_allocated_id_and_title():
+    files = route.intake_file(
+        "Fix the Bug",
+        "Do the thing.",
+        "git@example.com:acme/widget.git",
+        "2026-09-03",
+        ids="sequence",
+        allocate=lambda: "I7",
+    )
+    assert set(files) == {"intake/I7.md"}
+    assert files["intake/I7.md"] == (
+        "---\n"
+        "id: I7\n"
+        "title: Fix the Bug\n"
+        "---\n"
+        "\n"
+        "Do the thing.\n"
+    )
+
+
+def test_intake_file_default_profile_still_slugifies():
+    default = route.intake_file(
+        "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", "2026-09-03"
+    )
+    explicit_slug = route.intake_file(
+        "Fix the Bug", "Do the thing.", "git@example.com:acme/widget.git", "2026-09-03", ids="slug"
+    )
+    assert default == explicit_slug == {
+        "intake/2026-09-03-fix-the-bug.md": (
+            "---\n"
+            "id: fix-the-bug\n"
+            "title: Fix the Bug\n"
+            'repo: "git@example.com:acme/widget.git"\n'
+            "---\n"
+            "\n"
+            "Do the thing.\n"
+        )
+    }
+
+
+def test_intake_file_refuses_when_allocation_fails():
+    def failing_allocate():
+        raise ValueError("id allocation failed (exit 1): boom")
+
+    with pytest.raises(ValueError, match="id allocation failed"):
+        route.intake_file(
+            "Fix the Bug",
+            "Do the thing.",
+            "git@example.com:acme/widget.git",
+            "2026-09-03",
+            ids="sequence",
+            allocate=failing_allocate,
+        )
+
+
 def test_harness_argv_builds_the_epic_command_line():
     profile = route.parse_profile(VALID_PROFILE)
     argv = route.harness_argv(
@@ -2100,6 +2160,30 @@ def test_pull_plan_routes_a_pr_to_a_review_and_an_issue_to_an_intake_file():
     pr = Candidate(title="Add retry", body="b", repo="a/b", link="l2", kind="pr")
     files, reviews, refusals = route.pull_plan([_cand("l1"), pr], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github")
     assert (len(files), reviews, refusals) == (1, ["l2"], [])
+
+
+def test_pull_plan_with_ids_sequence_writes_the_allocated_id(monkeypatch):
+    monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
+    files, reviews, refusals = route.pull_plan(
+        [_cand("l1")], frozenset(), {"a/b": "tools"}, date="2026-09-24", source="github", ids="sequence"
+    )
+    assert refusals == []
+    assert set(files[0]) == {"intake/I7.md"}
+
+
+def test_parse_allocate_id_returns_the_id_on_a_clean_exit():
+    assert route.parse_allocate_id(0, '{"id": "I7"}') == "I7"
+
+
+def test_parse_allocate_id_raises_naming_the_exit_code_and_output_on_failure():
+    with pytest.raises(ValueError, match=r"id allocation failed \(exit 1\): boom"):
+        route.parse_allocate_id(1, "boom")
+
+
+def test_allocate_intake_id_raises_when_the_harness_python_is_unavailable(monkeypatch):
+    monkeypatch.setattr(route.run_store, "_harness_python", lambda: None)
+    with pytest.raises(ValueError, match="id allocation failed"):
+        route.allocate_intake_id()
 
 
 def test_parse_profile_keeps_spend_weekly_reset_as_text():
