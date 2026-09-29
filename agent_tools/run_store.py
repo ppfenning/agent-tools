@@ -39,7 +39,7 @@ except ImportError:
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "hosts", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
+    "harness_python", "hosts", "last_call_at", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
 
@@ -397,6 +397,23 @@ def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | 
         return float(row["total"] or 0.0)
     except _DB_ERRORS:
         return None
+    finally:
+        conn.close()
+
+
+def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
+    """Edge. Each id in `run_ids` mapped to its newest `node_calls.ts`; a run with no call row is absent.
+    `{}` with no store, an unreadable one, or an empty `run_ids`."""
+    opened = _open(runs_dir) if run_ids else None
+    if opened is None:
+        return {}
+    conn, p = opened
+    try:
+        marks = ", ".join(["{p}"] * len(run_ids))
+        sql = _sql(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
+        return {r["run_id"]: r["last"] for r in conn.execute(sql, tuple(run_ids)).fetchall()}
+    except _DB_ERRORS:
+        return {}
     finally:
         conn.close()
 

@@ -11,6 +11,8 @@ from test_run_store import lane_run, lane_store, leases_table
 from agent_tools import cli, run_store, runs_top
 from agent_tools.runs_top_screen import _fact, calls_from_usage, draw, facts, first_visible, loop, rows_now
 
+_WRITTEN = datetime.datetime(2026, 9, 25, 5, 29, 0, tzinfo=datetime.UTC).timestamp()
+
 
 def _write(path, text):
     path.write_text(text, encoding="utf-8")
@@ -24,6 +26,7 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     trace.mkdir()
     _write(trace / "n1-1.jsonl", json.dumps({"type": "result", "num_turns": 4, "total_cost_usd": 0.5}) + "\n")
     _write(trace / "n2-1.jsonl", json.dumps({"type": "assistant"}) + "\n")
+    os.utime(trace / "n1-1.jsonl", (_WRITTEN, _WRITTEN))
 
     result = facts(tmp_path, now_alive=lambda pid: pid == 123)
 
@@ -32,7 +35,7 @@ def test_facts_reads_one_alive_run_with_calls_and_phases(tmp_path):
     assert f["run"] == "r1"
     assert f["alive"] is True
     assert f["phases"] == ["build"]
-    assert f["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
+    assert f["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4, "ts": "2026-09-25T05:29:00Z"}]
 
 
 def test_calls_from_usage_numbers_attempts_per_role_in_order():
@@ -43,9 +46,9 @@ def test_calls_from_usage_numbers_attempts_per_role_in_order():
     ]
 
     assert calls_from_usage(stored) == [
-        {"node": "plan", "attempt": 1, "cost_usd": 0.1, "turns": 2},
-        {"node": "build", "attempt": 1, "cost_usd": 0.2, "turns": 3},
-        {"node": "build", "attempt": 2, "cost_usd": 0.3, "turns": 4},
+        {"node": "plan", "attempt": 1, "cost_usd": 0.1, "turns": 2, "ts": None},
+        {"node": "build", "attempt": 1, "cost_usd": 0.2, "turns": 3, "ts": None},
+        {"node": "build", "attempt": 2, "cost_usd": 0.3, "turns": 4, "ts": None},
     ]
 
 
@@ -68,10 +71,11 @@ def test_fact_with_trace_files_ignores_the_store(tmp_path, monkeypatch):
     trace = tmp_path / "r1-trace"
     trace.mkdir()
     _write(trace / "n1-1.jsonl", json.dumps({"type": "result", "num_turns": 4, "total_cost_usd": 0.5}) + "\n")
+    os.utime(trace / "n1-1.jsonl", (_WRITTEN, _WRITTEN))
 
     fact = _fact(tmp_path, "r1", True)
 
-    assert fact["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4}]
+    assert fact["calls"] == [{"node": "n1", "attempt": 1, "cost_usd": 0.5, "turns": 4, "ts": "2026-09-25T05:29:00Z"}]
 
 
 def test_facts_lists_store_phases_by_ts_for_a_live_run_with_no_phase_files(tmp_path):
@@ -381,6 +385,38 @@ def test_fact_heartbeat_age_is_none_for_a_lease_held_by_another_run_or_no_store(
     leases_table(tmp_path, ("runs:x", "x-2", "2026-09-25T06:00:00Z", "2026-09-25T05:58:30Z"))
 
     assert _fact(tmp_path, "x-3", True, _NOW)["heartbeat_age"] is None
+
+
+def _trace_call_written(tmp_path, minutes_before_now: int) -> None:
+    """One finished trace call, `build-1.jsonl`, last written `minutes_before_now` before `_NOW`."""
+    trace = tmp_path / "r1-trace"
+    trace.mkdir()
+    path = trace / "build-1.jsonl"
+    _write(path, json.dumps({"type": "result", "num_turns": 2, "total_cost_usd": 0.1}) + "\n")
+    written = (_NOW - datetime.timedelta(minutes=minutes_before_now)).timestamp()
+    os.utime(path, (written, written))
+
+
+def test_fact_node_call_stalled_true_when_the_newest_trace_call_is_31_minutes_old(tmp_path, monkeypatch):
+    _trace_call_written(tmp_path, 31)
+    monkeypatch.setattr(run_store, "run_started", lambda root, run: "2026-09-25T05:00:00Z")
+
+    assert _fact(tmp_path, "r1", True, _NOW)["node_call_stalled"] is True
+
+
+def test_fact_node_call_stalled_false_when_the_newest_trace_call_is_29_minutes_old(tmp_path, monkeypatch):
+    _trace_call_written(tmp_path, 29)
+    monkeypatch.setattr(run_store, "run_started", lambda root, run: "2026-09-25T05:00:00Z")
+
+    assert _fact(tmp_path, "r1", True, _NOW)["node_call_stalled"] is False
+
+
+def test_fact_node_call_stalled_reads_the_stored_call_ts_with_no_trace_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {
+        "calls": [{"role": "build", "cost_usd": 0.1, "turns": 2, "ts": "2026-09-25T05:31:00Z"}]})
+    monkeypatch.setattr(run_store, "run_started", lambda root, run: "2026-09-25T05:00:00Z")
+
+    assert _fact(tmp_path, "r1", True, _NOW)["node_call_stalled"] is False
 
 
 _LIVE = "2026-09-25T06:02:00Z"

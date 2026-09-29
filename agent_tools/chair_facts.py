@@ -71,6 +71,8 @@ class FactsDeps:
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
         `chair_read_stale.read_stale_candidates`. Optional, and absent means no candidates.
+    stall_candidates: `stall_candidates(now) -> list[dict]`, bound in production to
+        `chair_read_stall.read_stall_candidates`. Optional, and absent means no candidates.
     queue: `run_store.read_queue`'s rows for this tick, read once and fed to `chair_read_docket.docket_from_rows`,
         `chair_read_intake.intake_from_rows`, `chair_read_quarantined.quarantined_from_rows` and
         `stranded_records`-paired `chair_read_stranded.stranded_from_rows` to build ready, intake, quarantined and
@@ -116,6 +118,7 @@ class FactsDeps:
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
+    stall_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
     hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
@@ -389,5 +392,6 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         if deps.housekeeping_hours is not None
         else DEFAULT_HOUSEKEEPING_HOURS,
         "stale_candidates": list(deps.stale_candidates(now)) if deps.stale_candidates is not None else [],
+        "stall_candidates": list(deps.stall_candidates(now)) if deps.stall_candidates is not None else [],
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
     }

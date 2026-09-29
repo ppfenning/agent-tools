@@ -166,6 +166,14 @@ def test_exited_wins_over_stalled_for_a_dead_run():
     assert _status([], False, heartbeat_age=500) == "exited"
 
 
+def test_status_is_stalled_for_a_stale_node_call_with_no_heartbeat_signal():
+    assert _status([], True, node_call_stalled=True) == "stalled"
+
+
+def test_status_is_running_with_no_heartbeat_age_and_no_stale_node_call():
+    assert _status([], True) == "running"
+
+
 def test_row_carries_heartbeat_age_and_a_stale_one_reads_stalled():
     r = row("r1", True, [], [], [], heartbeat_age=120)
     assert (r.status, r.heartbeat_age) == ("stalled", 120)
