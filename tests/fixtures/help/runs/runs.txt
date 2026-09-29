@@ -1,11 +1,11 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
+                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume}
                 ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause}
+  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -24,6 +24,9 @@ positional arguments:
     detail              one run's timeline, objection and last tool calls
     stranded            every approved task record whose work item is not done, with its remedy
     cause               record why one run's attempt at a task was quarantined
+    stop                stop a run's process, local or remote, and wait for it to exit
+    pause               mark a run paused in the store
+    resume              mark a paused run resumed in the store
 
 options:
   -h, --help            show this help message and exit
