@@ -1,0 +1,72 @@
+import json
+
+from agent_tools.dash_feed import snapshot
+
+
+def test_snapshot_matches_committed_fixture():
+    at = "2026-09-29T00:00:00Z"
+    chair = {
+        "holder": "chair@omarchy:12345",
+        "host": "omarchy",
+        "epoch": 7,
+        "liveness": "live",
+        "beat_age_s": 4,
+    }
+    spend = {
+        "five_hour_fraction": 0.16,
+        "five_hour_source": "meter",
+        "weekly_fraction": 0.35,
+        "weekly_source": "meter",
+        "hard_stop_fraction": 0.93,
+        "five_hour_resets_at": "2026-09-29T02:00:00Z",
+        "weekly_resets_at": "2026-10-04T04:00:00Z",
+    }
+    machines = [
+        {
+            "name": "omarchy",
+            "state": "active",
+            "lanes_in_use": 2,
+            "capacity": 3,
+            "login_ok": True,
+            "login_checked_at": "2026-09-28T23:50:00Z",
+            "beat_age_s": 12,
+            "checkouts": {"coxswain-tools": {"behind_main": 0}},
+        }
+    ]
+    runs = [
+        {
+            "run": "dash-feed-1",
+            "machine": "omarchy",
+            "phase": "p1-foundations",
+            "node": "build",
+            "attempt": 1,
+            "turns": 12,
+            "cost": 0.84,
+            "verdict": "approve",
+            "status": "running",
+        }
+    ]
+    queue = [
+        {
+            "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
+            "priority": 1,
+            "phases_landed": 0,
+            "phases_total": 3,
+            "current_phase": "p1-foundations",
+        }
+    ]
+    inbox = [
+        {
+            "kind": "needs_chair",
+            "target": "some-task",
+            "reason": "budget stop after 2 attempts",
+        }
+    ]
+    watch = []
+
+    result = snapshot(at, chair, spend, machines, runs, queue, inbox, watch)
+
+    with open("tests/fixtures/dash_feed_v1.json") as f:
+        expected = json.load(f)
+
+    assert result == expected
