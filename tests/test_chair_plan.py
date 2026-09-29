@@ -286,6 +286,96 @@ def test_a_homeless_initiative_places_as_before(monkeypatch):
     ]
 
 
+def _home_approved(run: str) -> dict:
+    return {"id": "a-t", "initiative": "a", "repo": "r", "phase": "p", "phase_done": False, "needs": [], "run": run, "needs_fetch": False}
+
+
+def _two_host_dispatch() -> dict:
+    return {
+        "max_in_flight": 1,
+        "live_runs": 1,
+        "hosts": [{"name": "jarvis", "live_runs": 0}, {"name": "friday", "live_runs": 0}],
+    }
+
+
+def test_a_home_with_a_lapsed_login_moves_the_relaunch_with_a_fetch_planned_first(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(
+        dispatch=_two_host_dispatch(),
+        run_exited={"a": True},
+        home={"a": "jarvis"},
+        approved=[_home_approved("a-3")],
+        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+    )
+    assert plan_tick(facts) == [
+        {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "friday", "epoch": 7},
+        {"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7},
+    ]
+
+
+def test_a_home_with_a_lost_lane_moves_the_relaunch():
+    facts = _facts(
+        dispatch=_two_host_dispatch(),
+        run_exited={"a": True},
+        home={"a": "jarvis"},
+        approved=[_home_approved("a-3")],
+        lost_runs={"a": "a-3"},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
+        {"kind": "mark_lost", "initiative": "a", "run": "a-3", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "friday", "epoch": 7},
+    ]
+
+
+def test_a_moved_home_fetches_its_newest_run_not_the_first_approved_row(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    older = {**_home_approved("a-2"), "id": "a-old", "phase": "q", "repo": "old"}
+    facts = _facts(
+        dispatch=_two_host_dispatch(),
+        run_exited={"a": True},
+        home={"a": "jarvis"},
+        approved=[older, _home_approved("a-10")],
+        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+    )
+    assert plan_tick(facts)[0] == {"kind": "fetch", "run": "a-10", "repo": "r", "initiative": "a", "epoch": 7}
+
+
+def test_a_stuck_home_with_no_run_to_fetch_does_not_move_and_reaches_the_chair(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(
+        dispatch=_two_host_dispatch(),
+        run_exited={"a": True},
+        home={"a": "jarvis"},
+        approved=[_home_approved("")],
+        login_hosts=[_login_host("jarvis", login_ok=False, checked_at=_NOW.isoformat())],
+    )
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "a", "cause": "home_unfetchable", "epoch": 7},
+        {"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7},
+    ]
+
+
+def test_a_busy_but_live_home_does_not_move(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    dispatch = {
+        "max_in_flight": 1,
+        "live_runs": 1,
+        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+    }
+    facts = _facts(
+        dispatch=dispatch,
+        run_exited={"a": True},
+        home={"a": "jarvis"},
+        approved=[_home_approved("a-3")],
+        login_hosts=[_login_host("jarvis")],
+    )
+    assert plan_tick(facts) == []
+
+
 _STALLED_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:29:00Z"}
 _FRESH_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:31:00Z"}
 _STALL_REASON = "builder t1, idle 31m"
