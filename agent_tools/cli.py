@@ -790,10 +790,11 @@ def _steward_propose(a: argparse.Namespace) -> int:
             print("steward propose: [] (no candidate cleared the evidence bar)")
         return 0
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
+    ids = profile.get("ids", "slug")
     mapping: dict[str, str] = {}
     for candidate in candidates:
         title = f"steward: {candidate['direction']} {candidate['role']}'s ceiling for {candidate['model']}"
-        mapping.update(route.intake_file(title, steward.render_proposal(candidate), "coxswain-tools", date))
+        mapping.update(route.intake_file(title, steward.render_proposal(candidate), "coxswain-tools", date, ids=ids))
     targets = {rel: ws / rel for rel in mapping}
     existing = [str(path) for path in targets.values() if path.exists()]
     if existing:
@@ -3315,7 +3316,7 @@ def _route_file(a: argparse.Namespace) -> int:
     try:
         if a.intake:
             date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
-            mapping = route.intake_file(a.title, body, a.repo, date)
+            mapping = route.intake_file(a.title, body, a.repo, date, ids=profile.get("ids", "slug"))
         else:
             mapping = route.initiative_files(a.title, body, a.repo, phase=a.phase)
     except ValueError as exc:
@@ -3434,7 +3435,12 @@ def _route_pull(a: argparse.Namespace) -> int:
     taken = frozenset(link for link in found if adapter.taken(link, links))
     date = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
     plan, reviews, refusals = route.pull_plan(
-        tuple(found.values()), taken, profile.get("repo_map", {}), date=date, source=a.source
+        tuple(found.values()),
+        taken,
+        profile.get("repo_map", {}),
+        date=date,
+        source=a.source,
+        ids=profile.get("ids", "slug"),
     )
     problems = [*unreadable, *refusals]
     for line in problems:

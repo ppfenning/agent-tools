@@ -85,6 +85,23 @@ def test_propose_writes_exactly_one_intake_file_for_the_clearing_candidate(tmp_p
     assert "| build | sonnet-5 | 20 | 0.91 | 0.85 | 10 |" in body
 
 
+def test_propose_with_ids_sequence_writes_the_allocated_id(tmp_path, monkeypatch, capsys):
+    provider_profile = tmp_path / "provider.yaml"
+    provider_profile.write_text("budget_usd:\n  standard: 2.0\n")
+    profile, ws = _write_profile(tmp_path, provider_profile)
+    with profile.open("a") as f:
+        f.write("ids: sequence\n")
+    monkeypatch.setattr(cli, "_steward_bounds_rows_for", lambda a: [CLEARING_ROW, SHORT_ROW])
+    monkeypatch.setattr(route, "allocate_intake_id", lambda: "I7")
+
+    rc = cli.main(["steward", "propose", "--profile", str(profile), "--json"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    written = json.loads(out)
+    assert written == [str(ws / "intake" / "I7.md")]
+
+
 def test_propose_with_no_clearing_candidate_writes_nothing_and_exits_cleanly(tmp_path, monkeypatch, capsys):
     provider_profile = tmp_path / "provider.yaml"
     provider_profile.write_text("budget_usd:\n  standard: 2.0\n")
