@@ -15,3 +15,8 @@ def test_is_stalled_is_true_when_both_gaps_clear_the_threshold():
 
 def test_is_stalled_is_false_when_both_gaps_fall_short_of_the_threshold():
     assert is_stalled(29, 29) is False
+
+
+def test_idle_minutes_reads_the_store_s_microsecond_offset_stamps():
+    now = datetime(2026, 9, 29, 12, 14, 7, 219637, tzinfo=UTC)
+    assert idle_minutes("2026-09-29T11:44:07.219637+00:00", "2026-09-29T11:00:00Z", now) == 30.0
