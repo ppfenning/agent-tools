@@ -1270,6 +1270,22 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
     return [enrich(s) for s in steps]
 
 
+def _backfill_phase_task_files(runs_dir: Path, run_id: str, phase: str) -> None:
+    """Store mode only: write any task record the store holds for this run and phase that has
+    no file yet under `runs/<run>/tasks/<phase>/`, so `_land_phase_record`'s own directory read
+    finds it. Never overwrites a file already on disk."""
+    phase_dir = runs_dir / run_id / "tasks" / phase
+    for task_id in run_store.run_task_ids(runs_dir, run_id):
+        path = phase_dir / f"{task_id}.json"
+        if path.exists():
+            continue
+        record = run_store.task_record(runs_dir, run_id, phase, task_id)
+        if record is None:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+
 def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | None, list[dict], dict[str, str], str]:
     """The phase record at `runs/<run>:<phase>.json` and every task record
     filed under it, keyed by task name for `mark_done`'s own file path."""
@@ -1314,12 +1330,15 @@ def _land_phase_fallback_paths(runs_dir: Path, run_id: str, phase: str) -> list[
     return paths
 
 
-def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dict] | None, str]:
-    """The phase's own tickets from the work store (`work/<initiative>/<phase>/*.md`,
-    `route.work_item`'s `state`), each carrying its own `file` path for
-    `mark_done` to close out, or `None` with the directory searched when
-    there is nothing there to read — a phase can never be waved through by a
-    missing ticket file."""
+def _phase_items(work_root: Path, initiative: str, phase: str, runs_dir: Path | None = None,
+                  land_mode: str = "files") -> tuple[list[dict] | None, str]:
+    """The phase's own tickets from the work store (`work/<initiative>/<phase>/*.md`), each
+    carrying its own `file` path for `mark_done` to close out, or `None` with the directory
+    searched when there is nothing there to read — a phase can never be waved through by a
+    missing ticket file. `status` comes from `route.work_item`'s parsed `state` in files mode;
+    in store mode it comes from the store's own `work_items` row instead (`run_store.task_state_of`),
+    `None` when the store holds no row for that task id, which `land.phase_landable` already
+    refuses by name."""
     phase_dir = work_root / initiative / phase
     paths = sorted(phase_dir.glob("*.md")) if phase_dir.is_dir() else []
     if not paths:
@@ -1331,7 +1350,8 @@ def _phase_items(work_root: Path, initiative: str, phase: str) -> tuple[list[dic
             continue
         fields = route.parse_frontmatter(text)[0]
         item = route.work_item(fields, initiative=initiative, phase_dir=phase, stem=p.stem)
-        items.append({"id": item["id"], "status": item["state"], "file": str(p)})
+        status = run_store.task_state_of(runs_dir, initiative, item["id"]) if land_mode == "store" else item["state"]
+        items.append({"id": item["id"], "status": status, "file": str(p)})
     return items, str(phase_dir)
 
 
@@ -1975,12 +1995,14 @@ def _runs_land(a: argparse.Namespace) -> int:
     land_mode = work_state.work_state_mode(_lake_provider(a)[0]) if a.apply else "files"
     record, item_path, lease_task = None, None, None
     if phase:
+        if land_mode == "store":
+            _backfill_phase_task_files(runs_dir, a.run_id, phase)
         phase_record, task_records, task_paths, searched = _land_phase_record(runs_dir, a.run_id, phase)
         if phase_record is None:
             print(f"land: no phase record at {searched}")
             return 2
         initiative = phase_record.get("initiative") or _initiative_of_phase(runs_dir.parent / "work", phase, a.run_id)
-        items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase)
+        items, items_path = (_phase_items(runs_dir.parent / "work", initiative, phase, runs_dir=runs_dir, land_mode=land_mode)
                               if initiative else (None, f"{runs_dir.parent / 'work'} (no single initiative holds phase {phase})"))
         if items is None:
             print(f"land: no work items at {items_path}, expected the phase's tickets")

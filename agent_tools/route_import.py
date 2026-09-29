@@ -16,16 +16,20 @@ Row = queue_rows.Row
 
 _KINDS = {"work": "task", "intake": "intake"}
 _TERMINAL = frozenset({"done", "dropped"})
+_LADDER = {"ready": 0, "approved": 1, "done": 2}
 
 
 @dataclass(frozen=True)
 class Plan:
     """`to_write`: rows absent from or different than the store. `unchanged`/`skipped` are counts only,
-    so a caller never has to hold the rows it will not write."""
+    so a caller never has to hold the rows it will not write. `kept`: (task_id, store_state, file_state)
+    for a row whose file state would move the store backward along the ladder, or out of done/dropped,
+    so import left it alone."""
 
     to_write: tuple[Row, ...]
     unchanged: int
     skipped: int
+    kept: tuple[tuple[str, str, str], ...] = ()
 
 
 def _kind_and_rest(path_parts: tuple[str, ...]) -> tuple[str, tuple[str, ...]] | None:
@@ -54,6 +58,17 @@ def _unchanged(row: Row, stored: Row) -> bool:
     """True when every field `row` names already reads the same way in `stored`; extra store-only
     columns (a claim's holder, epoch, expiry) never count against a match."""
     return all(stored.get(field) == value for field, value in row.items())
+
+
+def _behind(store_state: str, file_state: str) -> bool:
+    """True when moving the store to `file_state` would go backward: the states differ, and either
+    `store_state` is `done`/`dropped`, or both sit on the ready -> approved -> done ladder with
+    `file_state` an earlier rung. Equal states are never behind, whatever else about the row differs."""
+    if store_state == file_state:
+        return False
+    if store_state in _TERMINAL:
+        return True
+    return store_state in _LADDER and file_state in _LADDER and _LADDER[file_state] < _LADDER[store_state]
 
 
 def _initiative_entry(path_parts: tuple[str, ...], text: str) -> tuple[str, str] | None:
@@ -99,11 +114,28 @@ def plan_import(files: list[tuple[tuple[str, ...], str]], existing_rows: list[Ro
     initiatives_by_id = {i["id"]: i for i in initiatives}
     resolved = [_resolved(row, initiatives_by_id, initiatives) for row in parsed]
     first_at = {_key(row): i for i, row in reversed(list(enumerate(resolved)))}
-    kept = [row for i, row in enumerate(resolved) if first_at[_key(row)] == i]
+    deduped = [row for i, row in enumerate(resolved) if first_at[_key(row)] == i]
     stored_by_key = {_key(row): row for row in existing_rows}
-    to_write = [row for row in kept if not _unchanged(row, stored_by_key.get(_key(row), {}))]
-    return Plan(to_write=tuple(to_write), unchanged=len(kept) - len(to_write), skipped=len(outcomes) - len(kept))
+    changed = [row for row in deduped if not _unchanged(row, stored_by_key.get(_key(row), {}))]
+    kept_triples = tuple(
+        (row["task_id"], stored_by_key.get(_key(row), {}).get("state", ""), row["state"])
+        for row in changed
+        if _behind(stored_by_key.get(_key(row), {}).get("state", ""), row["state"])
+    )
+    to_write = [
+        row for row in changed if not _behind(stored_by_key.get(_key(row), {}).get("state", ""), row["state"])
+    ]
+    return Plan(
+        to_write=tuple(to_write),
+        unchanged=len(deduped) - len(changed),
+        skipped=len(outcomes) - len(deduped),
+        kept=kept_triples,
+    )
 
 
 def format_summary(written: int, plan: Plan) -> str:
-    return f"written {written}, unchanged {plan.unchanged}, skipped {plan.skipped}"
+    kept_lines = [
+        f"kept store state: {task_id} (store {store_state}, file {file_state})"
+        for task_id, store_state, file_state in plan.kept
+    ]
+    return "\n".join([*kept_lines, f"written {written}, unchanged {plan.unchanged}, skipped {plan.skipped}"])

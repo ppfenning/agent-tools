@@ -84,6 +84,32 @@ def test_format_summary_reports_all_three_counts():
     assert route_import.format_summary(1, plan) == "written 1, unchanged 0, skipped 0"
 
 
+def test_import_keeps_a_store_state_the_file_is_behind_on_the_ladder():
+    # store: approved, file: ready (_TASK_TEXT) -- the file is behind, so import must not overwrite it.
+    stored = _row(state="approved")
+    plan = route_import.plan_import([(_TASK_PARTS, _TASK_TEXT)], [stored])
+    assert (plan.to_write, plan.kept) == ((), (("task", "approved", "ready"),))
+    assert route_import.format_summary(0, plan) == (
+        "kept store state: task (store approved, file ready)\nwritten 0, unchanged 0, skipped 0"
+    )
+
+
+def test_import_still_writes_a_files_state_forward_over_the_stores():
+    # store: ready, file: approved -- the file is ahead, so import writes it over the store as today.
+    approved_text = "---\nstate: approved\ntitle: Do the task\n---\n\nDo the task\n"
+    stored = _row(state="ready")
+    plan = route_import.plan_import([(_TASK_PARTS, approved_text)], [stored])
+    assert (list(plan.to_write), plan.kept) == ([_row(state="approved")], ())
+
+
+def test_import_writes_a_done_tasks_other_field_change_even_though_state_is_unchanged():
+    # store: done, file: done but a different title -- states are equal, so the edit must still land.
+    done_text = "---\nstate: done\ntitle: Do the renamed task\n---\n\nDo the task\n"
+    stored = _row(state="done")
+    plan = route_import.plan_import([(_TASK_PARTS, done_text)], [stored])
+    assert (list(plan.to_write), plan.kept) == ([_row(state="done", title="Do the renamed task")], ())
+
+
 def _workspace(tmp_path):
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)
