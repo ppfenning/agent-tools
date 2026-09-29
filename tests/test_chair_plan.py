@@ -28,6 +28,7 @@ def _facts(**overrides) -> Facts:
         "stale_days": 7,
         "stale_candidates": [],
         "stall_candidates": [],
+        "home": {},
     }
     return {**base, **overrides}  # type: ignore[return-value]
 
@@ -237,6 +238,52 @@ def test_a_rescue_past_the_cap_is_dropped_even_with_a_free_lane_host(monkeypatch
     _recovering(monkeypatch, [_RESCUE])
     facts = _facts(dispatch=_hosted_dispatch())
     assert plan_tick(facts) == []
+
+
+def test_a_home_with_a_free_lane_gets_the_relaunch_directly(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    # friday outweighs jarvis, so _place_on_hosts ranking would pick friday; home names jarvis instead.
+    dispatch = {
+        "max_in_flight": 1,
+        "live_runs": 1,
+        "hosts": [{"name": "jarvis", "live_runs": 0, "weight": 1}, {"name": "friday", "live_runs": 0, "weight": 10}],
+    }
+    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
+
+
+def test_a_home_with_no_free_lane_plans_nothing_for_it_while_a_homeless_relaunch_takes_the_free_lane_elsewhere(monkeypatch):
+    _recovering(
+        monkeypatch,
+        [
+            {"kind": "clear_branches", "initiative": "a"},
+            {"kind": "relaunch", "initiative": "a"},
+            {"kind": "clear_branches", "initiative": "b"},
+            {"kind": "relaunch", "initiative": "b"},
+        ],
+    )
+    dispatch = {
+        "max_in_flight": 1,
+        "live_runs": 1,
+        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+    }
+    facts = _facts(dispatch=dispatch, run_exited={"a": True, "b": True}, home={"a": "jarvis"})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "b", "epoch": 7},
+        {"kind": "relaunch", "initiative": "b", "host": "friday", "epoch": 7},
+    ]
+
+
+def test_a_homeless_initiative_places_as_before(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(dispatch=_hosted_dispatch(), run_exited={"a": True}, home={"z": "elsewhere"})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
 
 
 _STALLED_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:29:00Z"}
