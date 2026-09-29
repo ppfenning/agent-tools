@@ -1207,6 +1207,7 @@ def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | 
         if p.stem in task_paths:
             continue
         r = json.loads(p.read_text(encoding="utf-8"))
+        r.setdefault("task", p.stem); r.setdefault("phase", phase); r.setdefault("run", p.parent.parent.parent.name)
         task_records.append(r)
         task_paths[p.stem] = str(p)
     return phase_record, task_records, task_paths, str(phase_path)
