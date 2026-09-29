@@ -11,6 +11,10 @@ from agent_tools.store_cli import (
     LeaseReleased,
     NotAvailable,
     NotInStore,
+    Paused,
+    PauseRefused,
+    Resumed,
+    ResumeRefused,
     StateRefused,
     StateSet,
 )
@@ -55,6 +59,27 @@ def test_lease_release_argv():
     assert store_cli.lease_release_argv(PY, "chair", "me", 4) == [*HEAD, "lease", "release", "chair", "me", "4"]
 
 
+def test_pause_argv_without_reason():
+    assert store_cli.pause_argv("r1") == ["pause", "r1"]
+
+
+def test_pause_argv_with_reason():
+    assert store_cli.pause_argv("r1", reason="debug") == ["pause", "r1", "--reason", "debug"]
+
+
+def test_resume_argv():
+    assert store_cli.resume_argv("r1") == ["resume", "r1"]
+
+
+def test_pause_argv_with_store_url_appends_the_flag_after_reason():
+    assert store_cli.pause_argv("r1", reason="debug", store_url="sqlite:///s.db") == [
+        "pause", "r1", "--reason", "debug", "--store-url", "sqlite:///s.db"]
+
+
+def test_resume_argv_with_store_url_appends_the_flag():
+    assert store_cli.resume_argv("r1", store_url="sqlite:///s.db") == ["resume", "r1", "--store-url", "sqlite:///s.db"]
+
+
 def test_mark_landed_exit_0_is_the_record():
     assert store_cli.parse_mark_landed(0, '{"task": "t1", "landed": true}') == Landed({"task": "t1", "landed": True})
 
@@ -79,6 +104,22 @@ def test_lease_exit_2_is_an_error():
     assert store_cli.parse_lease(2, "unreadable store") == LeaseError("exit 2: unreadable store")
 
 
+def test_parse_pause_exit_0_is_paused():
+    assert store_cli.parse_pause(0, '{"ok": true, "run": "r1", "paused": true, "reason": "debug"}') == Paused("debug")
+
+
+def test_parse_pause_exit_3_is_refused():
+    assert store_cli.parse_pause(3, '{"ok": false, "run": "r1", "paused": null, "reason": null}') == PauseRefused()
+
+
+def test_parse_resume_exit_0_is_resumed():
+    assert store_cli.parse_resume(0, '{"ok": true, "run": "r1", "paused": false, "reason": null}') == Resumed()
+
+
+def test_parse_resume_exit_3_is_refused():
+    assert store_cli.parse_resume(3, '{"ok": false, "run": "r1", "paused": null, "reason": null}') == ResumeRefused()
+
+
 def test_edge_runs_subprocess_and_returns_a_value_without_raising(monkeypatch, tmp_path):
     seen = []
 
@@ -101,6 +142,79 @@ def test_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch, tmp_pa
     monkeypatch.setattr(store_cli.subprocess, "run", boom)
     assert store_cli.mark_landed(tmp_path, "r", "p", "t", "u", "a") == NotAvailable()
     assert store_cli.lease_release(tmp_path, "chair", "me", 1) == NotAvailable()
+
+
+def test_pause_edge_runs_the_built_argv_and_returns_the_parsed_value(monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "run": "r1", "paused": true, "reason": "debug"}', stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    assert store_cli.pause("r1", reason="debug", run=fake_run) == Paused("debug")
+    assert seen == [[*HEAD, "pause", "r1", "--reason", "debug"]]
+
+
+def test_pause_edge_forwards_store_url_to_the_argv(monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "run": "r1", "paused": true, "reason": null}', stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    assert store_cli.pause("r1", run=fake_run, store_url="sqlite:///s.db") == Paused(None)
+    assert seen == [[*HEAD, "pause", "r1", "--store-url", "sqlite:///s.db"]]
+
+
+def test_resume_edge_runs_the_built_argv_and_returns_the_parsed_value(monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "run": "r1", "paused": false, "reason": null}', stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    assert store_cli.resume("r1", run=fake_run) == Resumed()
+    assert seen == [[*HEAD, "resume", "r1"]]
+
+
+def test_resume_edge_forwards_store_url_to_the_argv(monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"ok": true, "run": "r1", "paused": false, "reason": null}', stderr="")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    assert store_cli.resume("r1", run=fake_run, store_url="sqlite:///s.db") == Resumed()
+    assert seen == [[*HEAD, "resume", "r1", "--store-url", "sqlite:///s.db"]]
+
+
+def test_pause_with_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("run must not be called")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
+    assert store_cli.pause("r1", run=boom) == NotAvailable()
+
+
+def test_resume_with_a_missing_harness_is_not_available_and_runs_nothing(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("run must not be called")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
+    assert store_cli.resume("r1", run=boom) == NotAvailable()
+
+
+def test_pause_and_resume_turn_a_failed_spawn_into_a_failure_value_without_raising(monkeypatch):
+    def gone(*args, **kwargs):
+        raise FileNotFoundError("no such interpreter")
+
+    monkeypatch.setattr(store_cli, "_harness_python", lambda: Path(PY))
+    assert store_cli.pause("r1", run=gone) == Failed(-1, "no such interpreter")
+    assert store_cli.resume("r1", run=gone) == Failed(-1, "no such interpreter")
 
 
 def test_the_runner_puts_the_store_url_after_the_arguments_and_maps_a_missing_harness_to_code_1(monkeypatch, tmp_path):
