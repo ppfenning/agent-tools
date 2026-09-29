@@ -4,6 +4,7 @@ import os
 import subprocess as sp
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -407,7 +408,7 @@ def test_usage_assessment_prefers_a_fresh_meter_window_for_both_figures(monkeypa
     recorded = []
     monkeypatch.setattr(
         cli.usage_meter, "record_implied_ceiling",
-        lambda kind, entry, estimate_window, now: recorded.append((kind, estimate_window.spent_usd)),
+        lambda kind, entry, runs_dir, now: recorded.append((kind, runs_dir)),
     )
     monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(222.0))
     monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _tagged_window(444.0))
@@ -418,8 +419,8 @@ def test_usage_assessment_prefers_a_fresh_meter_window_for_both_figures(monkeypa
     assert result is _DUMMY_ASSESSMENT
     assert captured["window"].spent_usd == 111.0
     assert captured["weekly"].spent_usd == 333.0
-    # the calibration file is still refreshed from the estimate even though the meter won
-    assert sorted(recorded) == [("five_hour", 222.0), ("weekly", 444.0)]
+    # the calibration file is still refreshed, from the store over the meter's own window (the runs dir)
+    assert sorted(recorded) == [("five_hour", Path(tmp_path)), ("weekly", Path(tmp_path))]
 
 
 def test_usage_assessment_falls_back_to_the_estimate_when_the_meter_is_not_fresh(monkeypatch, tmp_path):

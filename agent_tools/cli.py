@@ -4930,7 +4930,7 @@ def _usage_assessment(
     meter_window = usage_meter.as_window(meter.five_hour, now, datetime.timedelta(hours=5)) if meter_fresh else None
     window = usage_meter.prefer(meter_window, estimate_window)
     if meter_fresh:
-        usage_meter.record_implied_ceiling("five_hour", meter.five_hour, estimate_window, now)
+        usage_meter.record_implied_ceiling("five_hour", meter.five_hour, Path(runs_dir), now)
 
     weekly_ceiling = usage_meter.implied_ceiling("weekly", now)
     if weekly_ceiling is None:
@@ -4939,7 +4939,7 @@ def _usage_assessment(
     meter_weekly = usage_meter.as_window(meter.seven_day, now, datetime.timedelta(days=7)) if meter_fresh else None
     weekly = usage_meter.prefer(meter_weekly, estimate_weekly)
     if meter_fresh:
-        usage_meter.record_implied_ceiling("weekly", meter.seven_day, estimate_weekly, now)
+        usage_meter.record_implied_ceiling("weekly", meter.seven_day, Path(runs_dir), now)
 
     policy = _resolved_pacing_policy(Path(runs_dir))
     return pacing.assess(window, policy, now, weekly=weekly)
@@ -6423,7 +6423,7 @@ def _chair_run_deps(
         estimate_window = usage_window.gather(runs_dir, now_, ceiling_usd=ceiling)
         meter_window = usage_meter.as_window(meter.five_hour, now_, datetime.timedelta(hours=5)) if fresh else None
         if fresh:
-            usage_meter.record_implied_ceiling("five_hour", meter.five_hour, estimate_window, now_)
+            usage_meter.record_implied_ceiling("five_hour", meter.five_hour, Path(runs_dir), now_)
         return usage_meter.prefer(meter_window, estimate_window)
 
     def window_source() -> str:
@@ -6443,7 +6443,7 @@ def _chair_run_deps(
         )
         meter_weekly = usage_meter.as_window(meter.seven_day, now_, datetime.timedelta(days=7)) if fresh else None
         if fresh:
-            usage_meter.record_implied_ceiling("weekly", meter.seven_day, estimate_weekly, now_)
+            usage_meter.record_implied_ceiling("weekly", meter.seven_day, Path(runs_dir), now_)
         return usage_meter.prefer(meter_weekly, estimate_weekly)
 
     def weekly_source() -> str:
