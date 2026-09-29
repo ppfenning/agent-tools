@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_tools import pacing
+from agent_tools import pacing, run_store
 
 __all__ = [
     "DEFAULT_PATH",
@@ -22,7 +22,12 @@ __all__ = [
     "prefer",
     "read",
     "record_implied_ceiling",
+    "usable_percentage",
 ]
+
+_SPANS = {"five_hour": timedelta(hours=5), "weekly": timedelta(days=7)}
+_MIN_ELAPSED = {"five_hour": timedelta(hours=1), "weekly": timedelta(days=1)}
+_FRESH_AGE = timedelta(minutes=15)
 
 STATE_DIR = Path.home() / ".local" / "state" / "coxswain"
 DEFAULT_PATH = STATE_DIR / "rate-limits.json"
@@ -111,13 +116,22 @@ def _load_json_object(path: Path) -> dict:
 def record_implied_ceiling(
     kind: str,
     meter_entry: MeterEntry,
-    estimate_window: pacing.Window,
+    runs_dir: Path,
     now: datetime,
     path: Path = IMPLIED_PATH,
 ) -> None:
+    """Calibrates over the meter entry's own window, not `usage_window.gather`'s floating five-hour block.
+    Writes nothing below the 5% floor, nor before an hour (five_hour) or a day (weekly) of that window has elapsed."""
     if meter_entry.used_percentage < 5:
         return
-    implied_usd = estimate_window.spent_usd / (meter_entry.used_percentage / 100)
+    span = _SPANS[kind]
+    window_start = meter_entry.resets_at - span
+    if now - window_start < _MIN_ELAPSED[kind]:
+        return
+    dollars = run_store.cost_since(runs_dir, window_start.isoformat())
+    if dollars is None:
+        return
+    implied_usd = dollars / (meter_entry.used_percentage / 100)
     doc = _load_json_object(path)
     doc[kind] = {"ceiling_usd": implied_usd, "observed_at": now.isoformat()}
     path.write_text(json.dumps(doc))
@@ -139,3 +153,26 @@ def implied_ceiling(
     if now - observed_at <= max_age:
         return ceiling_usd
     return None
+
+
+def usable_percentage(
+    kind: str,
+    entry: MeterEntry,
+    observed_at: datetime,
+    now: datetime,
+    runs_dir: Path,
+    ceiling_usd: float | None,
+    path: Path = IMPLIED_PATH,
+) -> float | None:
+    """A second path alongside `fresh`: a reading within 15 minutes reads at face value, one past its
+    `resets_at` is never usable, and one in between is carried forward by the dollars spent since
+    `observed_at` over the implied (or caller-supplied) ceiling, same as `fresh` used to drop outright."""
+    if now - observed_at <= _FRESH_AGE:
+        return entry.used_percentage
+    if now >= entry.resets_at:
+        return None
+    ceiling = implied_ceiling(kind, now, path) or ceiling_usd
+    spent_since = run_store.cost_since(runs_dir, observed_at.isoformat())
+    if spent_since is None or not ceiling:
+        return None
+    return entry.used_percentage + (spent_since / ceiling) * 100

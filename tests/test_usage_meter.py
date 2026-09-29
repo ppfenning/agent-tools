@@ -1,7 +1,15 @@
 import json
 from datetime import UTC, datetime, timedelta
 
-from agent_tools import pacing, usage_meter
+from agent_tools import pacing, run_store, usage_meter
+
+
+def _fake_cost_since(monkeypatch, dollars, calls):
+    def fake(runs_dir, since, until=None):
+        calls.append(since)
+        return dollars
+
+    monkeypatch.setattr(run_store, "cost_since", fake)
 
 _VALID_DOC = {
     "five_hour": {"used_percentage": 16, "resets_at": 1790616000},
@@ -135,42 +143,112 @@ def test_read_parses_a_valid_file_the_same_as_parse(tmp_path):
     assert usage_meter.read(path) == usage_meter.parse(_VALID_DOC)
 
 
-def test_record_implied_ceiling_writes_at_five_percent_floor(tmp_path):
+def test_record_implied_ceiling_writes_at_five_percent_floor(tmp_path, monkeypatch):
     path = tmp_path / "implied.json"
     entry = usage_meter.MeterEntry(used_percentage=5.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
-    estimate_window = _window(3.0)
-    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)  # 2h into the 5h window: past the one-hour guard
+    _fake_cost_since(monkeypatch, 3.0, [])
 
-    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path=path)
 
     doc = json.loads(path.read_text())
     assert doc["five_hour"]["ceiling_usd"] == 60.0
     assert doc["five_hour"]["observed_at"] == now.isoformat()
 
 
-def test_record_implied_ceiling_one_point_below_floor_writes_nothing(tmp_path):
+def test_record_implied_ceiling_one_point_below_floor_writes_nothing(tmp_path, monkeypatch):
     path = tmp_path / "implied.json"
     entry = usage_meter.MeterEntry(used_percentage=4.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
-    estimate_window = _window(3.0)
     now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
 
-    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+    def fail(*args, **kwargs):
+        raise AssertionError("cost_since must not be called below the floor")
+
+    monkeypatch.setattr(run_store, "cost_since", fail)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path=path)
 
     assert path.exists() is False
 
 
-def test_record_implied_ceiling_merges_with_an_existing_kind(tmp_path):
+def test_record_implied_ceiling_merges_with_an_existing_kind(tmp_path, monkeypatch):
     path = tmp_path / "implied.json"
     now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
     path.write_text(json.dumps({"weekly": {"ceiling_usd": 200.0, "observed_at": now.isoformat()}}))
     entry = usage_meter.MeterEntry(used_percentage=10.0, resets_at=datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC))
-    estimate_window = _window(5.0)
+    _fake_cost_since(monkeypatch, 5.0, [])
 
-    usage_meter.record_implied_ceiling("five_hour", entry, estimate_window, now, path=path)
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path=path)
 
     doc = json.loads(path.read_text())
     assert doc["weekly"]["ceiling_usd"] == 200.0
     assert doc["five_hour"]["ceiling_usd"] == 50.0
+
+
+def test_record_implied_ceiling_calibrates_over_the_meters_own_window(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    resets_at = datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC)
+    entry = usage_meter.MeterEntry(used_percentage=50.0, resets_at=resets_at)
+    now = resets_at - timedelta(hours=3)  # 2h into the 5h window: past the one-hour guard
+    calls = []
+    _fake_cost_since(monkeypatch, 40.0, calls)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path=path)
+
+    assert calls == [(resets_at - timedelta(hours=5)).isoformat()]
+    doc = json.loads(path.read_text())
+    assert doc["five_hour"]["ceiling_usd"] == 80.0
+
+
+def test_record_implied_ceiling_before_one_hour_elapsed_writes_nothing(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    resets_at = datetime(2026, 9, 28, 19, 41, 31, tzinfo=UTC)
+    entry = usage_meter.MeterEntry(used_percentage=50.0, resets_at=resets_at)
+    window_start = resets_at - timedelta(hours=5)
+    now = window_start + timedelta(minutes=30)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("cost_since must not be called before an hour of the window has elapsed")
+
+    monkeypatch.setattr(run_store, "cost_since", fail)
+
+    usage_meter.record_implied_ceiling("five_hour", entry, tmp_path, now, path=path)
+
+    assert path.exists() is False
+
+
+def test_usable_percentage_reads_back_a_calibrated_stale_reading(tmp_path, monkeypatch):
+    path = tmp_path / "implied.json"
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    observed_at = now - timedelta(minutes=20)
+    resets_at = now + timedelta(hours=2)
+    entry = usage_meter.MeterEntry(used_percentage=40.0, resets_at=resets_at)
+    path.write_text(json.dumps({"five_hour": {"ceiling_usd": 100.0, "observed_at": now.isoformat()}}))
+    calls = []
+    _fake_cost_since(monkeypatch, 10.0, calls)
+
+    result = usage_meter.usable_percentage("five_hour", entry, observed_at, now, tmp_path, ceiling_usd=None, path=path)
+
+    assert calls == [observed_at.isoformat()]
+    assert result == 50.0
+
+
+def test_usable_percentage_returns_none_past_resets_at(tmp_path, monkeypatch):
+    now = datetime(2026, 9, 28, 16, 41, 31, tzinfo=UTC)
+    observed_at = now - timedelta(minutes=20)
+    resets_at = now - timedelta(minutes=1)
+    entry = usage_meter.MeterEntry(used_percentage=90.0, resets_at=resets_at)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("cost_since must not be called for an expired reading")
+
+    monkeypatch.setattr(run_store, "cost_since", fail)
+
+    result = usage_meter.usable_percentage(
+        "five_hour", entry, observed_at, now, tmp_path, ceiling_usd=100.0, path=tmp_path / "implied.json"
+    )
+
+    assert result is None
 
 
 def test_implied_ceiling_returns_the_value_at_exactly_seven_days(tmp_path):
