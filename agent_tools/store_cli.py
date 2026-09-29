@@ -3,8 +3,12 @@
 The contract, from graphs-store-write-cli. Every command runs as
 `<harness_dir>/.venv/bin/python -m harness.store_cli <command...>` and prints one JSON
 object on stdout. Exit 0 is success, 3 a refused precondition, 2 bad arguments or an
-unreadable store. `--store-url <url>` is optional; this module always passes the store `run_store` resolves for the runs dir,
-so both sides use one store (without it the harness falls back to a `cox.db` in its own checkout).
+unreadable store. `--store-url <url>` is optional; every edge below that takes a `runs_dir`
+always passes the store `run_store` resolves for it, so both sides use one store (without it
+the harness falls back to a `cox.db` in its own checkout). `pause`/`resume` take an explicit
+`store_url` instead of a `runs_dir`, since a run may be paused from a machine that never
+ran it; the caller must pass one when the run's store is not the harness's own default, or
+a pause can silently land against the wrong store.
 
     mark-landed <run_id> <phase> <task> --pr <url> --at <iso>
         exit 0 -> the task record as a JSON object; exit 3 -> the record is not in the store
@@ -18,6 +22,13 @@ so both sides use one store (without it the harness falls back to a `cox.db` in 
     set-state <initiative> <task> <state> --by <who> [--expect <state>]
         exit 0 -> the task record as a JSON object; exit 3 -> a refused precondition
         exit 3 may carry the store's current state under "state"; the key is assumed, not yet confirmed
+
+    pause <run_id> [--reason <text>]
+        exit 0 -> {"ok": true, "run": "<run_id>", "paused": true, "reason": "<text or null>"}
+        exit 3 -> {"ok": false, "run": "<run_id>", "paused": null, "reason": null}
+    resume <run_id>
+        exit 0 -> {"ok": true, "run": "<run_id>", "paused": false, "reason": null}
+        exit 3 -> {"ok": false, "run": "<run_id>", "paused": null, "reason": null}
 
 Exit 3 is a result, not an error. Lease names are the caller's value, except a land lease, named by land_lease_name.
 """
@@ -88,9 +99,31 @@ class NotAvailable:
     pass
 
 
+@dataclass(frozen=True)
+class Paused:
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class PauseRefused:
+    pass
+
+
+@dataclass(frozen=True)
+class Resumed:
+    pass
+
+
+@dataclass(frozen=True)
+class ResumeRefused:
+    pass
+
+
 MarkLandedResult = Landed | NotInStore | Failed | NotAvailable
 SetStateResult = StateSet | StateRefused | Failed | NotAvailable
 LeaseResult = LeaseGranted | LeaseReleased | LeaseRefused | LeaseError | NotAvailable
+PauseResult = Paused | PauseRefused | Failed | NotAvailable
+ResumeResult = Resumed | ResumeRefused | Failed | NotAvailable
 
 _MODULE = ["-m", "harness.store_cli"]
 
@@ -124,6 +157,14 @@ def lease_renew_argv(python: str, name: str, holder: str, epoch: int, ttl: int, 
 
 def lease_release_argv(python: str, name: str, holder: str, epoch: int, store_url: str | None = None) -> list[str]:
     return [python, *_MODULE, "lease", "release", name, holder, str(epoch), *_store(store_url)]
+
+
+def pause_argv(run_id: str, reason: str | None = None, store_url: str | None = None) -> list[str]:
+    return ["pause", run_id, *(["--reason", reason] if reason is not None else []), *_store(store_url)]
+
+
+def resume_argv(run_id: str, store_url: str | None = None) -> list[str]:
+    return ["resume", run_id, *_store(store_url)]
 
 
 def _json_object(stdout: str) -> dict[str, Any] | None:
@@ -170,13 +211,37 @@ def parse_lease(code: int, stdout: str) -> LeaseGranted | LeaseReleased | LeaseR
     return LeaseError(f"exit {code}: {stdout.strip()}")
 
 
-def _run(build: Any) -> tuple[int, str] | None:
-    """Edge. Run the argv `build(python)` returns; None when the harness is missing. A failed spawn is code -1."""
+def parse_pause(code: int, stdout: str) -> Paused | PauseRefused | Failed:
+    """Exit 3 is refused; exit 0 with a JSON object is paused, carrying the reason if any; anything else fails."""
+    if code == 3:
+        return PauseRefused()
+    body = _json_object(stdout)
+    if code == 0 and body is not None and body.get("ok") is True:
+        reason = body.get("reason")
+        return Paused(reason if isinstance(reason, str) else None)
+    return Failed(code, stdout.strip() or "no JSON object on stdout")
+
+
+def parse_resume(code: int, stdout: str) -> Resumed | ResumeRefused | Failed:
+    """Exit 3 is refused; exit 0 with a JSON object is resumed; anything else fails."""
+    if code == 3:
+        return ResumeRefused()
+    body = _json_object(stdout)
+    if code == 0 and body is not None and body.get("ok") is True:
+        return Resumed()
+    return Failed(code, stdout.strip() or "no JSON object on stdout")
+
+
+def _run(build: Any, run: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> tuple[int, str] | None:
+    """Edge. Run the argv `build(python)` returns; None when the harness is missing. A failed spawn is code -1.
+
+    `run` defaults to `subprocess.run`, looked up at call time.
+    """
     python = _harness_python()
     if python is None:
         return None
     try:
-        done = subprocess.run(build(str(python)), capture_output=True, text=True, check=False)
+        done = (run or subprocess.run)(build(str(python)), capture_output=True, text=True, check=False)
     except OSError as exc:
         return -1, str(exc)
     return done.returncode, done.stdout or done.stderr
@@ -196,6 +261,27 @@ def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at, url))
     return NotAvailable() if ran is None else parse_mark_landed(*ran)
+
+
+def pause(
+    run_id: str,
+    reason: str | None = None,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    store_url: str | None = None,
+) -> PauseResult:
+    """Edge. `store_url` targets the run's store explicitly; omitting it risks the harness's own default store."""
+    ran = _run(lambda python: [python, *_MODULE, *pause_argv(run_id, reason, store_url)], run)
+    return NotAvailable() if ran is None else parse_pause(*ran)
+
+
+def resume(
+    run_id: str,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    store_url: str | None = None,
+) -> ResumeResult:
+    """Edge. `store_url` targets the run's store explicitly; omitting it risks the harness's own default store."""
+    ran = _run(lambda python: [python, *_MODULE, *resume_argv(run_id, store_url)], run)
+    return NotAvailable() if ran is None else parse_resume(*ran)
 
 
 def set_state(runs_dir: Path, initiative: str, task: str, state: str, by: str, expected: str | None = None) -> SetStateResult:
