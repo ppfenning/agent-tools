@@ -23,6 +23,32 @@ class LeaseFacts(TypedDict):
     until: str  # that window's end, ISO; empty when the holder set none
 
 
+class SmokeCommandResult(TypedDict):
+    """One post-land smoke command's outcome. ok is True when the process exited 0 and 'Traceback'
+    does not appear in its combined output; a 120-second timeout counts as not ok."""
+
+    command: list[str]
+    ok: bool
+    tail: str  # the last lines of the command's combined output
+
+
+class LandTrigger(TypedDict):
+    """A land that qualifies for a post-land smoke: the repo, PR number, and the new origin/main commit."""
+
+    repo: str
+    pr: int
+    commit: str
+
+
+class HoldRecord(TypedDict):
+    """Recorded when a post-land smoke fails; cause is always 'smoke_failed'."""
+
+    land: LandTrigger
+    failing_command: list[str]  # the argv that failed
+    tail: str  # the failing command's last 20 lines
+    cause: str
+
+
 class LimitsFacts(TypedDict):
     """Filled in by the edge from a pacing.assess result; nothing here is computed. launch_cap is the verdict tier ceiling."""
 
@@ -35,6 +61,7 @@ class LimitsFacts(TypedDict):
     window_start_day: str | None  # the weekly window's start in EASTERN, as `Sun 04:00 EDT`; None when there is no weekly window
     window_source: str  # "meter" when the five-hour figure came from a fresh status-line meter entry, else "est"
     weekly_source: str  # the same reading as window_source, for the weekly figure
+    smoke_hold: HoldRecord | None  # a held post-land smoke failure, read without importing chair_smoke.py
 
 
 class HostLanes(TypedDict):
