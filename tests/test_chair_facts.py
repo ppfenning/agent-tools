@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from agent_tools import pacing, queue_rows
+from agent_tools import chair_smoke, pacing, queue_rows
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import (
     FactsDeps,
@@ -146,6 +146,7 @@ def test_weekly_spend_of_85_percent_is_a_hard_stop_with_no_launches():
         "window_start_day": "Fri 07:00 EDT",
         "window_source": "est",
         "weekly_source": "est",
+        "smoke_hold": None,
     }
 
 
@@ -181,6 +182,26 @@ def test_a_saturday_night_eastern_reset_reads_as_saturday_not_as_the_utc_sunday(
 def test_no_weekly_window_gives_no_window_start_day():
     assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
     assert limits_facts(assessment, POLICY, None, 2)["window_start_day"] is None
+
+
+def test_a_written_smoke_hold_surfaces_its_cause_and_land_on_limits_facts(tmp_path):
+    record = {
+        "land": {"repo": "acme/widgets", "pr": 7, "commit": "abc123"},
+        "failing_command": ["cox", "route", "context"],
+        "tail": "Traceback...",
+        "cause": "smoke_failed",
+    }
+    chair_smoke.write_hold(str(tmp_path), record)
+    assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
+    smoke_hold = limits_facts(assessment, POLICY, None, 2, runs_dir=str(tmp_path))["smoke_hold"]
+    assert smoke_hold is not None
+    assert smoke_hold["cause"] == "smoke_failed"
+    assert smoke_hold["land"] == record["land"]
+
+
+def test_an_empty_runs_dir_reports_no_smoke_hold(tmp_path):
+    assessment = pacing.Assessment(0.42, 0.5, 42.0, 10.0, "go", "deep", "high", None, "on pace")
+    assert limits_facts(assessment, POLICY, None, 2, runs_dir=str(tmp_path))["smoke_hold"] is None
 
 
 def test_weekly_spend_under_the_fraction_launches_up_to_max_in_flight():
