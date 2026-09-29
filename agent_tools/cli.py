@@ -3655,6 +3655,69 @@ def _branch_only_repos(
     return list(dict.fromkeys(stored or recorded)) or None
 
 
+def _store_run_rows(runs_dir: Path, run_id: str, wanted: set[str] | None = None) -> dict[tuple[str, str], dict | None]:
+    """Edge. The run's `task_records` rows from the store alone, keyed (phase, task); the remote is never listed.
+    `wanted` limits the read to those task ids. A row the store cannot read is left out."""
+    if wanted is not None and not wanted:
+        return {}
+    tasks = [task for task in run_store.run_task_ids(runs_dir, run_id) if wanted is None or task in wanted]
+    pairs = [(phase, task) for task in tasks for phase in run_store.task_record_phases(runs_dir, run_id, task)]
+    return {pair: record for pair, record in _store_task_records(runs_dir, run_id, pairs).items() if record is not None}
+
+
+def _store_held_runs(runs_dir: Path) -> list[str]:
+    """Edge. Fetched remote runs with no local task record: a store-mode fetch left their records in the store.
+    A landed-elsewhere marker names a run with nothing left to land, so it is not one."""
+    suffix = ".fetched.json"
+    fetched = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
+    return [
+        run for run in fetched
+        if not remote_lane.is_landed_elsewhere_marker(_read_text_or_none(remote_lane.fetched_record_path(runs_dir, run)))
+        and not any((runs_dir / run / "tasks").glob("*/*.json"))
+    ]
+
+
+def _store_held_records(runs_dir: Path, items: list[dict]) -> list[dict]:
+    """Edge. The store's task records of every `_store_held_runs` run, for tasks whose item is ready or approved,
+    each carrying `run`, `task` and `phase` as a record read from `runs/<run>/tasks/` does."""
+    live = {(item["initiative"], item["id"]) for item in items if item.get("state") in ("ready", "approved")}
+    return [
+        {"run": run, "task": task, "phase": phase, **record}
+        for run in _store_held_runs(runs_dir)
+        for (phase, task), record in _store_run_rows(
+            runs_dir, run, {task for initiative, task in live if initiative == chair_facts.run_initiative(run)},
+        ).items()
+        if record is not None
+    ]
+
+
+def _approved_store_rows(records: Mapping[tuple[str, str], dict | None]) -> list[tuple[str, str, dict]]:
+    """Pure: (phase, task, record) for every store row whose review and arbitration verdicts approve it
+    (`land._approved` is None); a row the store could not read is left out."""
+    return [
+        (phase, task, record)
+        for (phase, task), record in records.items()
+        if record is not None and land._approved(record) is None
+    ]
+
+
+def _store_approved_task_facts(
+    runs_dir: Path, work_root: Path, run_id: str, records: Mapping[tuple[str, str], dict | None], by: str,
+) -> list[dict]:
+    """Edge. One approved-task fact per store row that is approved and whose work item moves from ready to
+    approved; each fact carries `run = run_id` so a `land_phase` planned from it names a run. A row whose
+    initiative cannot be found, or whose compare-and-set the store refuses, contributes no fact."""
+    facts = []
+    for phase, task, _record in _approved_store_rows(records):
+        initiative = _initiative_of(work_root, task)
+        if initiative is None:
+            continue
+        moved = land.set_state_stop(store_cli.set_state(runs_dir, initiative, task, "approved", by, expected="ready")) is None
+        if moved:
+            facts.append({"id": task, "initiative": initiative, "phase": phase, "run": run_id})
+    return facts
+
+
 def _landed_elsewhere(
     runs_dir: Path, host: lane_hosts.LaneHost, locate: Callable[[str], str] | None, run_id: str, ended: bool,
 ) -> bool:
@@ -3675,12 +3738,14 @@ def _landed_elsewhere(
     return remote_lane.landed_elsewhere(states, listed, ended)
 
 
-def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files") -> tuple[str, list[str], str]:
+def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files", by: str = _UNLABELED) -> tuple[str, list[str], str]:
     """Edge. (outcome, lines, host name) for one remote run; outcome is fetched, live or failed.
 
-    Under `mode` "store" the task records are not copied when the store already holds every one of them.
-    An ended run whose stored tasks are all done, and whose remote lists no task the store lacks, is marked fetched
-    with nothing pulled. The remote is listed to check that, so an unreachable remote is fetched as before and fails there."""
+    Under `mode` "store" the task records are not copied when the store already holds every one of them; the
+    approved ones move their work item from ready to approved in the store instead, so an approved-task fact
+    built from them carries this run. An ended run whose stored tasks are all done, and whose remote lists no
+    task the store lacks, is marked fetched with nothing pulled. The remote is listed to check that, so an
+    unreachable remote is fetched as before and fails there."""
     text = _read_text_or_none(remote_lane.remote_record_path(runs_dir, run_id))
     record = remote_lane.parse_remote_record(text) if text is not None else None
     if record is None:
@@ -3715,11 +3780,16 @@ def _fetch_one(runs_dir: Path, hosts, run_id: str, mode: str = "files") -> tuple
     marker = {"fetched_at": _now_iso(), "repos": list(result)}
     remote_lane.fetched_record_path(runs_dir, run_id).write_text(json.dumps(marker))
     if only is not None:
-        print(f"{run_id}: task records skipped, the store holds them")
+        records = _store_run_rows(runs_dir, run_id)
+        moved = _store_approved_task_facts(runs_dir, runs_dir.parent / "work", run_id, records, by)
+        if moved:
+            print(f"{run_id}: {len(moved)} task(s) approved from the store")
+        else:
+            print(f"{run_id}: task records skipped, the store holds them")
     return "fetched", [f"run {run_id}", f"host {host.name}", "\n".join(f"repo {repo}" for repo in result)], host.name
 
 
-def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files") -> int:
+def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files", by: str = _UNLABELED) -> int:
     """Fetches every remote run with no `.fetched.json` marker; a live run is skipped, a failed fetch makes the exit 2."""
     suffix = ".remote.json"
     remote_runs = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
@@ -3730,7 +3800,7 @@ def _runs_fetch_all(runs_dir: Path, hosts, mode: str = "files") -> int:
         return 0
     failed = False
     for run_id in todo:
-        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id, mode)
+        outcome, lines, host = _fetch_one(runs_dir, hosts, run_id, mode, by)
         if outcome == "live":
             print(f"{run_id}: still live on {host}")
         elif outcome == "fetched":
@@ -3753,9 +3823,10 @@ def _runs_fetch(a: argparse.Namespace) -> int:
         return 2
     hosts = _profile_lane_hosts(_read_text_or_none(_profile_path(a)) or "")
     mode = work_state.work_state_mode(_lake_provider(a)[0])
+    by = _holder_label(a)
     if a.all:
-        return _runs_fetch_all(runs_dir, hosts, mode)
-    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode)
+        return _runs_fetch_all(runs_dir, hosts, mode, by)
+    outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode, by)
     print("\n".join(lines))
     return 0 if outcome == "fetched" else 2
 
@@ -5842,7 +5913,10 @@ def _chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
 
 
 def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]:
-    """Edge. The inputs of `runs_stranded.stranded`. Item states come from the store under mode "store", as the docket's do."""
+    """Edge. The inputs of `runs_stranded.stranded`. Item states come from the store under mode "store", as the docket's do.
+
+    Under mode "store" a fetched run whose records stayed in the store adds its store rows too: without them an
+    approved task of that run gets no run, and `plan_lands` can only ask the chair for one."""
     task_records = []
     for path in sorted((ws / "runs").glob("*/tasks/*/*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -5855,7 +5929,8 @@ def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]
         {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
         for item in _stored_work_items(ws, mode)
     ]
-    return task_records, items
+    stored = _store_held_records(ws / "runs", items) if mode == "store" else []
+    return task_records + stored, items
 
 
 def _chair_reported_repos_path(runs_dir: Path) -> Path:

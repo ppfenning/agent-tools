@@ -149,3 +149,14 @@ def test_a_phase_not_done_gives_no_action():
 def test_a_needed_phase_lands_first():
     approved = [_task("b", phase="b", needs=("a",)), _task("a", phase="a")]
     assert _phases(_facts(approved)) == ["a", "b"]
+
+
+def test_a_task_whose_run_is_empty_gets_needs_chair_no_run_and_no_land_phase():
+    # Built directly, not through _task: its `run or f"i-{id}"` default masks an empty run.
+    task = {
+        "id": "a", "initiative": "i", "repo": "r", "phase": "a", "phase_done": True,
+        "needs": [], "run": "", "needs_fetch": False,
+    }
+    actions = plan_lands(_facts([task]))
+    assert actions == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
+    assert not [a for a in actions if a["kind"] == "land_phase"]

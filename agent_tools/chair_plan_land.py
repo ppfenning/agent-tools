@@ -60,7 +60,10 @@ def _run_suffix(run: str) -> int:
 
 
 def plan_lands(facts: Facts) -> list[Action]:
-    """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one."""
+    """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
+
+    A group whose resolved run is empty gets one needs_chair (cause `no_run`) instead: a land_phase with an empty
+    run has nowhere to land from, whatever moved the task to approved."""
     tasks = planned_tasks(facts["approved"], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
@@ -71,6 +74,9 @@ def plan_lands(facts: Facts) -> list[Action]:
         repo = group[0]["repo"]
         runs = list({t["run"] for t in group})
         run = runs[0] if len(runs) == 1 else max(runs, key=_run_suffix)
+        if not run:
+            actions.append({"kind": "needs_chair", "initiative": initiative, "cause": "no_run"})
+            continue
         # The fetch follows the run the land names: fetching an older run of a carried phase leaves the land's run absent.
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):
             actions.append({"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None})
