@@ -1,11 +1,11 @@
 usage: cox runs [-h]
-                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume}
+                {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume,move}
                 ...
 
 What a harness run recorded, and cleaning up after it.
 
 positional arguments:
-  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume}
+  {usage,trace,clean,land,fetch,review,recover,series,wait,events,top,bar,notify,detail,stranded,cause,stop,pause,resume,move}
     usage               usage stats and cost for one run
     trace               the tool-call trace for one run
     clean               delete a run's worktree and branches locally
@@ -27,6 +27,7 @@ positional arguments:
     stop                stop a run's process, local or remote, and wait for it to exit
     pause               mark a run paused in the store
     resume              mark a paused run resumed in the store
+    move                stop a run at its node boundary and relaunch it on another host
 
 options:
   -h, --help            show this help message and exit

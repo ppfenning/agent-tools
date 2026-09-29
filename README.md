@@ -63,6 +63,7 @@ cox runs cause RUN_ID TASK_ID ticket|code|harness|unknown [--note NOTE] [--runs-
 cox runs stop RUN_ID [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run's process, local or remote, and wait for it to exit
 cox runs pause RUN_ID [--reason REASON] [--json]   mark a run paused in the store
 cox runs resume RUN_ID [--json]   mark a paused run resumed in the store
+cox runs move RUN_ID --to TO [--reason REASON] [--runs-dir RUNS_DIR] [--profile PROFILE] [--json]   stop a run at its node boundary and relaunch it on another host
 cox courier send REF --to TO --note NOTE [--profile PROFILE]   append a bus entry naming a courier reference
 cox courier inbox [--label LABEL] [--profile PROFILE]   list this label's unacknowledged bus entries
 cox courier ack ID [--profile PROFILE]   acknowledge one bus entry by id
