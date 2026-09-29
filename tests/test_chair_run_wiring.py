@@ -267,6 +267,18 @@ def test_an_active_table_host_with_no_workspace_dir_is_not_dispatched_and_the_ch
     ]
 
 
+def test_the_local_hosts_own_row_is_never_a_dispatch_target_and_its_workspace_dir_resolves_not_refuses(tmp_path) -> None:
+    # "h" (this test's local host) carries no versions_json, so with no fix it would land in the startup
+    # `unreachable` list; the routing profile's own top-level `workspace_dir` resolves it instead.
+    runs = tmp_path / "runs"
+    _hosts_table(runs, ("jarvis", "jarvis", 8, "active", BEAT), ("h", "h", 4, "active", None))
+    profile = {"workspace_dir": "/srv/ws"}
+    said: list[str] = []
+    deps = cli._chair_run_deps(runs, profile, "chair", 1, "h", False, said.append, tmp_path / "profile.yaml", "files")
+    assert [h["name"] for h in deps.facts_deps.dispatch({"max_in_flight": 3})["hosts"]] == ["jarvis"]  # type: ignore[misc]
+    assert said == []
+
+
 def test_the_dispatch_facts_fall_back_to_the_profile_host_when_the_table_has_no_rows(tmp_path) -> None:
     profile = tmp_path / "profile.yaml"
     profile.write_text("lane_hosts:\n  - name: other\n    ssh: other\n    workspace_dir: /w\n", encoding="utf-8")

@@ -3812,12 +3812,15 @@ def _remote_edge(cwd: Path) -> tuple[Callable[[list[str]], int], Callable[[str],
     return run, None
 
 
-def _lane_host_candidates(profile_text: str, rows: Sequence[Mapping]) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
-    """The table's active hosts when the table has rows, else the profile's `lane_hosts`."""
+def _lane_host_candidates(
+    profile_text: str, rows: Sequence[Mapping], local: str = "",
+) -> tuple[lane_hosts.LaneHost, ...] | lane_hosts.LaneHostError:
+    """The table's active hosts when the table has rows, else the profile's `lane_hosts`. A row named `local` is
+    never one of them: the loop's own machine is never a remote lane-host candidate for itself."""
     parsed = _profile_lane_hosts(profile_text)
     if not rows:
         return parsed
-    return host_cmd.host_rows_to_lane_hosts(rows, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed)
+    return host_cmd.host_rows_to_lane_hosts(rows, () if isinstance(parsed, lane_hosts.LaneHostError) else parsed, local)
 
 
 def _shadowed_note(profile_text: str, table_names: Sequence[str]) -> str | None:
@@ -6585,6 +6588,10 @@ def _chair_run_deps(
     startup_rows = run_store.hosts(runs_dir)
     startup_hosts = _lane_host_candidates(profile_text, startup_rows)
     unreachable = [] if isinstance(startup_hosts, lane_hosts.LaneHostError) else host_cmd.dispatchable(startup_hosts)[1]
+    # The local row is never truly unreachable: its own workspace_dir is the routing profile's, resolved here
+    # instead of refused even when its own `cox host beat` never recorded one.
+    local_resolved = host_cmd.local_workspace_dir(startup_rows, host, str(profile.get("workspace_dir", "")))
+    unreachable = [name for name in unreachable if not (name == host and local_resolved)]
     if unreachable:
         echo(f"chair run: not dispatching to {', '.join(unreachable)}: no workspace_dir; run `cox host beat` on each")
     shadow = _shadowed_note(profile_text, [str(r["name"]) for r in startup_rows])
@@ -6603,12 +6610,12 @@ def _chair_run_deps(
         pidfile_live, pidfiled = chair_read_docket.local_runs(runs_dir, stamp)
         lanes = run_store.remote_lanes(run_store.live_lanes(runs_dir, stamp), pidfiled)
         host_rows = run_store.hosts(runs_dir)  # per tick: a drain takes effect without a restart
-        candidates = _lane_host_candidates(profile_text, host_rows)
+        candidates = _lane_host_candidates(profile_text, host_rows, host)
         # a host with no workspace_dir is refused by `route launch --on`, so the loop must not plan launches onto it
         host_names = [] if isinstance(candidates, lane_hosts.LaneHostError) else host_cmd.dispatchable(candidates)[0]
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
-            weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows),
+            weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))

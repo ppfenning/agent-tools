@@ -19,7 +19,7 @@ Row = Mapping[str, object]
 
 __all__ = [
     "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "dispatchable", "doctor_line", "format_host_list",
-    "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "recorded_repos", "row_capabilities",
+    "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "row_capabilities",
     "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
 ]
 
@@ -45,18 +45,27 @@ def _workspace(row: Row) -> str:
     return recorded if isinstance(recorded, str) and recorded.startswith("/") else ""
 
 
-def host_rows_to_lane_hosts(rows: Sequence[Row], profile_hosts: Sequence[LaneHost] = ()) -> tuple[LaneHost, ...]:
-    """Only `active` rows. workspace_dir is the host's own beat's, else the same-named profile host's, else ''."""
+def host_rows_to_lane_hosts(rows: Sequence[Row], profile_hosts: Sequence[LaneHost] = (), local: str = "") -> tuple[LaneHost, ...]:
+    """Only `active` rows, minus one named `local`: the machine running the loop is never a remote lane-host
+    candidate for itself. workspace_dir is the host's own beat's, else the same-named profile host's, else ''."""
     workspaces = {h.name: h.workspace_dir for h in profile_hosts}
     return tuple(
         LaneHost(str(r["name"]), str(r["ssh"]), _workspace(r) or workspaces.get(str(r["name"]), ""))
-        for r in rows if r.get("state") == "active"
+        for r in rows if r.get("state") == "active" and str(r["name"]) != local
     )
 
 
 def dispatchable(hosts: Sequence[LaneHost]) -> tuple[list[str], list[str]]:
     """(names a launch can reach, names with no workspace_dir that `route launch --on` would refuse)."""
     return [h.name for h in hosts if h.workspace_dir], [h.name for h in hosts if not h.workspace_dir]
+
+
+def local_workspace_dir(rows: Sequence[Row], local: str, profile_workspace_dir: str) -> str:
+    """The local machine's own workspace_dir: the row named `local`'s own beat's recorded value when it has one,
+    else the routing profile's top-level `workspace_dir`. The local host's checkout already is the profile's own,
+    so looking this up never refuses the way an unbeaten remote host's empty workspace_dir would."""
+    row = next((r for r in rows if str(r.get("name")) == local), None)
+    return (_workspace(row) if row is not None else "") or profile_workspace_dir
 
 
 def shadowed(profile_hosts: Sequence[LaneHost], table_names: Sequence[str]) -> list[str]:
