@@ -1396,6 +1396,40 @@ def _remove_land_worktree(repo: Path, branch: str) -> None:
     subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True)
 
 
+def _scratch_merge_branch(branch: str) -> str:
+    """A throwaway local branch name for merging `from` into a scratch copy of `branch`; never `branch`
+    itself, so the real phase branch is never checked out into a second worktree."""
+    return f"{branch}--land-scratch"
+
+
+def _remove_scratch_worktree(repo: Path, scratch_branch: str) -> None:
+    """Like `_remove_land_worktree`, but the scratch branch is throwaway, so it goes too."""
+    _remove_land_worktree(repo, scratch_branch)
+    subprocess.run(["git", "-C", str(repo), "branch", "-D", scratch_branch], capture_output=True, text=True)
+
+
+def _resolve_landed_conflicts(repo: Path, scratch_wt: Path, from_ref: str, branch_tip: str,
+                               conflicted: list[str]) -> list[str]:
+    """Resolve each of `conflicted`'s paths to `scratch_wt`'s side (the phase branch) when `from_ref`'s
+    content there matches that path's content at some commit already reachable from `branch_tip` -
+    already-landed content the branch is reintroducing, not a real conflict. Return the paths left
+    unresolved."""
+    unresolved = []
+    for path in conflicted:
+        main_show = subprocess.run(["git", "-C", str(repo), "show", f"{from_ref}:{path}"], capture_output=True, text=True)
+        log = subprocess.run(["git", "-C", str(repo), "log", "--format=%H", branch_tip, "--", path], capture_output=True, text=True)
+        shas = [s for s in log.stdout.split() if s]
+        landed = main_show.returncode == 0 and any(
+            subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{path}"], capture_output=True, text=True).stdout == main_show.stdout
+            for sha in shas)
+        if landed:
+            subprocess.run(["git", "-C", str(scratch_wt), "checkout", "--ours", "--", path], capture_output=True, text=True)
+            subprocess.run(["git", "-C", str(scratch_wt), "add", path], capture_output=True, text=True)
+        else:
+            unresolved.append(path)
+    return unresolved
+
+
 def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tuple[bool, str]:
     kind = step["kind"]
     if kind == "pick_branch":
@@ -1438,7 +1472,44 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
             subprocess.run(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(repo), "branch", "-D", step["onto"]], capture_output=True, text=True)
-        merge = subprocess.run(["git", "-C", str(wt), "merge", "--squash", step["branch"]], capture_output=True, text=True)
+        # When a parent phase already squash-landed, `from` (main) and `branch` both carry the same new
+        # content and a plain squash conflicts on it for no reason. Unless `from` is already an ancestor
+        # of `branch`, merge `from` into a scratch copy of `branch` first, auto-resolving paths where
+        # `from`'s content matches content already reachable from `branch`'s tip, and squash that merge
+        # commit instead - `branch` itself is never moved.
+        squash_source = step["branch"]
+        ancestor = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", step["from"], step["branch"]],
+                                  capture_output=True, text=True)
+        if ancestor.returncode != 0:
+            scratch_branch = _scratch_merge_branch(step["branch"])
+            _remove_scratch_worktree(repo, scratch_branch)
+            scratch_wt = _land_worktree(repo, scratch_branch)
+            branch_tip = _git_out(repo, "rev-parse", step["branch"])
+            sco = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", scratch_branch, str(scratch_wt), step["branch"]],
+                                 capture_output=True, text=True)
+            if sco.returncode != 0:
+                drop()
+                return False, sco.stderr.strip() or sco.stdout.strip()
+            smerge = subprocess.run(["git", "-C", str(scratch_wt), "merge", "--no-edit", step["from"]], capture_output=True, text=True)
+            if smerge.returncode != 0:
+                conflicted = subprocess.run(["git", "-C", str(scratch_wt), "diff", "--name-only", "--diff-filter=U"],
+                                            capture_output=True, text=True).stdout.split()
+                unresolved = _resolve_landed_conflicts(repo, scratch_wt, step["from"], branch_tip, conflicted)
+                if unresolved:
+                    subprocess.run(["git", "-C", str(scratch_wt), "merge", "--abort"], capture_output=True, text=True)
+                    _remove_scratch_worktree(repo, scratch_branch)
+                    drop()
+                    return False, f"squash of {step['branch']} conflicts in: {', '.join(unresolved)}"
+                commit = subprocess.run(["git", "-C", str(scratch_wt), "commit", "-qm",
+                                         f"merge {step['from']} into {step['branch']} (land scratch)"], capture_output=True, text=True)
+                if commit.returncode != 0:
+                    _remove_scratch_worktree(repo, scratch_branch)
+                    drop()
+                    return False, commit.stderr.strip() or commit.stdout.strip()
+            squash_source = scratch_branch
+        merge = subprocess.run(["git", "-C", str(wt), "merge", "--squash", squash_source], capture_output=True, text=True)
+        if squash_source != step["branch"]:
+            _remove_scratch_worktree(repo, squash_source)
         if merge.returncode != 0:
             conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
                                         capture_output=True, text=True).stdout.split()
