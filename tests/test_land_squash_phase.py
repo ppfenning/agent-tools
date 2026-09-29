@@ -69,6 +69,73 @@ def test_a_squash_that_adds_nothing_is_refused_and_leaves_no_pr_branch_or_worktr
     assert not cli._land_worktree(repo, "pr/init--ph").exists()
 
 
+def _scratch_branch_gone(repo):
+    return _git(repo, "branch", "--list", cli._scratch_merge_branch("epic/init/ph")) == "" \
+        and not cli._land_worktree(repo, cli._scratch_merge_branch("epic/init/ph")).exists()
+
+
+def test_a_branch_reintroducing_an_already_landed_parent_squashes_cleanly(tmp_path):
+    """`epic/init/parent` squash-lands on `main` as one commit. `epic/init/ph` was built on the parent's
+    own (unsquashed) branch and goes on to change the same file again, so `main` is not an ancestor of it
+    and the direct content it shares with `main` lives only at an earlier commit on its own history."""
+    root = tmp_path / "repo"
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for args in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+        _git(root, *args)
+    (root / "f.txt").write_text("original\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    _git(root, "checkout", "-qb", "epic/init/parent")
+    (root / "g.txt").write_text("parent v1\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "parent work")
+    _git(root, "checkout", "-qb", "epic/init/ph")
+    (root / "g.txt").write_text("parent v1\nchild addition\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "child work")
+    _git(root, "checkout", "-q", "main")
+    _git(root, "merge", "-q", "--squash", "epic/init/parent")
+    _git(root, "commit", "-qm", "epic init: parent")
+
+    ok, detail = cli._execute_land_step(root, _STEP)
+    assert ok, detail
+    assert "conflicts in" not in detail
+    assert "child addition" in _git(root, "show", "pr/init--ph:g.txt")
+    assert _scratch_branch_gone(root)
+
+
+def test_a_real_conflict_not_a_landed_duplicate_still_refuses_and_names_the_file(tmp_path):
+    repo = _repo_with_phase_branch(tmp_path, diverge=True)
+    ok, detail = cli._execute_land_step(repo, _STEP)
+    assert not ok
+    assert detail == "squash of epic/init/ph conflicts in: f.txt"
+    assert _git(repo, "branch", "--list", "pr/init--ph") == ""
+    assert _scratch_branch_gone(repo)
+
+
+def test_a_branch_already_containing_main_squashes_without_a_scratch_worktree(tmp_path):
+    root = tmp_path / "repo"
+    sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for args in (["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+        _git(root, *args)
+    (root / "f.txt").write_text("original\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    (root / "f.txt").write_text("main v2\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "main moves")
+    _git(root, "checkout", "-qb", "epic/init/ph")
+    (root / "g.txt").write_text("branch content\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "phase work")
+
+    ok, detail = cli._execute_land_step(root, _STEP)
+    assert ok, detail
+    assert _git(root, "rev-list", "--count", "main..pr/init--ph") == "1"
+    assert _git(root, "log", "-1", "--format=%s", "pr/init--ph") == "epic init: ph"
+    assert _scratch_branch_gone(root)
+
+
 def test_the_land_walk_drops_the_squash_worktree_and_keeps_the_pr_branch(tmp_path):
     repo = _repo_with_phase_branch(tmp_path)
     rc, reached, _ = cli._land_execute(repo, [_STEP], [_STEP], None, None, "full", False)
