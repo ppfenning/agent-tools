@@ -121,6 +121,7 @@ from agent_tools import (
     store_dialect,
     store_url,
     tracker,
+    usage_meter,
     usage_window,
     work_state,
 )
@@ -4749,8 +4750,27 @@ def _usage_assessment(
     now = datetime.datetime.now(datetime.UTC)
     reset = usage_window.parse_weekly_reset(weekly_reset)
     usage = usage_window.read_usage(runs_dir, now, reset)
-    window = usage_window.gather(runs_dir, now, ceiling_usd=window_ceiling_usd, usage=usage)
-    weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling_usd, usage=usage, reset=reset)
+    meter = usage_meter.read()
+    meter_fresh = meter is not None and usage_meter.fresh(meter, now)
+
+    five_hour_ceiling = usage_meter.implied_ceiling("five_hour", now)
+    if five_hour_ceiling is None:
+        five_hour_ceiling = window_ceiling_usd
+    estimate_window = usage_window.gather(runs_dir, now, ceiling_usd=five_hour_ceiling, usage=usage)
+    meter_window = usage_meter.as_window(meter.five_hour, now, datetime.timedelta(hours=5)) if meter_fresh else None
+    window = usage_meter.prefer(meter_window, estimate_window)
+    if meter_fresh:
+        usage_meter.record_implied_ceiling("five_hour", meter.five_hour, estimate_window, now)
+
+    weekly_ceiling = usage_meter.implied_ceiling("weekly", now)
+    if weekly_ceiling is None:
+        weekly_ceiling = weekly_ceiling_usd
+    estimate_weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling, usage=usage, reset=reset)
+    meter_weekly = usage_meter.as_window(meter.seven_day, now, datetime.timedelta(days=7)) if meter_fresh else None
+    weekly = usage_meter.prefer(meter_weekly, estimate_weekly)
+    if meter_fresh:
+        usage_meter.record_implied_ceiling("weekly", meter.seven_day, estimate_weekly, now)
+
     policy = _resolved_pacing_policy(Path(runs_dir))
     return pacing.assess(window, policy, now, weekly=weekly)
 
@@ -6061,6 +6081,8 @@ def _chair_run_deps(
         return now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
+    # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
+    meter_snapshot: list[tuple[usage_meter.Meter | None, bool]] = []
 
     def docket() -> dict:
         if not snapshot:
@@ -6069,6 +6091,7 @@ def _chair_run_deps(
 
     def beat() -> object:
         snapshot.clear()
+        meter_snapshot.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
             with chair.locked(runs_dir):
@@ -6162,14 +6185,57 @@ def _chair_run_deps(
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
-    facts_deps = chair_facts.FactsDeps(
-        lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
-        window=lambda: usage_window.gather(runs_dir, now(), ceiling_usd=profile.get("window_ceiling_usd")),
-        weekly=lambda: usage_window.gather_weekly(
-            runs_dir, now(), profile.get("weekly_ceiling_usd"),
+
+    def meter_fresh_now() -> tuple[usage_meter.Meter | None, bool]:
+        """One meter read and one freshness verdict per tick, shared by `window`, `weekly` and both source
+        labels, so a label always names the side its figure was built from."""
+        if not meter_snapshot:
+            meter = usage_meter.read()
+            meter_snapshot.append((meter, meter is not None and usage_meter.fresh(meter, now())))
+        return meter_snapshot[0]
+
+    def window() -> pacing.Window:
+        meter, fresh = meter_fresh_now()
+        now_ = now()
+        ceiling = usage_meter.implied_ceiling("five_hour", now_)
+        if ceiling is None:
+            ceiling = profile.get("window_ceiling_usd")
+        estimate_window = usage_window.gather(runs_dir, now_, ceiling_usd=ceiling)
+        meter_window = usage_meter.as_window(meter.five_hour, now_, datetime.timedelta(hours=5)) if fresh else None
+        if fresh:
+            usage_meter.record_implied_ceiling("five_hour", meter.five_hour, estimate_window, now_)
+        return usage_meter.prefer(meter_window, estimate_window)
+
+    def window_source() -> str:
+        _, fresh = meter_fresh_now()
+        return "meter" if fresh else "est"
+
+    def weekly() -> pacing.Window:
+        meter, fresh = meter_fresh_now()
+        now_ = now()
+        ceiling = usage_meter.implied_ceiling("weekly", now_)
+        if ceiling is None:
+            ceiling = profile.get("weekly_ceiling_usd")
+        estimate_weekly = usage_window.gather_weekly(
+            runs_dir, now_, ceiling,
             store_spend=lambda since: run_store.cost_since(runs_dir, since),
             reset=weekly_reset,
-        ),
+        )
+        meter_weekly = usage_meter.as_window(meter.seven_day, now_, datetime.timedelta(days=7)) if fresh else None
+        if fresh:
+            usage_meter.record_implied_ceiling("weekly", meter.seven_day, estimate_weekly, now_)
+        return usage_meter.prefer(meter_weekly, estimate_weekly)
+
+    def weekly_source() -> str:
+        _, fresh = meter_fresh_now()
+        return "meter" if fresh else "est"
+
+    facts_deps = chair_facts.FactsDeps(
+        lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
+        window=window,
+        weekly=weekly,
+        window_source=window_source,
+        weekly_source=weekly_source,
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,
         approved=approved,

@@ -69,3 +69,21 @@ def _no_real_harness(monkeypatch):
     from agent_tools import store_cli
 
     monkeypatch.setattr(store_cli, "_harness_python", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_usage_meter(monkeypatch, request):
+    """No test reads the box's real status-line meter or implied-ceiling file: this machine carries a
+    live, fresh `~/.local/state/coxswain/rate-limits.json`, so without this a test that never mentions
+    `usage_meter` would silently build its window from whatever the real meter says right now. A test
+    that wants meter behaviour monkeypatches `usage_meter.read` / `implied_ceiling` itself.
+
+    `test_usage_meter` exercises these functions' own file-reading logic against paths it names
+    explicitly, so it is exempt: patching them there would test the patch, not the module."""
+    if request.module.__name__ == "test_usage_meter":
+        return
+
+    from agent_tools import usage_meter
+
+    monkeypatch.setattr(usage_meter, "read", lambda *a, **k: None)
+    monkeypatch.setattr(usage_meter, "implied_ceiling", lambda *a, **k: None)
