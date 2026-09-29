@@ -2,10 +2,11 @@
 
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
-from agent_tools.chair_plan_fill import plan_fill
+from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import plan_lands
 from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
 from agent_tools.chair_plan_stale import plan_stale
@@ -13,6 +14,7 @@ from agent_tools.chair_types import (
     Action,
     DispatchFacts,
     Facts,
+    InitiativeFacts,
     LastCall,
     LeaseFacts,
     LimitsFacts,
@@ -39,16 +41,47 @@ def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
     return [{"kind": "standby", "holder": lease["holder"], "host": lease["host"], **({"until": until} if until else {})}]
 
 
-def _cap_launches(actions: list[Action], cap: int) -> list[Action]:
-    """Keep the first cap relaunch, retry and rescue actions; a dropped relaunch takes its paired clear_branches with it."""
+def _cap_launches(
+    actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot]
+) -> tuple[list[Action], dict[str, int]]:
+    """Keep the first cap relaunch, retry and rescue actions local; place relaunch and retry beyond cap on a
+    lane host, ranked exactly as _place_on_hosts ranks a fresh launch_epic (weight, capabilities, free count).
+    rescue never gets a host and is dropped past the cap exactly as before. What no host can take (none
+    eligible, or every host lane full) is dropped as before. A dropped relaunch takes its paired
+    clear_branches with it; a hosted relaunch keeps its clear_branches, which still runs locally.
+
+    Returns the resulting actions and a mapping of host name to the lanes this placement took, for the fill
+    step that follows to subtract.
+    """
     launch_at = [n for n, a in enumerate(actions) if a["kind"] in _LAUNCHES]
-    dropped = set(launch_at[cap:])
+    overflow = launch_at[cap:]
+    hostable = [n for n in overflow if actions[n]["kind"] in ("relaunch", "retry")]
+    by_id = {i["id"]: i for i in initiatives}
+    rest = [
+        (
+            actions[n]["initiative"],
+            _required_capabilities(by_id[actions[n]["initiative"]]) if actions[n]["initiative"] in by_id else frozenset(),
+        )
+        for n in hostable
+    ]
+    placed = iter(_place_on_hosts(rest, host_free))
+    next_placed = next(placed, None)
+    host_for_index: dict[int, str] = {}
+    for n in hostable:
+        if next_placed is not None and next_placed["initiative"] == actions[n]["initiative"]:
+            host_for_index[n] = next_placed["host"]
+            next_placed = next(placed, None)
+    consumed: dict[str, int] = {}
+    for host in host_for_index.values():
+        consumed[host] = consumed.get(host, 0) + 1
+    dropped = {n for n in overflow if n not in host_for_index}
     dropped_initiatives = {actions[n]["initiative"] for n in dropped if actions[n]["kind"] == "relaunch"}
-    return [
-        a
+    kept = [
+        {**a, "host": host_for_index[n]} if n in host_for_index else a
         for n, a in enumerate(actions)
         if n not in dropped and not (a["kind"] == "clear_branches" and a["initiative"] in dropped_initiatives)
     ]
+    return kept, consumed
 
 
 def _needs_chair_only(actions: list[Action]) -> list[Action]:
@@ -182,8 +215,13 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     if facts["limits"]["hard_stop"]:
         return [*lands, *fetch_exits, *stale, *stall, *_needs_chair_only(recovered), *login_needs_chair]
     cap = _launch_cap(facts["limits"])
-    capped = [_with_carry(a, facts["approved"]) for a in _cap_launches(recovered, min(cap, _dispatch_room(facts["dispatch"])))]
-    kept = sum(a["kind"] in _LAUNCHES for a in capped)
+    host_free = host_free_slots(facts)
+    capped_actions, consumed = _cap_launches(
+        recovered, min(cap, _dispatch_room(facts["dispatch"])), facts["initiatives"], host_free
+    )
+    capped = [_with_carry(a, facts["approved"]) for a in capped_actions]
+    # A hosted relaunch or retry takes no local lane, so it must not count against the local free-lane budget.
+    kept = sum(a["kind"] in _LAUNCHES and "host" not in a for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
     withheld = (
@@ -192,7 +230,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         | not_exited
         | lost
     )
-    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld)
+    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed)
     return [*lands, *fetch_exits, *stale, *stall, *capped, *filled, *login_needs_chair]
 
 

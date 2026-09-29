@@ -85,9 +85,12 @@ def test_epics_take_lanes_first_and_decomposes_get_the_remainder_oldest_first():
     ]
 
 
-def test_an_odd_remainder_of_one_lane_launches_no_decompose():
+def test_a_lone_free_local_lane_launches_one_decompose_when_no_host_is_free():
     facts = _facts(initiatives=[_init("a")], intake=["i1", "i2"])
-    assert plan_fill(facts, 2) == [{"kind": "launch_epic", "initiative": "a"}]
+    assert plan_fill(facts, 2) == [
+        {"kind": "launch_epic", "initiative": "a"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+    ]
 
 
 def test_two_free_lanes_and_one_intake_item_launch_none():
@@ -196,3 +199,8 @@ def test_a_blocked_hosts_free_count_is_zero_even_with_no_live_runs():
 def test_an_unblocked_host_with_free_capacity_still_receives_a_launch():
     facts = _hosted(1, initiatives=[_init("a")], login_hosts=[_login_host("other", False)])
     assert plan_fill(facts, 0) == [{"kind": "launch_epic", "initiative": "a", "host": "jarvis"}]
+
+
+def test_consumed_host_lanes_keeps_fill_off_a_lane_a_relaunch_just_took():
+    facts = _hosted(1, initiatives=[_init("a")])
+    assert plan_fill(facts, 0, consumed_host_lanes={"jarvis": 1}) == []

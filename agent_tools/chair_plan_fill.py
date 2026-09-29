@@ -57,12 +57,15 @@ def _epic_launches(
     return [*local, *_place_on_hosts(hosted, host_free)]
 
 
-def _decompose_launches(facts: Facts, lanes: int) -> list[Action]:
-    """One lane per intake item, oldest first, and only an even count: a lone lane launches none."""
+def _decompose_launches(facts: Facts, lanes: int, any_host_free: bool) -> list[Action]:
+    """One lane per intake item, oldest first, and only an even count, unless lanes itself is the single free
+    local lane and no lane host has room either: then that one lane launches one, since nothing will pick up
+    a partner from a host this tick. Two or more free local lanes still pair off, whatever the host state."""
     n = min(lanes, len(facts["intake"]))
+    count = n if lanes == 1 and not any_host_free else n - n % 2
     return [
         {"kind": "launch_decompose", "intake_ids": [intake_id]}
-        for intake_id in facts["intake"][: n - n % 2]
+        for intake_id in facts["intake"][:count]
     ]
 
 
@@ -77,10 +80,10 @@ def _wants_pull(facts: Facts, lanes_left: int) -> bool:
     )
 
 
-def plan_fill(facts: Facts, free_lanes: int, withheld: frozenset[str] = frozenset()) -> list[Action]:
+def host_free_slots(facts: Facts) -> list[HostSlot]:
     dispatch = facts["dispatch"]
     blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
-    host_free: list[HostSlot] = [
+    return [
         (
             h["name"],
             h.get("weight", 1),
@@ -90,12 +93,38 @@ def plan_fill(facts: Facts, free_lanes: int, withheld: frozenset[str] = frozense
         )
         for h in dispatch["hosts"]
     ]
+
+
+def _less_consumed(host_free: list[HostSlot], consumed_host_lanes: dict[str, int]) -> list[HostSlot]:
+    """host_free with each host's free count reduced by the lanes a prior planning step already took."""
+    return [
+        (name, weight, capabilities, max(0, free - consumed_host_lanes.get(name, 0)), assigned)
+        for name, weight, capabilities, free, assigned in host_free
+    ]
+
+
+def plan_fill(
+    facts: Facts,
+    free_lanes: int,
+    withheld: frozenset[str] = frozenset(),
+    consumed_host_lanes: dict[str, int] | None = None,
+) -> list[Action]:
+    """consumed_host_lanes names lane-host slots a recovery step already placed a relaunch or retry on this
+    tick, so fill never places a fresh launch_epic on a lane that action just filled."""
+    host_free = host_free_slots(facts)
+    if consumed_host_lanes:
+        host_free = _less_consumed(host_free, consumed_host_lanes)
     if free_lanes <= 0 and not any(free for *_, free, _ in host_free):
         return []
     local_lanes = max(0, free_lanes)
     epics = _epic_launches(facts, free_lanes, withheld, host_free)
     local_epics = [a for a in epics if "host" not in a]
-    decomposes = _decompose_launches(facts, local_lanes - len(local_epics))
+    hosted_by_epics: dict[str, int] = {}
+    for a in epics:
+        if "host" in a:
+            hosted_by_epics[a["host"]] = hosted_by_epics.get(a["host"], 0) + 1
+    any_host_free = any(free - hosted_by_epics.get(name, 0) > 0 for name, _, _, free, _ in host_free)
+    decomposes = _decompose_launches(facts, local_lanes - len(local_epics), any_host_free)
     lanes_left = local_lanes - len(local_epics) - len(decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
     return [*epics, *decomposes, *pulls]
