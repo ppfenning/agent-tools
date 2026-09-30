@@ -6,6 +6,8 @@
   "machines": [{"name": "omarchy", "state": "active", "lanes_in_use": 2, "capacity": 3, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 12, "checkouts": {"coxswain-tools": {"behind_main": 0}}}],
   "runs": [{"run": "dash-feed-1", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running"}],
   "queue": [{"initiative": "dash-feed-streams-a-versioned-json-snapshot-of", "priority": 1, "phases_landed": 0, "phases_total": 3, "current_phase": "p1-foundations"}],
+  "queue_total": 1,
   "inbox": [{"kind": "needs_chair", "target": "some-task", "reason": "budget stop after 2 attempts"}],
+  "inbox_total": 1,
   "watch": []
 }
