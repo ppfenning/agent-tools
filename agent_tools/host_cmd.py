@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import platform
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -216,11 +218,47 @@ def _logged_in(run: Run) -> bool | None:
     return status.get("loggedIn") if code == 0 and isinstance(status, dict) and isinstance(status.get("loggedIn"), bool) else None
 
 
+def _mem_total_gb() -> float:
+    """MemTotal from /proc/meminfo, in GiB to one decimal; 0.0 when the file or the line is unreadable."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return round(int(line.split()[1]) / (1024 * 1024), 1)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+    return 0.0
+
+
+def _host_facts() -> dict:
+    """This machine's own os, cpu count and total memory -- never injected through `run`, since they are
+    local process facts rather than another tool's output."""
+    return {"os": platform.platform(), "cpu_count": os.cpu_count() or 0, "mem_total_gb": _mem_total_gb()}
+
+
+def _checkout_detail(run: Run, repo: str) -> tuple[str, dict]:
+    """`(repo dir name, {branch, behind_main})` for one checkout, both read through `run` with no fetch --
+    `behind_main` counts commits against the last-fetched `origin/main`. A repo that fails either read
+    yields branch "" and behind_main 0."""
+    branch = _out(run, ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"]) or ""
+    behind_raw = _out(run, ["git", "-C", repo, "rev-list", "--count", "HEAD..origin/main"])
+    try:
+        behind_main = int(behind_raw) if behind_raw is not None else 0
+    except ValueError:
+        behind_main = 0
+    return Path(repo).name, {"branch": branch, "behind_main": behind_main}
+
+
+def _checkouts(run: Run, repos: Sequence[str]) -> dict:
+    return dict(_checkout_detail(run, repo) for repo in repos)
+
+
 def beat_versions(
     run: Run, package_version: str | None, harness_dir: str | None, cartridges_dir: str | None,
     workspace_dir: str | None = None, repos: Sequence[str] = (),
 ) -> dict:
-    """This machine's versions, plus its workspace_dir and checkout paths. `cox --version` text if it answers, else the package version."""
+    """This machine's versions, plus its workspace_dir, checkout paths, host facts and per-checkout branch
+    and commits-behind-main. `cox --version` text if it answers, else the package version."""
     def tag(directory: str | None) -> str | None:
         return _out(run, ["git", "-C", directory, "describe", "--tags"]) if directory else None
 
@@ -228,7 +266,10 @@ def beat_versions(
         _out(run, ["cox", "--version"]) or package_version, tag(harness_dir), tag(cartridges_dir),
         _out(run, ["claude", "--version"]), _logged_in(run),
     )
-    return {**versions, "workspace_dir": workspace_dir, "repos": list(repos)}
+    return {
+        **versions, "workspace_dir": workspace_dir, "repos": list(repos),
+        "host_facts": _host_facts(), "checkouts": _checkouts(run, repos),
+    }
 
 
 def _pull_line(ssh: str, repo: str, run: Run) -> tuple[bool, str]:

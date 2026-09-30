@@ -9,6 +9,10 @@ keeps the ones whose id names this initiative, the same derivation
 `chair_facts.run_initiative` gives `cox runs top` its lane-to-initiative
 correlation. `shape` is the pure core: given plain item and run-record lists it
 never touches a filesystem, a clock or a subprocess.
+
+`build_initiative_detail` nests `shape`'s flat output into the versioned
+`{"schema": 1, "kind": "initiative", ...}` shape in
+`tests/fixtures/dash_detail_initiative_v1.json`; it is pure as well.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from pathlib import Path
 
 from agent_tools import chair_facts, records, run_store
 
-__all__ = ["build", "shape"]
+__all__ = ["build", "build_initiative_detail", "shape"]
 
 _LANDED_STATES = ("done", "dropped")  # same rule console_screen.py applies per lane
 
@@ -112,3 +116,72 @@ def build(initiative_id: str, work_dir: Path, runs_dir: Path, now: str) -> dict:
     `_items` and `_runs` read `runs_dir` alone.
     """
     return shape(_items(runs_dir, initiative_id), _runs(runs_dir, initiative_id), now)
+
+
+def _task_needs(needs: list[dict], task_id: str) -> list[str]:
+    """The dependency ids named in `needs` edges whose `to` is `task_id`, in
+    the order those edges appear in `needs`. Each edge is `{"from": dependency,
+    "to": dependent}`, the same convention `shape` builds above.
+    """
+    return [edge["from"] for edge in needs if edge["to"] == task_id]
+
+
+def _task_error(task_needs: list[str], phase_name: str, other_ids: set[str]) -> str | None:
+    """`None` unless one of `task_needs` names a task in `other_ids`, the other
+    tasks of this task's own phase; a needs edge into an earlier phase is not
+    an error.
+    """
+    return f"needs edge inside phase {phase_name}" if any(needed in other_ids for needed in task_needs) else None
+
+
+def _task_entry(task: dict, needs: list[dict], phase_name: str, phase_ids: set[str]) -> dict:
+    """`{id, needs, state, error}` for one raw `{id, phase, state}` task."""
+    task_needs = _task_needs(needs, task["id"])
+    return {
+        "id": task["id"],
+        "needs": task_needs,
+        "state": task["state"],
+        "error": _task_error(task_needs, phase_name, phase_ids - {task["id"]}),
+    }
+
+
+def _phase_tasks(tasks: list[dict], needs: list[dict], phase_name: str) -> list[dict]:
+    """The v1 entry of every raw task whose `phase` is `phase_name`, in raw order."""
+    own = [task for task in tasks if task["phase"] == phase_name]
+    own_ids = {task["id"] for task in own}
+    return [_task_entry(task, needs, phase_name, own_ids) for task in own]
+
+
+def _history(phases: list[dict]) -> list[dict]:
+    """One `phase <name> landed` event per landed raw phase, oldest first.
+    Raw `runs` rows carry only `run` and `cost_usd`, no timestamp and no event,
+    so history is drawn from each phase's `landed_at` instead.
+    """
+    landed = sorted(
+        (phase for phase in phases if phase["landed_at"] is not None),
+        key=lambda phase: (phase["landed_at"], phase["name"]),
+    )
+    return [{"at": phase["landed_at"], "event": f"phase {phase['name']} landed"} for phase in landed]
+
+
+def build_initiative_detail(raw: dict, initiative_id: str) -> dict:
+    """The v1 snapshot for `raw`, the dict `shape` returns. Phases are keyed by
+    `name`, tasks by `phase`, and a task's `needs` is rebuilt from the `{from,
+    to}` edge list. `raw` carries no initiative id, so the caller passes it in,
+    as `build` already receives it.
+    """
+    return {
+        "schema": 1,
+        "kind": "initiative",
+        "at": raw["generated_at"],
+        "initiative": initiative_id,
+        "phases": [
+            {
+                "id": phase["name"],
+                "landed_at": phase["landed_at"],
+                "tasks": _phase_tasks(raw["tasks"], raw["needs"], phase["name"]),
+            }
+            for phase in raw["phases"]
+        ],
+        "history": _history(raw["phases"]),
+    }

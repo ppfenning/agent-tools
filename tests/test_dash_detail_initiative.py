@@ -1,4 +1,6 @@
-"""`dash_detail_initiative.shape` and `.build` for `cox dash --detail initiative`."""
+"""`dash_detail_initiative.shape`, `.build` and `.build_initiative_detail` for
+`cox dash --detail initiative`.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +11,45 @@ from pathlib import Path
 
 from agent_tools import dash_detail_initiative as ddi
 from agent_tools import run_store
+
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dash_detail_initiative_v1.json"
+
+_INITIATIVE = "dash-feed-streams-a-versioned-json-snapshot-of"
+_SCHEMA = f"{_INITIATIVE}-feed-schema"
+_WRITER = f"{_INITIATIVE}-feed-writer"
+_CLI = f"{_INITIATIVE}-cli-flag"
+
+# Store items `shape` consumes: p1-foundations' writer needs its own phase's
+# schema task, proving the same-phase error; p2-cli's flag needs the p1 schema
+# task, proving a cross-phase edge is not flagged.
+_V1_ITEMS = [
+    {"id": _SCHEMA, "phase": "p1-foundations", "state": "done", "needs": [], "updated_at": "2026-09-28T21:00:00Z"},
+    {
+        "id": _WRITER,
+        "phase": "p1-foundations",
+        "state": "done",
+        "needs": [_SCHEMA],
+        "updated_at": "2026-09-28T22:10:00Z",
+    },
+    {"id": _CLI, "phase": "p2-cli", "state": "ready", "needs": [_SCHEMA], "updated_at": "2026-09-29T09:00:00Z"},
+]
+_V1_RUNS = [{"run": f"{_INITIATIVE}-1", "cost_usd": 0.75}]
+
+# The literal raw input: what `shape` emits today for the items above.
+_RAW_INITIATIVE = {
+    "generated_at": "2026-09-29T12:00:00Z",
+    "phases": [
+        {"name": "p1-foundations", "landed_at": "2026-09-28T22:10:00Z"},
+        {"name": "p2-cli", "landed_at": None},
+    ],
+    "needs": [{"from": _SCHEMA, "to": _CLI}, {"from": _SCHEMA, "to": _WRITER}],
+    "tasks": [
+        {"id": _SCHEMA, "phase": "p1-foundations", "state": "done"},
+        {"id": _WRITER, "phase": "p1-foundations", "state": "done"},
+        {"id": _CLI, "phase": "p2-cli", "state": "ready"},
+    ],
+    "runs": [{"run": f"{_INITIATIVE}-1", "cost_usd": 0.75}],
+}
 
 _ITEMS = [
     {"id": "t1", "phase": "p1", "state": "done", "needs": [], "updated_at": "2026-09-20T00:00:00Z"},
@@ -134,3 +175,26 @@ def test_runs_also_counts_a_run_recorded_only_in_the_store(tmp_path) -> None:
         {"run": "demo-1", "cost_usd": 1.5},
         {"run": "demo-9", "cost_usd": 3.0},
     ]
+
+
+def test_raw_initiative_literal_is_what_shape_emits_today() -> None:
+    assert ddi.shape(_V1_ITEMS, _V1_RUNS, "2026-09-29T12:00:00Z") == _RAW_INITIATIVE
+
+
+def test_build_initiative_detail_matches_the_v1_fixture() -> None:
+    expected = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    result = ddi.build_initiative_detail(_RAW_INITIATIVE, _INITIATIVE)
+
+    assert result == expected
+    assert json.loads(json.dumps(result)) == result
+
+
+def test_build_initiative_detail_flags_only_the_same_phase_needs_edge() -> None:
+    result = ddi.build_initiative_detail(_RAW_INITIATIVE, _INITIATIVE)
+
+    p1_tasks, p2_tasks = result["phases"][0]["tasks"], result["phases"][1]["tasks"]
+    assert p1_tasks[0]["error"] is None
+    assert p1_tasks[1]["error"] == "needs edge inside phase p1-foundations"
+    assert p2_tasks[0]["needs"] == [_SCHEMA]
+    assert p2_tasks[0]["error"] is None
