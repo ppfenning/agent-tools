@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "kind": "initiative",
+  "at": "2026-09-29T12:00:00Z",
+  "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
+  "phases": [
+    {"id": "p1-foundations", "landed_at": "2026-09-28T22:10:00Z", "tasks": [
+      {"id": "dash-feed-streams-a-versioned-json-snapshot-of-feed-schema", "needs": [], "state": "done", "error": null},
+      {"id": "dash-feed-streams-a-versioned-json-snapshot-of-feed-writer", "needs": ["dash-feed-streams-a-versioned-json-snapshot-of-feed-schema"], "state": "done", "error": "needs edge inside phase p1-foundations"}
+    ]},
+    {"id": "p2-cli", "landed_at": null, "tasks": [
+      {"id": "dash-feed-streams-a-versioned-json-snapshot-of-cli-flag", "needs": ["dash-feed-streams-a-versioned-json-snapshot-of-feed-schema"], "state": "ready", "error": null}
+    ]}
+  ],
+  "history": [
+    {"at": "2026-09-28T22:10:00Z", "event": "phase p1-foundations landed"}
+  ]
+}

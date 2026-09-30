@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "kind": "machine",
+  "at": "2026-09-29T12:00:00Z",
+  "machine": "omarchy",
+  "host_facts": {"os": "Linux 7.2.5-3-omarchy", "cpu_count": 16, "mem_total_gb": 64.0},
+  "checkouts": {
+    "coxswain-tools": {"behind_main": 0, "branch": "main"},
+    "coxswain-dash": {"behind_main": 3, "branch": "worktree-coxtop-drills"}
+  },
+  "lanes_in_use": 2,
+  "capacity": 3
+}
