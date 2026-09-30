@@ -163,23 +163,20 @@ def format_host_list(rows: Sequence[Row], now: datetime.datetime, live_by_host: 
 
 
 def add_argv(name: str, ssh: str, capacity: int, weight: int, capabilities: str, by: str) -> list[str]:
-    return [
-        "host", "upsert", name, "--ssh", ssh, "--capacity", str(capacity),
-        "--weight", str(weight), "--capabilities", capabilities, "--by", by,
-    ]
+    """`host upsert`'s argv: only what harness/store_cli.py's parser accepts. `weight` and `capabilities` are
+    taken but never sent — the hosts table has no column for either, so they stay off the wire.
+    """
+    del weight, capabilities
+    return ["host", "upsert", name, "--ssh", ssh, "--capacity", str(capacity), "--by", by]
 
 
 def capacity_upsert_argv(row: Row, n: int, by: str) -> list[str]:
-    """`cox host add`'s argv with only capacity changed: ssh, weight and capabilities come from `row`, absent ones as its defaults.
+    """`host upsert`'s argv with only capacity changed: ssh comes from `row`, capacity from `n`, nothing else is
+    sent — the store has no column for weight or capabilities.
 
     No `--state`: no `host upsert` caller here sends one, and state moves only through `set-state`, so it is left as it is.
     """
-    weight = row.get("weight")
-    caps = row.get("capabilities")
-    return add_argv(
-        str(row["name"]), str(row["ssh"]), n, 1 if weight is None else int(weight),  # type: ignore[call-overload]
-        "" if caps is None else ",".join(_capability_list(caps)), by,
-    )
+    return add_argv(str(row["name"]), str(row["ssh"]), n, 1, "", by)
 
 
 def local_host_missing(rows: Sequence[Row], hostname: str) -> bool:
