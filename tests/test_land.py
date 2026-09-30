@@ -239,6 +239,12 @@ def test_pr_body_omits_the_cost_line_rather_than_raising_on_an_unparseable_cost(
     assert "Cost:" not in land.pr_body(_record(cost_usd="n/a"))
 
 
+def test_pr_body_keeps_closes_and_ends_with_the_footer_naming_its_run(monkeypatch):
+    monkeypatch.setattr(land.importlib.metadata, "version", lambda _name: "9.9.9")
+    body = land.pr_body(_record(), issue="7")
+    assert body.endswith("\n\nCloses #7\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) 9.9.9 · run epic-x-5")
+
+
 # --- route sync hooks: pure plan, then the edge ---
 
 _ONE_COMMIT = {"agents/epic-x-5/seams-task": ["Add seams module"]}
@@ -279,7 +285,9 @@ def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
     steps = land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects")
     assert "Closes" not in _pr_body_of(steps)
     closed = land.with_issue(steps, _record(), "9")
-    assert _pr_body_of(closed).endswith("\n\nCloses #9")
+    body = _pr_body_of(closed)
+    assert "\n\nCloses #9" in body
+    assert body.endswith(land.pr_footer("epic-x-5"))
     assert [s for s in closed if s["kind"] != "pr_create"] == [s for s in steps if s["kind"] != "pr_create"]
     assert land.with_issue(steps, _record(), None) == steps
 
@@ -287,7 +295,8 @@ def test_with_issue_rebuilds_only_the_pr_body_and_leaves_no_issue_alone():
 def test_the_pr_body_closes_the_issue_and_never_emits_an_owner():
     for issue in ("7", "owner/name#7"):
         body = _pr_body_of(land.land_plan(_record(), _ONE_COMMIT, "main", tracker="github-projects", issue=issue))
-        assert body.endswith("\n\nCloses #7")
+        assert "\n\nCloses #7" in body
+        assert body.endswith(land.pr_footer("epic-x-5"))
         assert "owner" not in body
 
 
@@ -729,6 +738,15 @@ def test_task_mode_clean_step_names_only_this_tasks_branch():
 
 # --- land.phase_pr_body: pure, no I/O (§2, §7) ---
 
+def test_phase_pr_body_ends_with_the_footer_naming_its_run(monkeypatch):
+    def missing(name):
+        raise land.importlib.metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(land.importlib.metadata, "version", missing)
+    phase_record = {"phase": "seams", "run": "epic-x-5", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
+    body = land.phase_pr_body(phase_record, [])
+    assert body.endswith("\n\n🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) unknown · run epic-x-5")
+
+
 def test_phase_pr_body_two_tickets_one_arbitrated_one_unanimous():
     phase_record = {"phase": "seams", "phase_verdict": {"reasoning": "Both tickets landed cleanly."}}
     task_records = [
@@ -757,6 +775,8 @@ def test_phase_pr_body_two_tickets_one_arbitrated_one_unanimous():
         "  Arbitration: unanimous",
         "  Fix-loop attempts: 1",
         "  Files touched: b.py, c.py",
+        "",
+        land.pr_footer(None),
     ])
 
 
@@ -1200,7 +1220,8 @@ def test_cli_apply_syncs_before_the_pr_and_the_body_carries_the_new_issue(repo, 
     ran = _apply_presynced(repo, tmp_path, monkeypatch, sync_writes_issue=True)
     assert [s["kind"] for s in ran][3:6] == ["push", "route_sync", "pr_create"]
     assert ran[4]["workspace"] == str(tmp_path) and ran[4]["item"] == "seams-task"
-    assert ran[5]["body"].endswith("\n\nCloses #9")
+    assert "\n\nCloses #9" in ran[5]["body"]
+    assert ran[5]["body"].endswith(land.pr_footer("epic-x-5"))
 
 
 def test_cli_apply_opens_the_pr_without_closes_when_the_sync_wrote_no_issue(repo, tmp_path, monkeypatch):

@@ -20,6 +20,7 @@ the record and the branches with `git log`, then walks the plan through
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import re
 import shlex
@@ -164,6 +165,7 @@ def phase_pr_body(phase_record: dict[str, Any], task_records: list[dict[str, Any
     if dropped:
         lines += ["", "Dropped:"]
         lines += [f"- {r.get('task')}: {r.get('reason', '')}" for r in dropped]
+    lines += ["", pr_footer(phase_record.get("run"))]
     return "\n".join(lines)
 
 
@@ -490,6 +492,18 @@ def issue_closes(issue: str | int | None) -> str | None:
     return f"Closes #{m[1]}" if m else None
 
 
+def pr_footer(run: str | None) -> str:
+    """The trailing line every PR body ends with: the installed `coxswain-tools`
+    version, the distribution `cli._package_version` reads, never fetched over
+    the network; "unknown" when it is not installed; `run` appended when set."""
+    try:
+        version = importlib.metadata.version("coxswain-tools")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    footer = f"🚣 Built with [coxswain](https://github.com/ppfenning/coxswain) {version}"
+    return f"{footer} · run {run}" if run is not None else footer
+
+
 def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
     """The PR description: verdicts, fix-loop attempts, checks, and cost if present, then the `Closes` line for `issue`."""
     lines = [f"Run: {record.get('run')}", f"Task: {record.get('task')}"]
@@ -514,7 +528,8 @@ def pr_body(record: dict[str, Any], issue: str | int | None = None) -> str:
     if cost is not None:
         lines.append(f"Cost: ${cost:.2f}")
     closes = issue_closes(issue)
-    return "\n".join(lines + ["", closes] if closes else lines)
+    lines = lines + ["", closes] if closes else lines
+    return "\n".join(lines + ["", pr_footer(record.get("run"))])
 
 
 def land_log_row(ts: str, run: str, task: str | None, steps_reached: Sequence[str], exit_code: int, pr: str | None) -> dict[str, Any]:
