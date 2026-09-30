@@ -66,7 +66,7 @@ def test_snapshot_matches_committed_fixture():
     ]
     watch = []
 
-    result = snapshot(at, chair, spend, machines, runs, queue, inbox, watch)
+    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch)
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)
@@ -208,12 +208,12 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
     monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir: ("omarchy", 3))
-    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: [
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([
         {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
-    ])
-    monkeypatch.setattr(dash_feed, "_inbox", lambda work_dir: [
+    ], 1))
+    monkeypatch.setattr(dash_feed, "_inbox", lambda work_dir: ([
         {"ref": "coxswain://task/t1", "from": "chair-loop", "to": "chair", "note": "land it", "id": "m1", "ack": False},
-    ])
+    ], 1))
 
     feed = json.loads(json.dumps(dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")))
 
@@ -226,3 +226,55 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60
     assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it"}
+
+
+def test_queue_drops_a_fully_landed_initiative(monkeypatch, tmp_path):
+    rows = [
+        {"kind": "task", "initiative": "landed-one", "phase": "p1", "state": "done", "extra": {}},
+        {"kind": "task", "initiative": "open-one", "phase": "p1", "state": "todo", "extra": {}},
+    ]
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", lambda runs_dir: rows)
+
+    queue, total = dash_feed._queue(tmp_path)
+
+    assert [row["initiative"] for row in queue] == ["open-one"]
+    assert total == 1
+
+
+def test_inbox_drops_an_entry_addressed_to_another_seat(monkeypatch, tmp_path):
+    entries = [
+        {"id": "1", "to": "chair", "note": "a", "ref": "coxswain://task/x", "ack": False, "from": "s"},
+        {"id": "2", "to": "pat", "note": "b", "ref": "coxswain://task/y", "ack": False, "from": "s"},
+        {"id": "3", "to": "build", "note": "c", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "4", "to": "arbitrate", "note": "d", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "5", "to": "review_adversary", "note": "e", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "6", "to": "cos", "note": "f", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+        {"id": "7", "to": "chair-2026-09-29", "note": "g", "ref": "coxswain://task/z", "ack": False, "from": "s"},
+    ]
+    monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
+
+    inbox, total = dash_feed._inbox(tmp_path)
+
+    assert [entry["id"] for entry in inbox] == ["7", "2", "1"]
+    assert total == 3
+
+
+def test_queue_and_inbox_cap_at_fifty_rows_with_the_full_total(monkeypatch, tmp_path):
+    rows = [
+        {"kind": "task", "initiative": f"init-{i:02d}", "phase": "p1", "state": "todo", "extra": {}}
+        for i in range(51)
+    ]
+    monkeypatch.setattr(dash_feed.run_store, "read_queue", lambda runs_dir: rows)
+    entries = [
+        {"id": str(i), "to": "chair", "note": "n", "ref": f"coxswain://task/t{i}", "ack": False, "from": "s"}
+        for i in range(55)
+    ]
+    monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
+
+    queue, queue_total = dash_feed._queue(tmp_path)
+    inbox, inbox_total = dash_feed._inbox(tmp_path)
+
+    assert (len(queue), queue_total) == (50, 51)
+    assert [row["initiative"] for row in queue] == [f"init-{i:02d}" for i in range(50)]
+    assert (len(inbox), inbox_total) == (50, 55)
+    assert inbox[0]["id"] == "54"

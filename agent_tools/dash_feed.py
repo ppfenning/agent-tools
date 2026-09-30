@@ -14,16 +14,24 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_tools import console_screen, courier, route, run_store, usage_meter, usage_window
+from agent_tools.runs_detail import NODE_ORDER
 
 __all__ = ["gather_feed", "snapshot"]
 
 _LANDED_STATES = ("done", "dropped")
 _DEFAULT_MAX_IN_FLIGHT = 3
 _DEFAULT_PROFILE_PATH = Path.home() / ".config" / "agent-tools" / "profile.yaml"
+_MAX_ROWS = 50
+# The graphs `cox route launch` starts (cli.py's route launch commands); courier `to` labels name graphs too.
+_GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
+# Every seat that is neither the chair nor a person: each node in the graph roster, and each graph.
+_SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
 
 
-def snapshot(at, chair, spend, machines, runs, queue, inbox, watch) -> dict:
-    """Assemble the schema-1 dash feed snapshot from its sections."""
+def snapshot(at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch) -> dict:
+    """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
+    section's filtered count before the 50-row cap, for coxtop to render "50 of N"."""
+    # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     return {
         "schema": 1,
         "at": at,
@@ -32,7 +40,9 @@ def snapshot(at, chair, spend, machines, runs, queue, inbox, watch) -> dict:
         "machines": machines,
         "runs": runs,
         "queue": queue,
+        "queue_total": queue_total,
         "inbox": inbox,
+        "inbox_total": inbox_total,
         "watch": watch,
     }
 
@@ -142,31 +152,60 @@ def _priority(rows: list[dict], initiative: str):
     )
 
 
-def _queue(runs_dir: Path) -> list[dict]:
-    """One row per initiative the store's queue names, not only ones with a live lane."""
+def _priority_key(priority) -> tuple[int, int]:
+    """Sort key for a `priority` value: numeric values ascending (1 first), anything absent or non-numeric last."""
+    try:
+        return (0, int(priority))
+    except (TypeError, ValueError):
+        return (1, 0)
+
+
+def _queue(runs_dir: Path) -> tuple[list[dict], int]:
+    """Initiatives the store's queue names with at least one phase not landed (a fully landed initiative drops
+    out entirely), ordered by priority, then by first appearance in `read_queue`'s row order. Capped at
+    `_MAX_ROWS`; the second element is the filtered count before the cap."""
+    # Not a verified age. Queue rows carry no timestamp (`run_store._QUEUE_COLUMNS`), and the
+    # `harness.store_queue read` contract (run_store.py:1009) promises no row order. Row order is age only
+    # if the harness returns rows in insertion order, and that is unknown from this repository.
     rows = run_store.read_queue(runs_dir)
-    initiatives = sorted({row["initiative"] for row in rows if row.get("initiative")})
-    queue = []
-    for initiative in initiatives:
-        landed, total, current = _initiative_progress(rows, initiative)
-        queue.append({
+    # Walked backwards, so the last write for each initiative is its first index.
+    first_seen = {row["initiative"]: index for index, row in reversed(list(enumerate(rows))) if row.get("initiative")}
+    progress = {initiative: _initiative_progress(rows, initiative) for initiative in first_seen}
+    priorities = {initiative: _priority(rows, initiative) for initiative in first_seen}
+    open_initiatives = sorted(
+        (initiative for initiative in first_seen if progress[initiative][0] < progress[initiative][1]),
+        key=lambda initiative: (_priority_key(priorities[initiative]), first_seen[initiative]),
+    )
+    queue = [
+        {
             "initiative": initiative,
-            "priority": _priority(rows, initiative),
-            "phases_landed": landed,
-            "phases_total": total,
-            "current_phase": current,
-        })
-    return queue
+            "priority": priorities[initiative],
+            "phases_landed": progress[initiative][0],
+            "phases_total": progress[initiative][1],
+            "current_phase": progress[initiative][2],
+        }
+        for initiative in open_initiatives
+    ]
+    return queue[:_MAX_ROWS], len(queue)
 
 
-def _inbox(work_dir: Path) -> list[dict]:
-    """Every unacknowledged bus entry for every seat, read once. With no label `courier.inbox` never consults
-    the lock holder, so the chair lock is not read."""
+def _reaches_a_person(to: str) -> bool:
+    """True for `chair` (or a `chair-*` label, docs/design/courier.md's Labels section) or a person; false for
+    any node or graph in `_SEATS`. Courier keeps no person registry, so a label outside `_SEATS` reads as a person."""
+    return to == "chair" or to.startswith("chair-") or to not in _SEATS
+
+
+def _inbox(work_dir: Path) -> tuple[list[dict], int]:
+    """Unacknowledged bus entries addressed to `chair` or to a person, newest first (any other seat drops
+    out entirely). With no label `courier.inbox` never consults the lock holder, so the chair lock is not
+    read. Capped at `_MAX_ROWS`; the second element is the filtered count before the cap."""
     try:
         blob = (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8")
     except OSError:
         blob = ""
-    return courier.inbox(blob)
+    # `courier.inbox` preserves each id's first-appearance (oldest-first) order; reverse for newest first.
+    entries = [e for e in courier.inbox(blob) if _reaches_a_person(str(e.get("to") or ""))][::-1]
+    return entries[:_MAX_ROWS], len(entries)
 
 
 def _age_s(text, at: datetime) -> int:
@@ -267,13 +306,17 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
     spend = _spend(runs_dir, now)
     sections = console_screen.gather(runs_dir, work_dir, now, local_name, local_capacity, spend)
     chair_row = sections["chair"][0] if sections["chair"] else {}
+    queue, queue_total = _queue(runs_dir)
+    inbox, inbox_total = _inbox(work_dir)
     return snapshot(
         now,
         _chair_v1(chair_row, _lease(runs_dir), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
         [_run_v1(lane, local_name) for lane in sections["lanes"]],
-        [_queue_v1(row) for row in _queue(runs_dir)],
-        [_inbox_v1(entry) for entry in _inbox(work_dir)],
+        [_queue_v1(row) for row in queue],
+        queue_total,
+        [_inbox_v1(entry) for entry in inbox],
+        inbox_total,
         [],
     )
