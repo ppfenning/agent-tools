@@ -112,19 +112,56 @@ def test_a_gather_that_cannot_run_is_null_and_never_raises():
     def run(argv: list[str]) -> tuple[int, str]:
         raise OSError("no such tool")
 
-    assert host_cmd.beat_versions(run, "0.20.0", "/h", None) == {
-        "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None, "workspace_dir": None, "repos": [],
+    result = host_cmd.beat_versions(run, "0.20.0", "/h", None)
+    host_facts = result.pop("host_facts")
+    assert result == {
+        "cox": "0.20.0", "graphs": None, "cartridges": None, "claude": None, "login_ok": None,
+        "workspace_dir": None, "repos": [], "checkouts": {},
     }
+    assert isinstance(host_facts["os"], str) and host_facts["os"]
+    assert isinstance(host_facts["cpu_count"], int)
+    assert isinstance(host_facts["mem_total_gb"], float)
 
 
 def test_the_beat_reads_login_from_claude_auth_status_json():
     def run(argv: list[str]) -> tuple[int, str]:
-        return (0, '{"loggedIn": true}') if argv[:2] == ["claude", "auth"] else (0, "v9\n")
+        if argv[:2] == ["claude", "auth"]:
+            return 0, '{"loggedIn": true}'
+        if "rev-parse" in argv:
+            return (0, "feature-x\n") if argv[2] == "/h" else (1, "")
+        if "rev-list" in argv:
+            return (0, "4\n") if argv[2] == "/h" else (1, "")
+        return 0, "v9\n"
 
-    assert host_cmd.beat_versions(run, None, "/h", "/c", "/srv/ws", ["/h", "/c", "/t"]) == {
+    result = host_cmd.beat_versions(run, None, "/h", "/c", "/srv/ws", ["/h", "/c", "/t"])
+    result.pop("host_facts")
+    assert result == {
         "cox": "v9", "graphs": "v9", "cartridges": "v9", "claude": "v9", "login_ok": True,
         "workspace_dir": "/srv/ws", "repos": ["/h", "/c", "/t"],
+        "checkouts": {
+            "h": {"branch": "feature-x", "behind_main": 4},
+            "c": {"branch": "", "behind_main": 0},
+            "t": {"branch": "", "behind_main": 0},
+        },
     }
+
+
+def test_checkout_detail_reads_branch_and_commits_behind_main_through_run_with_no_fetch():
+    calls: list[list[str]] = []
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return (0, "main\n") if argv[-1] == "HEAD" else (0, "2\n")
+
+    assert host_cmd._checkout_detail(run, "/srv/coxswain-tools") == ("coxswain-tools", {"branch": "main", "behind_main": 2})
+    assert all(c[:2] != ["git", "fetch"] and "fetch" not in c for c in calls)
+
+
+def test_checkout_detail_reads_branch_empty_and_behind_main_zero_when_a_repo_fails():
+    def run(argv: list[str]) -> tuple[int, str]:
+        return 128, "fatal: not a git repository"
+
+    assert host_cmd._checkout_detail(run, "/srv/missing") == ("missing", {"branch": "", "behind_main": 0})
 
 
 def test_a_table_only_host_takes_the_workspace_its_own_beat_recorded_and_becomes_dispatchable():

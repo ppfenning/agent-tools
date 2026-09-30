@@ -1,14 +1,24 @@
-from agent_tools.dash_detail_machine import _shape
+import json
+from pathlib import Path
+
+from agent_tools.dash_detail_machine import build_machine_detail
+
+FIXTURE = Path(__file__).parent / "fixtures" / "dash_detail_machine_v1.json"
 
 HOST_ROW = {
-    "name": "box-1",
+    "name": "omarchy",
     "state": "active",
-    "capacity": 4,
-    "beat_at": "2026-09-28T11:55:00+00:00",
-    "versions_json": (
-        '{"cox": "1.2.3", "login_ok": true, "login_checked_at": "2026-09-28T11:00:00+00:00", '
-        '"repos": ["/home/box/harness", "/home/box/cartridges"]}'
-    ),
+    "capacity": 3,
+    "beat_at": "2026-09-29T11:55:00+00:00",
+    "versions_json": json.dumps({
+        "cox": "1.2.3",
+        "login_ok": True,
+        "host_facts": {"os": "Linux 7.2.5-3-omarchy", "cpu_count": 16, "mem_total_gb": 64.0},
+        "checkouts": {
+            "coxswain-tools": {"branch": "main", "behind_main": 0},
+            "coxswain-dash": {"branch": "worktree-coxtop-drills", "behind_main": 3},
+        },
+    }),
 }
 
 RUNS = [
@@ -24,55 +34,51 @@ RUNS = [
         "heartbeat_at": "2026-09-28T11:59:00+00:00",
         "ended_at": None,
     },
+    {
+        "run_id": "run-c",
+        "launched_at": "2026-09-29T08:00:00+00:00",
+        "heartbeat_at": "2026-09-29T11:59:00+00:00",
+        "ended_at": None,
+    },
 ]
 
-NOW = "2026-09-28T12:00:00+00:00"
+NOW = "2026-09-29T12:00:00Z"
 
 
-def test_shape_builds_the_exact_detail_dict_with_one_ended_and_one_live_lane():
-    assert _shape(HOST_ROW, RUNS, NOW) == {
-        "host": "box-1",
-        "state": "active",
-        "capacity": 4,
-        "beat_age_s": 300,
-        "login_ok": True,
-        "login_checked_at": "2026-09-28T11:00:00+00:00",
-        "checkouts": [
-            {"repo": "/home/box/harness", "commits_behind_main": None},
-            {"repo": "/home/box/cartridges", "commits_behind_main": None},
-        ],
-        "lanes": [
-            {
-                "run": "run-a",
-                "launched_at": "2026-09-28T09:00:00+00:00",
-                "heartbeat_at": "2026-09-28T09:05:00+00:00",
-                "ended_at": "2026-09-28T09:10:00+00:00",
-            },
-            {
-                "run": "run-b",
-                "launched_at": "2026-09-28T10:00:00+00:00",
-                "heartbeat_at": "2026-09-28T11:59:00+00:00",
-                "ended_at": None,
-            },
-        ],
-    }
+def test_build_machine_detail_matches_the_v1_fixture_exactly():
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert build_machine_detail(HOST_ROW, RUNS, NOW) == fixture
 
 
-def test_shape_with_no_host_row_defaults_every_host_fact_and_keeps_the_lanes():
-    runs = [{"run_id": "run-c", "launched_at": "2026-09-28T09:00:00+00:00", "heartbeat_at": None, "ended_at": None}]
-    assert _shape(None, runs, NOW) == {
-        "host": None,
-        "state": None,
+def test_lanes_in_use_counts_only_the_still_running_lanes_and_drops_the_list():
+    result = build_machine_detail(HOST_ROW, RUNS, NOW)
+    assert result["lanes_in_use"] == 2
+    assert "lanes" not in result
+
+
+def test_host_facts_default_to_empty_string_and_zero_when_a_beat_is_missing_a_field():
+    row = {**HOST_ROW, "versions_json": json.dumps({"host_facts": {"os": "Linux", "cpu_count": 8}})}
+    assert build_machine_detail(row, [], NOW)["host_facts"] == {"os": "Linux", "cpu_count": 8, "mem_total_gb": 0}
+
+
+def test_host_facts_default_to_empty_string_and_zero_when_the_host_never_beat():
+    row = {**HOST_ROW, "versions_json": "{}"}
+    assert build_machine_detail(row, [], NOW)["host_facts"] == {"os": "", "cpu_count": 0, "mem_total_gb": 0}
+
+
+def test_host_facts_default_when_there_is_no_host_row_at_all():
+    assert build_machine_detail(None, [], NOW) == {
+        "schema": 1,
+        "kind": "machine",
+        "at": NOW,
+        "machine": None,
+        "host_facts": {"os": "", "cpu_count": 0, "mem_total_gb": 0},
+        "checkouts": {},
+        "lanes_in_use": 0,
         "capacity": None,
-        "beat_age_s": None,
-        "login_ok": None,
-        "login_checked_at": None,
-        "checkouts": [],
-        "lanes": [
-            {"run": "run-c", "launched_at": "2026-09-28T09:00:00+00:00", "heartbeat_at": None, "ended_at": None},
-        ],
     }
 
 
-def test_shape_with_no_runs_gives_an_empty_lane_history():
-    assert _shape(HOST_ROW, [], NOW)["lanes"] == []
+def test_build_machine_detail_round_trips_through_json_dumps():
+    result = build_machine_detail(HOST_ROW, RUNS, NOW)
+    assert json.loads(json.dumps(result)) == result
