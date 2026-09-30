@@ -26,7 +26,7 @@ from typing import Any
 
 from agent_tools import events, run_store, runs_detail, runs_top
 from agent_tools.runs_detail_screen import facts_for
-from agent_tools.runs_top_screen import _session_text
+from agent_tools.runs_top_screen import _read_lines, _session_text
 
 __all__ = ["build", "build_run_detail"]
 
@@ -41,20 +41,44 @@ def _node_call(call: runs_detail.NodeCall) -> dict:
     }
 
 
+def _task_path(root: Path, run_id: str) -> Path | None:
+    """The same `tasks/<phase>/<task>.json` match `facts_for`'s own record read picks, kept
+    here only for the phase and task id its path carries; the file's content still comes
+    from `facts["record"]`, never read twice."""
+    matches = sorted((root / run_id / "tasks").glob("*/*.json"))
+    return matches[0] if matches else None
+
+
 def build(run_id: str, runs_dir: Path, now: str) -> dict:
-    """Plain dict, never a dataclass or `Path`; `now` decides a pidless run's liveness."""
+    """The v1 `cox dash --detail run` snapshot, `build_run_detail`'s reshape of this
+    edge's own six-key dict plus the run's identifying fields; `now` decides a pidless
+    run's liveness."""
     root = Path(runs_dir)
     facts = facts_for(root, run_id, live_runs=lambda: {lane.run for lane in run_store.live_lanes(root, now)})
     detail = runs_detail.detail(**facts)
     timeline = [_node_call(call) for call in detail.timeline]
-    return {
+    record = facts["record"]
+    task_path = _task_path(root, run_id)
+    phase = task_path.parent.name if task_path is not None else None
+    task_id = task_path.stem if task_path is not None else None
+    fix_loop = record.get("fix_loop")
+    raw = {
+        "run": run_id,
+        "machine": record.get("machine"),
+        "initiative": record.get("initiative"),
+        "phase": record.get("phase", phase),
+        "alive": facts["alive"],
+        "task": record.get("ticket", task_id),
         "timeline": timeline,
         "verdicts": [entry for entry in timeline if entry["verdict"]],
         "arbiter": detail.objection,
         "files": list(detail.files_touched),
         "tool_calls": list(detail.last_calls),
         "log_tail": runs_top.tail_lines(_session_text(root, run_id), 3),
+        "log_lines": _read_lines(root / f"{run_id}.log"),
+        "fix_loop_stopped": fix_loop.get("stopped") if isinstance(fix_loop, dict) else None,
     }
+    return build_run_detail(raw)
 
 
 _STEP_ORDER = ("plan", "build", "handoff", "review", "arbitrate", "land")

@@ -1,8 +1,35 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
+
+from test_dash_detail_initiative import _INITIATIVE, _RAW_INITIATIVE
+from test_dash_detail_machine import HOST_ROW, RUNS
+from test_dash_detail_machine import NOW as _MACHINE_NOW
+from test_dash_detail_run import _BASE_RAW
 
 from agent_tools import console_screen, dash_feed, usage_meter, usage_window
+from agent_tools.dash_detail_initiative import build_initiative_detail
+from agent_tools.dash_detail_machine import build_machine_detail
+from agent_tools.dash_detail_run import build_run_detail
 from agent_tools.dash_feed import snapshot
+
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
+    """`output` carries exactly `fixture`'s keys at every dict level `fixture` shows, and
+    every value that is null in `output` is also null in `fixture` at the same path."""
+    if isinstance(fixture, dict):
+        assert isinstance(output, dict), path
+        assert output.keys() == fixture.keys(), path
+        for key, fixture_value in fixture.items():
+            _assert_matches_fixture_keys_and_nulls(output[key], fixture_value, f"{path}.{key}")
+    elif isinstance(fixture, list):
+        assert isinstance(output, list), path
+        for index, (output_item, fixture_item) in enumerate(zip(output, fixture, strict=True)):
+            _assert_matches_fixture_keys_and_nulls(output_item, fixture_item, f"{path}[{index}]")
+    elif output is None:
+        assert fixture is None, path
 
 
 def test_snapshot_matches_committed_fixture():
@@ -226,6 +253,34 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60
     assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it"}
+
+    run_raw = {
+        **_BASE_RAW,
+        "timeline": [
+            {"node": "plan", "attempt": 1, "turns": 4, "cost_usd": 0.12, "verdict": "approve"},
+            {"node": "build", "attempt": 1, "turns": 12, "cost_usd": 0.84, "verdict": ""},
+        ],
+        "files": ["src/feed.rs", "tests/fixtures/dash_feed_v1.json"],
+        "tool_calls": [
+            {"tool": "bash", "summary": "cargo test", "at": "2026-09-29T11:58:00Z"},
+            {"tool": "edit", "summary": "src/feed.rs", "at": "2026-09-29T11:55:00Z"},
+        ],
+        "log_tail": ["running 4 tests", "test feed::tests::parses_fixture ... ok", "test result: ok. 4 passed"],
+    }
+    run_output = build_run_detail(run_raw)
+    run_fixture = json.loads((_FIXTURES_DIR / "dash_detail_run_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(run_output, run_fixture)
+    json.dumps(run_output)
+
+    initiative_output = build_initiative_detail(_RAW_INITIATIVE, _INITIATIVE)
+    initiative_fixture = json.loads((_FIXTURES_DIR / "dash_detail_initiative_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(initiative_output, initiative_fixture)
+    json.dumps(initiative_output)
+
+    machine_output = build_machine_detail(HOST_ROW, RUNS, _MACHINE_NOW)
+    machine_fixture = json.loads((_FIXTURES_DIR / "dash_detail_machine_v1.json").read_text(encoding="utf-8"))
+    _assert_matches_fixture_keys_and_nulls(machine_output, machine_fixture)
+    json.dumps(machine_output)
 
 
 def test_queue_drops_a_fully_landed_initiative(monkeypatch, tmp_path):
