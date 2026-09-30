@@ -110,12 +110,14 @@ def shape(items: list[dict], runs: list[dict], now: str) -> dict:
 
 
 def build(initiative_id: str, work_dir: Path, runs_dir: Path, now: str) -> dict:
-    """The `shape` snapshot for one initiative. `work_dir` is part of this
-    module's public signature but unused: a task's state and land time live
-    only in the store `_items` reads, never in its frontmatter file, so both
-    `_items` and `_runs` read `runs_dir` alone.
+    """The v1 `cox dash --detail initiative` snapshot for one initiative, `shape`'s flat
+    output reshaped by `build_initiative_detail`. `work_dir` is part of this module's
+    public signature but unused: a task's state and land time live only in the store
+    `_items` reads, never in its frontmatter file, so both `_items` and `_runs` read
+    `runs_dir` alone.
     """
-    return shape(_items(runs_dir, initiative_id), _runs(runs_dir, initiative_id), now)
+    raw = shape(_items(runs_dir, initiative_id), _runs(runs_dir, initiative_id), now)
+    return build_initiative_detail(raw, initiative_id)
 
 
 def _task_needs(needs: list[dict], task_id: str) -> list[str]:

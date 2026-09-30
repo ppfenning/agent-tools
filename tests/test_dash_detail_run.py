@@ -206,11 +206,25 @@ def test_build_reshapes_the_runs_top_drill_down_into_a_plain_dict(tmp_path):
 
     result = build("r1", tmp_path, "2026-09-28T00:00:00Z")
 
-    assert result == {
-        "timeline": [{"node": "n1", "attempt": 1, "turns": 7, "cost_usd": 0.42, "verdict": "revise"}],
-        "verdicts": [{"node": "n1", "attempt": 1, "turns": 7, "cost_usd": 0.42, "verdict": "revise"}],
-        "arbiter": "the frobnicator leaks fuel",
+    assert _AT_PATTERN.match(result["at"])
+    assert {**result, "at": "IGNORED"} == {
+        "schema": 1,
+        "kind": "run",
+        "at": "IGNORED",
+        "run": "r1",
+        "machine": None,
+        "initiative": None,
+        "phase": "build",
+        "steps": [
+            {"node": step, "turns": 0, "cost": 0.0, "verdict": None, "status": "pending"}
+            for step in ("plan", "build", "handoff", "review", "arbitrate", "land")
+        ],
+        "stopped_reason": None,
         "files": ["a.py", "b.py"],
-        "tool_calls": ["Read", "Edit", "Bash"],
+        "last_tool_calls": [
+            {"tool": "", "summary": "Read", "at": ""},
+            {"tool": "", "summary": "Edit", "at": ""},
+            {"tool": "", "summary": "Bash", "at": ""},
+        ],
         "log_tail": ["reading the parser", "patching parse_row", "short rows now return None"],
     }

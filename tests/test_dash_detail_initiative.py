@@ -104,7 +104,7 @@ def test_build_wires_the_work_store_and_run_record_readers_through_shape(monkeyp
 
     result = ddi.build("demo", tmp_path / "work", tmp_path / "runs", "2026-09-28T00:00:00Z")
 
-    assert result == _EXPECTED
+    assert result == ddi.build_initiative_detail(_EXPECTED, "demo")
 
 
 def test_items_reads_task_id_state_needs_and_updated_at_from_the_store(tmp_path, monkeypatch) -> None:
