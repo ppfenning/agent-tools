@@ -106,6 +106,7 @@ class InitiativeFacts(TypedDict):
     id: str
     started: bool
     ready_tasks: list[ReadyTask]
+    waiting_tasks: NotRequired[list[ReadyTask]]  # state ready, held back by a need not in `landed`
     landed: set[str]
 
 

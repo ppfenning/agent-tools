@@ -451,7 +451,8 @@ def test_rows_drive_ready_intake_quarantined_and_stranded_facts_with_files_ignor
     # "j" also appears (its quarantined-state row leaves it unlaunchable): the fixed point is "i"'s own facts.
     initiative_i = next(i for i in facts["initiatives"] if i["id"] == "i")
     assert initiative_i == {
-        "id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": [], "requires": []}], "landed": set(),
+        "id": "i", "started": True, "ready_tasks": [{"id": "a", "needs": [], "requires": []}], "waiting_tasks": [],
+        "landed": set(),
     }
     assert facts["intake"] == ["q1.md"]
     assert facts["quarantines"] == [

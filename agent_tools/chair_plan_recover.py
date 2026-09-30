@@ -5,7 +5,7 @@ Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 from typing import Literal
 
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts
+from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask
 
 Recovery = Literal["rescue", "retry", "needs_chair", "none"]
 
@@ -49,12 +49,29 @@ def _quarantine_actions(quarantines: list[QuarantineFacts], approved: set[tuple[
     ]
 
 
+def _first_unmet_need(t: ReadyTask, landed: set[str]) -> str | None:
+    """The first id in `t["needs"]` not in `landed`, in needs order; None when every need is landed."""
+    return next((need for need in t["needs"] if need not in landed), None)
+
+
+def _ready_and_met(t: ReadyTask, landed: set[str]) -> bool:
+    return _first_unmet_need(t, landed) is None
+
+
+def _initiative_first_unmet_need(i: InitiativeFacts) -> str | None:
+    """None when a ready task has every need landed; else the first unmet need, ready tasks before waiting ones."""
+    if any(_ready_and_met(t, i["landed"]) for t in i["ready_tasks"]):
+        return None
+    candidates = [*i["ready_tasks"], *i.get("waiting_tasks", [])]
+    return next((n for t in candidates if (n := _first_unmet_need(t, i["landed"])) is not None), None)
+
+
 def _can_relaunch(i: InitiativeFacts, blocked: set[str]) -> bool:
     return (
         i["started"]
         and i["id"] not in blocked
         and bool(i["ready_tasks"])
-        and all(need in i["landed"] for t in i["ready_tasks"] for need in t["needs"])
+        and _initiative_first_unmet_need(i) is None
     )
 
 
@@ -67,8 +84,17 @@ def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> 
     return [action for i in initiatives if _can_relaunch(i, blocked) for action in relaunch_pair(i["id"])]
 
 
+def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
+    """One `waiting on <need>` needs_chair per started initiative with no quarantine of its own and an unmet need."""
+    return [
+        {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
+        for i in initiatives
+        if i["started"] and i["id"] not in blocked and (need := _initiative_first_unmet_need(i)) is not None
+    ]
+
+
 def plan_recover(facts: Facts) -> list[Action]:
-    """Quarantine actions in input order, then relaunch pairs.
+    """Quarantine actions in input order, then relaunch pairs, then waiting-on reports.
 
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
@@ -76,11 +102,17 @@ def plan_recover(facts: Facts) -> list[Action]:
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
     rescue failed. A stranded quarantine whose task is also an approved row of its initiative plans no action:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
+    A started initiative with a ready task but no ready task whose needs are all landed is not relaunched
+    either; it reaches the chair instead, as `waiting on <need>`, naming the first unmet need.
     """
     quarantines = facts["quarantines"]
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"}
-    return _quarantine_actions(quarantines, approved) + _relaunch_actions(facts["initiatives"], blocked)
+    return (
+        _quarantine_actions(quarantines, approved)
+        + _relaunch_actions(facts["initiatives"], blocked)
+        + _waiting_actions(facts["initiatives"], blocked)
+    )
 
 
 def plan_lost_runs(facts: Facts) -> list[Action]:

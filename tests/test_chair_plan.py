@@ -1,7 +1,9 @@
 import copy
 from datetime import UTC, datetime
 
+from agent_tools.chair_facts import initiative_facts
 from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_stall, plan_tick
+from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_types import Facts
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
@@ -42,8 +44,14 @@ def _initiative(id: str) -> dict:
 
 
 def _blocked(id: str) -> dict:
-    """Started with a ready task whose need has not landed: it can launch an epic but not relaunch."""
+    """Started with a ready task whose need has not landed: launchable neither as a relaunch nor as a fresh
+    epic; it reaches the chair instead, as `waiting on z`."""
     return {"id": id, "started": True, "ready_tasks": [{"id": f"{id}-t", "needs": ["z"]}], "landed": set()}
+
+
+def _unstarted(id: str) -> dict:
+    """Never started, ready task with no needs: launches an epic, never a relaunch."""
+    return {"id": id, "started": False, "ready_tasks": [{"id": f"{id}-t", "needs": []}], "landed": set()}
 
 
 def _approved(id: str) -> dict:
@@ -428,7 +436,7 @@ def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 3, "go_degraded": False},
         dispatch={"max_in_flight": 9, "live_runs": 0, "hosts": []},
-        initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
+        initiatives=[_initiative("a"), _unstarted("b"), _unstarted("c"), _unstarted("d")],
         run_exited={"a": True},
     )
     assert plan_tick(facts) == [
@@ -440,7 +448,7 @@ def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
 
 
 def test_a_relaunched_initiative_is_not_also_launched_as_an_epic():
-    facts = _facts(initiatives=[_initiative("a"), _initiative("b"), _blocked("c")], run_exited={"a": True, "b": True})
+    facts = _facts(initiatives=[_initiative("a"), _initiative("b"), _unstarted("c")], run_exited={"a": True, "b": True})
     assert plan_tick(facts) == [
         {"kind": "clear_branches", "initiative": "a", "epoch": 7},
         {"kind": "relaunch", "initiative": "a", "epoch": 7},
@@ -453,7 +461,7 @@ def test_a_relaunched_initiative_is_not_also_launched_as_an_epic():
 def test_free_lanes_is_max_in_flight_minus_live_minus_kept_when_dispatch_binds():
     facts = _facts(
         dispatch={"max_in_flight": 3, "live_runs": 1, "hosts": []},
-        initiatives=[_blocked("a"), _blocked("b"), _blocked("c")],
+        initiatives=[_unstarted("a"), _unstarted("b"), _unstarted("c")],
     )
     assert _kinds(plan_tick(facts)) == ["launch_epic", "launch_epic"]
 
@@ -462,7 +470,7 @@ def test_dispatch_lanes_are_counted_after_the_kept_launches():
     facts = _facts(
         limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False},
         dispatch={"max_in_flight": 3, "live_runs": 0, "hosts": []},
-        initiatives=[_initiative("a"), _blocked("b"), _blocked("c"), _blocked("d")],
+        initiatives=[_initiative("a"), _unstarted("b"), _unstarted("c"), _unstarted("d")],
         run_exited={"a": True},
     )
     assert plan_tick(facts) == [
@@ -520,7 +528,7 @@ def test_a_negative_launch_cap_launches_nothing():
 
 
 def test_a_quarantined_initiative_with_a_needs_chair_is_not_also_launched_as_an_epic():
-    facts = _facts(initiatives=[_blocked("m"), _blocked("b")], quarantines=[_SCOPE_QUARANTINE])
+    facts = _facts(initiatives=[_blocked("m"), _unstarted("b")], quarantines=[_SCOPE_QUARANTINE])
     assert plan_tick(facts) == [
         {"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7},
         {"kind": "launch_epic", "initiative": "b", "epoch": 7},
@@ -529,7 +537,7 @@ def test_a_quarantined_initiative_with_a_needs_chair_is_not_also_launched_as_an_
 
 def test_a_retried_initiative_is_not_also_launched_as_an_epic():
     retry = {"task_id": "q1", "initiative": "a", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False}
-    facts = _facts(initiatives=[_blocked("a"), _blocked("b")], quarantines=[retry])
+    facts = _facts(initiatives=[_blocked("a"), _unstarted("b")], quarantines=[retry])
     assert plan_tick(facts) == [
         {"kind": "retry", "task_id": "q1", "initiative": "a", "epoch": 7},
         {"kind": "launch_epic", "initiative": "b", "epoch": 7},
@@ -719,9 +727,56 @@ def test_a_lost_run_initiative_with_an_unrelated_quarantine_still_gets_needs_cha
 
 
 def test_an_initiative_without_a_recorded_exit_stands_by_and_the_lane_goes_to_another():
-    """Withheld from fill too: no launch_epic for the gated initiative, while a blocked neighbour still launches."""
-    facts = _facts(initiatives=[_initiative("i"), _blocked("b")], run_exited={"i": False})
+    """Withheld from fill too: no launch_epic for the gated initiative, while an unstarted neighbour still launches."""
+    facts = _facts(initiatives=[_initiative("i"), _unstarted("b")], run_exited={"i": False})
     assert plan_tick(facts) == [{"kind": "launch_epic", "initiative": "b", "epoch": 7}]
+
+
+def test_a_ready_task_whose_single_need_is_blocked_is_not_launchable():
+    """The ticket's own case: an unstarted initiative's only ready task needs `z`, which has not landed.
+    Not launchable this cycle, and reported exactly once as `waiting on z`."""
+    facts = _facts(initiatives=[{**_blocked("b"), "started": False}])
+    assert plan_tick(facts) == [{"kind": "needs_chair", "initiative": "b", "cause": "waiting on z", "epoch": 7}]
+
+
+def test_the_same_fixture_with_the_need_done_is_launchable():
+    facts = _facts(initiatives=[{**_blocked("b"), "started": False, "landed": {"z"}}])
+    assert plan_tick(facts) == [{"kind": "launch_epic", "initiative": "b", "epoch": 7}]
+
+
+_INCIDENT = "allocate-short-initiative-ids-from-a-store"
+
+
+def _store_row(task_id: str, phase: str, state: str, needs: tuple[str, ...] = ()) -> dict:
+    return {
+        "kind": "task", "initiative": _INCIDENT, "task_id": task_id, "phase": phase, "state": state,
+        "needs": list(needs), "title": task_id, "surfaces": [], "body": "", "extra": {},
+        "holder": None, "epoch": 0, "expires_at": "",
+    }
+
+
+def _incident_facts(migration_state: str) -> Facts:
+    """The 2026-09-29 board as store rows, through the production reader, not hand-built InitiativeFacts."""
+    rows = [
+        _store_row("write-id-design-note", "1-schema", "done"),
+        _store_row("add-id-sequence-schema-migration", "1-schema", migration_state),
+        _store_row("implement-store-ids-module", "2-module", "ready", ("add-id-sequence-schema-migration",)),
+    ]
+    docket = {"initiatives": docket_from_rows(rows, "2026-09-29T23:00:00Z")}
+    return _facts(initiatives=initiative_facts(docket, set()), run_exited={_INCIDENT: True})
+
+
+def test_the_incident_board_read_from_store_rows_is_not_relaunched_and_waits_on_the_migration():
+    assert plan_tick(_incident_facts("blocked")) == [
+        {"kind": "needs_chair", "initiative": _INCIDENT, "cause": "waiting on add-id-sequence-schema-migration", "epoch": 7}
+    ]
+
+
+def test_the_incident_board_read_from_store_rows_relaunches_once_the_migration_is_done():
+    assert plan_tick(_incident_facts("done")) == [
+        {"kind": "clear_branches", "initiative": _INCIDENT, "epoch": 7},
+        {"kind": "relaunch", "initiative": _INCIDENT, "epoch": 7},
+    ]
 
 
 def test_absent_housekeeping_history_emits_one_housekeeping_action():
