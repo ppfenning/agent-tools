@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "kind": "run",
+  "at": "2026-09-29T12:00:00Z",
+  "run": "dash-feed-1",
+  "machine": "omarchy",
+  "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
+  "phase": "p1-foundations",
+  "steps": [
+    {"node": "plan", "turns": 4, "cost": 0.12, "verdict": "approve", "status": "done"},
+    {"node": "build", "turns": 12, "cost": 0.84, "verdict": null, "status": "running"},
+    {"node": "handoff", "turns": 0, "cost": 0.0, "verdict": null, "status": "pending"},
+    {"node": "review", "turns": 0, "cost": 0.0, "verdict": null, "status": "pending"},
+    {"node": "arbitrate", "turns": 0, "cost": 0.0, "verdict": null, "status": "pending"},
+    {"node": "land", "turns": 0, "cost": 0.0, "verdict": null, "status": "pending"}
+  ],
+  "stopped_reason": null,
+  "files": ["src/feed.rs", "tests/fixtures/dash_feed_v1.json"],
+  "last_tool_calls": [
+    {"tool": "bash", "summary": "cargo test", "at": "2026-09-29T11:58:00Z"},
+    {"tool": "edit", "summary": "src/feed.rs", "at": "2026-09-29T11:55:00Z"}
+  ],
+  "log_tail": ["running 4 tests", "test feed::tests::parses_fixture ... ok", "test result: ok. 4 passed"]
+}
