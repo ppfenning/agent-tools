@@ -35,20 +35,17 @@ def test_a_row_from_a_store_with_no_weight_or_capabilities_column_yields_neither
     assert (host_cmd.row_weights([JARVIS]), host_cmd.row_capabilities([JARVIS])) == ({}, {})
 
 
-def test_add_argv_carries_weight_and_capabilities_the_same_way_capacity_does():
-    argv = host_cmd.add_argv("jarvis", "jarvis", 8, 2, "go,rust", "chair")
-    assert argv == [
-        "host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8",
-        "--weight", "2", "--capabilities", "go,rust", "--by", "chair",
+def test_add_argv_with_default_weight_and_no_capabilities_matches_host_upsert_exactly():
+    assert host_cmd.add_argv("jarvis", "jarvis", 8, 1, "", "chair") == [
+        "host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8", "--by", "chair",
     ]
 
 
-def test_capacity_upsert_argv_changes_only_capacity_and_never_sends_a_state():
+def test_capacity_upsert_argv_changes_only_capacity_and_never_sends_weight_capabilities_or_state():
     row = {"name": "jarvis", "ssh": "jarvis.tail", "state": "draining", "weight": 5, "capabilities": ["go", "rust"]}
-    assert host_cmd.capacity_upsert_argv(row, 0, "chair") == [
-        "host", "upsert", "jarvis", "--ssh", "jarvis.tail", "--capacity", "0",
-        "--weight", "5", "--capabilities", "go,rust", "--by", "chair",
-    ]
+    argv = host_cmd.capacity_upsert_argv(row, 0, "chair")
+    assert argv == ["host", "upsert", "jarvis", "--ssh", "jarvis.tail", "--capacity", "0", "--by", "chair"]
+    assert "--weight" not in argv and "--capabilities" not in argv
 
 
 def test_local_host_missing_is_true_only_when_no_row_names_the_host():
@@ -191,11 +188,20 @@ def test_cox_host_add_runs_store_cli_host_upsert_with_the_holder_label(tmp_path,
     monkeypatch.setenv("COX_SESSION_LABEL", "chair")
     args = argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8, weight=1, capabilities="")
     assert cli._host_add(args) == 0
-    assert seen == [[
-        "host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8",
-        "--weight", "1", "--capabilities", "", "--by", "chair",
-    ]]
+    assert seen == [["host", "upsert", "jarvis", "--ssh", "jarvis", "--capacity", "8", "--by", "chair"]]
     assert capsys.readouterr().out == '{"name": "jarvis"}\n'
+
+
+def test_cox_host_add_refuses_a_non_default_weight_before_calling_the_store(tmp_path, monkeypatch, capsys):
+    (tmp_path / "ws").mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: (lambda argv: seen.append(argv) or (0, "{}")))
+    args = argparse.Namespace(profile=str(profile), name="jarvis", ssh="jarvis", capacity=8, weight=2, capabilities="")
+    assert cli._host_add(args) == 1
+    assert seen == []
+    assert capsys.readouterr().out == "refused jarvis: the store has no place for weight or capabilities yet\n"
 
 
 def test_cox_host_add_names_the_profile_lane_hosts_the_table_now_overrides(tmp_path, monkeypatch, capsys):

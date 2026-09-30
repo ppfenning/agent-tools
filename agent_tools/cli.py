@@ -7056,7 +7056,13 @@ def _host_store_write(a: argparse.Namespace, argv: list[str]) -> int:
 
 
 def _host_add(a: argparse.Namespace) -> int:
-    """After the write, names the profile lane hosts the table now overrides, since they stop being lane hosts."""
+    """After the write, names the profile lane hosts the table now overrides, since they stop being lane hosts.
+    Refuses before calling the store at all when `weight`/`capabilities` are not the defaults `add_argv` drops,
+    since the hosts table has no column for either and sending them is what `host upsert` rejects.
+    """
+    if a.weight != 1 or (a.capabilities or "").strip():
+        print(f"refused {a.name}: the store has no place for weight or capabilities yet")
+        return 1
     code = _host_store_write(a, host_cmd.add_argv(a.name, a.ssh, a.capacity, a.weight, a.capabilities, _holder_label(a)))
     if code != 0:
         return code
