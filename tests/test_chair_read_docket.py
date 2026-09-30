@@ -39,7 +39,15 @@ def _init(*ready: str) -> dict:
 def test_builder_output_maps_to_the_documented_keys():
     items = [_item("t0", "done"), _item("t1", "ready", ("t0",)), _item("t2", "ready", ("t9",)), _item("t3", "todo")]
     assert docket_from_builder(route.initiative_summaries(items), items, 2, 4) == {
-        "initiatives": [{"id": "alpha", "started": True, "ready_tasks": [{"id": "t1", "needs": ["t0"], "requires": []}], "landed": {"t0"}}],
+        "initiatives": [
+            {
+                "id": "alpha",
+                "started": True,
+                "ready_tasks": [{"id": "t1", "needs": ["t0"], "requires": []}],
+                "waiting_tasks": [{"id": "t2", "needs": ["t9"], "requires": []}],
+                "landed": {"t0"},
+            }
+        ],
         "busy_lanes": 2,
         "max_in_flight": 4,
     }
@@ -60,8 +68,10 @@ def test_an_empty_docket_is_not_ready():
 NOW = "2026-09-27T00:00:00Z"
 
 
-def _alpha(ready: list[dict], started: bool = False, landed: frozenset = frozenset()) -> list[dict]:
-    return [{"id": "alpha", "started": started, "ready_tasks": ready, "landed": set(landed)}]
+def _alpha(
+    ready: list[dict], started: bool = False, landed: frozenset = frozenset(), waiting: list[dict] | None = None
+) -> list[dict]:
+    return [{"id": "alpha", "started": started, "ready_tasks": ready, "waiting_tasks": waiting or [], "landed": set(landed)}]
 
 
 def test_a_ready_row_with_all_needs_done_is_offered():
@@ -73,8 +83,11 @@ def test_a_todo_row_is_never_offered_even_with_satisfied_needs():
     assert docket_from_rows([_row("t0", "done"), _row("t1", "todo", ("t0",))], NOW) == []
 
 
-def test_a_ready_row_with_an_undone_need_is_withheld():
-    assert docket_from_rows([_row("t0", "todo"), _row("t1", "ready", ("t0",))], NOW) == []
+def test_a_ready_row_with_an_undone_need_is_not_offered_but_carried_as_waiting():
+    """Before this, the whole initiative was omitted, so the chair could never report what it waits on."""
+    assert docket_from_rows([_row("t0", "todo"), _row("t1", "ready", ("t0",))], NOW) == _alpha(
+        [], waiting=[{"id": "t1", "needs": ["t0"], "requires": []}]
+    )
 
 
 def test_only_the_earliest_phase_with_a_ready_task_is_offered():

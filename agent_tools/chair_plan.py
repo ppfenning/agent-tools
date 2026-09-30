@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
-from agent_tools.chair_plan_recover import plan_lost_runs, plan_recover
+from agent_tools.chair_plan_recover import _initiative_first_unmet_need, plan_lost_runs, plan_recover
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_types import (
     Action,
@@ -258,6 +258,21 @@ def _withhold_lost_runs(actions: list[Action], lost: frozenset[str]) -> list[Act
     ]
 
 
+def _unmet_needs_ids(initiatives: list[InitiativeFacts]) -> frozenset[str]:
+    """Initiatives no launch_epic may take this tick: no ready task has every need landed."""
+    return frozenset(i["id"] for i in initiatives if _initiative_first_unmet_need(i) is not None)
+
+
+def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]:
+    """waiting-on reports for unstarted initiatives only; plan_recover's own waiting-on reports cover the
+    started ones, so this never double-reports."""
+    return [
+        {"kind": "needs_chair", "initiative": i["id"], "cause": f"waiting on {need}"}
+        for i in initiatives
+        if not i["started"] and (need := _initiative_first_unmet_need(i)) is not None
+    ]
+
+
 def _login_needs_chair_actions(facts: Facts) -> list[Action]:
     return chair_login_watch.login_needs_chair(facts.get("login_hosts", []))
 
@@ -318,6 +333,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
+    unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
@@ -337,6 +353,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
             *_needs_chair_only(recovered),
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *unstarted_waiting_chair,
         ]
     cap = _launch_cap(facts["limits"])
     host_free = host_free_slots(facts)
@@ -353,6 +370,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         | remote_unfetched
         | not_exited
         | lost
+        | _unmet_needs_ids(facts["initiatives"])
     )
     filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed)
     return [
@@ -364,6 +382,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         *filled,
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *unstarted_waiting_chair,
     ]
 
 

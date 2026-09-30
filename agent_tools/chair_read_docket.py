@@ -20,6 +20,10 @@ Row = Mapping[str, Any]
 _BEGUN = frozenset({"in_progress", "approved"}) | route.TERMINAL
 
 
+def _task(i: Row) -> dict[str, Any]:
+    return {"id": i["id"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)}
+
+
 def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
     own = [i for i in items if i["initiative"] == summary["id"]]
     landed = {i["id"] for i in own if i["state"] in route.TERMINAL}
@@ -27,18 +31,32 @@ def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
         i for i in own
         if summary["ready"] and i["phase"] == summary["phase"] and i["state"] == "ready" and set(i["needs"]) <= landed
     ]
+    # A ready task behind a need that has not landed is carried, not dropped, so the planner can report it.
+    waiting = [i for i in own if i["state"] == "ready" and not set(i["needs"]) <= landed]
     return {
         "id": summary["id"],
         "started": any(i["state"] in _BEGUN for i in own),
-        "ready_tasks": [{"id": i["id"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)} for i in ready],
+        "ready_tasks": [_task(i) for i in ready],
+        "waiting_tasks": [_task(i) for i in waiting],
         "landed": landed,
     }
+
+
+def _initiative_rows(summaries: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
+    """One row per summary, then one per initiative `initiative_summaries` omitted that holds a waiting task.
+
+    Wrong belief this guards: that an initiative missing from the summaries has nothing to report. The builder
+    omits one whose only ready task waits on an unlanded need, and the chair must still say what it waits on."""
+    listed = {s["id"] for s in summaries}
+    omitted = sorted({i["initiative"] for i in items if i["state"] == "ready" and i["initiative"] not in listed})
+    held = [_initiative_row({"id": initiative, "phase": None, "ready": 0}, items) for initiative in omitted]
+    return [*(_initiative_row(s, items) for s in summaries), *(row for row in held if row["waiting_tasks"])]
 
 
 def docket_from_builder(summaries: Sequence[Row], items: Sequence[Row], busy_lanes: int, max_in_flight: int) -> dict[str, Any]:
     """`summaries` is `route.initiative_summaries(items)`; `items` are the work items it was built from."""
     return {
-        "initiatives": [_initiative_row(s, items) for s in summaries],
+        "initiatives": _initiative_rows(summaries, items),
         "busy_lanes": busy_lanes,
         "max_in_flight": max_in_flight,
     }
@@ -65,8 +83,12 @@ def docket_from_rows(rows: Sequence[Row], now: str) -> list[dict[str, Any]]:
     items = [_item_of(r) for r in tasks]
     claimed = {(r["initiative"], r["task_id"]) for r in tasks if _claimed(r, now)}
     return [
-        {**i, "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed]}
-        for i in (_initiative_row(s, items) for s in route.initiative_summaries(items))
+        {
+            **i,
+            "ready_tasks": [t for t in i["ready_tasks"] if (i["id"], t["id"]) not in claimed],
+            "waiting_tasks": [t for t in i["waiting_tasks"] if (i["id"], t["id"]) not in claimed],
+        }
+        for i in _initiative_rows(route.initiative_summaries(items), items)
     ]
 
 

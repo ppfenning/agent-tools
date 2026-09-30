@@ -120,11 +120,42 @@ def test_an_initiative_that_is_not_started_is_never_relaunched():
 
 
 def test_an_unlanded_need_blocks_relaunch():
-    assert plan_recover(_facts([_initiative(landed=set())], [])) == []
+    assert plan_recover(_facts([_initiative(landed=set())], [])) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "waiting on a"}
+    ]
 
 
 def test_an_initiative_with_no_ready_tasks_is_not_relaunched():
     assert plan_recover(_facts([_initiative(ready=[])], [])) == []
+
+
+def test_a_ready_task_whose_only_need_is_a_blocked_task_is_not_relaunched():
+    """The 2026-09-29 case: allocate-short-initiative-ids-from-a-store relaunched four times because its only
+    ready task, implement-store-ids-module, needs the unlanded add-id-sequence-schema-migration. Not
+    relaunched; reported once as `waiting on add-id-sequence-schema-migration`."""
+    facts = _facts(
+        [_initiative(ready=[{"id": "implement-store-ids-module", "needs": ["add-id-sequence-schema-migration"]}], landed=set())],
+        [],
+    )
+    assert plan_recover(facts) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "waiting on add-id-sequence-schema-migration"}
+    ]
+
+
+def test_the_same_initiative_relaunches_once_that_need_is_done():
+    facts = _facts(
+        [
+            _initiative(
+                ready=[{"id": "implement-store-ids-module", "needs": ["add-id-sequence-schema-migration"]}],
+                landed={"add-id-sequence-schema-migration"},
+            )
+        ],
+        [],
+    )
+    assert plan_recover(facts) == [
+        {"kind": "clear_branches", "initiative": "i"},
+        {"kind": "relaunch", "initiative": "i"},
+    ]
 
 
 def test_a_retried_initiative_is_not_relaunched_this_tick():

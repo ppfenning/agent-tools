@@ -281,6 +281,10 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
                 {"id": t["id"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
                 for t in i["ready_tasks"]
             ],
+            "waiting_tasks": [
+                {"id": t["id"], "needs": list(t["needs"]), "requires": list(t.get("requires", []))}
+                for t in i.get("waiting_tasks", [])
+            ],
             "landed": set(i["landed"]),
         }
         for i in docket["initiatives"]
