@@ -3446,13 +3446,23 @@ def _review_one(adapter, origin, profile: str, dry_run: bool) -> bool:
 
 
 def _route_pull(a: argparse.Namespace) -> int:
+    """`--source` pulls that one; without it every source the profile configures, in profile order (the chair's bare `route pull`)."""
     profile, rc = _resolve_profile_or_refuse(a)
     if rc is not None:
         return rc
-    config = sources.source_config(profile, a.source)
-    adapter = sources.adapter_for(a.source)
+    names = [a.source] if a.source else list(profile.get("sources", {}))
+    if not names:
+        print("routing: no sources in the profile")
+        return 2
+    return max([_pull_source(a, profile, name, named=len(names) > 1) for name in names])
+
+
+def _pull_source(a: argparse.Namespace, profile: dict, source: str, *, named: bool) -> int:
+    """One source's pull; `named` puts the source in the nothing-written line when several pull in one run."""
+    config = sources.source_config(profile, source)
+    adapter = sources.adapter_for(source)
     if config is None or adapter is None:
-        print(f"routing: no source {a.source!r} in the profile and adapters")
+        print(f"routing: no source {source!r} in the profile and adapters")
         return 2
     listing = _fetch_listing(adapter, config)
     if listing is None:
@@ -3469,14 +3479,14 @@ def _route_pull(a: argparse.Namespace) -> int:
         taken,
         profile.get("repo_map", {}),
         date=date,
-        source=a.source,
+        source=source,
         ids=profile.get("ids", "slug"),
     )
     problems = [*unreadable, *refusals]
     for line in problems:
         print(line)
     if not plan and not reviews:
-        print("routing: pull wrote nothing: no eligible candidates")
+        print(f"routing: pull wrote nothing{f' from {source}' if named else ''}: no eligible candidates")
     failed = [_pull_one(adapter, config, mapping, found, ws, a.dry_run) for mapping in plan]
     failed += [_review_one(adapter, found[link], str(_profile_path(a)), a.dry_run) for link in reviews]
     return 2 if problems or any(failed) else 0
@@ -6136,7 +6146,8 @@ ROUTE_COMMANDS = [
     commands.Command(
         "pull", "route", "file intake tickets from a source, once per link",
         (
-            commands.Arg(("--profile",)), commands.Arg(("--source",), {"default": "github"}),
+            commands.Arg(("--profile",)),
+            commands.Arg(("--source",), {"default": None, "help": "one source; default every source in the profile"}),
             commands.Arg(("--dry-run",), {"action": "store_true"}),
         ),
         _route_pull, False, (),
