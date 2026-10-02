@@ -12,7 +12,7 @@ TAKEN_LABEL = "intake:taken"
 
 
 def _repo(raw: Mapping) -> str:
-    """`gh pr list` has no `repository` field, so a PR's repo comes from its url."""
+    """From the url: `gh pr list` has no `repository` field, and `gh issue list` dropped it (gh 2.102)."""
     return raw["repository"]["nameWithOwner"] if "repository" in raw else "/".join(raw["url"].split("/")[3:5])
 
 
@@ -65,7 +65,7 @@ def list_argv(config: SourceConfig, repo: str) -> list[str]:
         "--label",
         _wanted_label(config),
         "--json",
-        "number,title,body,labels,url,repository",
+        "number,title,body,labels,url",
     ]
 
 
