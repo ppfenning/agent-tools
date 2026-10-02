@@ -3,5 +3,5 @@ usage: cox route pull [-h] [--profile PROFILE] [--source SOURCE] [--dry-run]
 options:
   -h, --help         show this help message and exit
   --profile PROFILE
-  --source SOURCE
+  --source SOURCE    one source; default every source in the profile
   --dry-run

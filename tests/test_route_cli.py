@@ -1910,3 +1910,45 @@ def test_pull_unwraps_an_adapter_listing_and_hands_token_env_to_a_mark_that_asks
     assert main(["route", "pull", "--profile", str(profile)]) == 0
     [written] = (ws / "intake").glob("*.md")
     assert log.read_text() == f"https://x/1 intake/{written.name} ACME_TOKEN\n"
+
+
+def _folder_profile(tmp_path, *, github=False):
+    drop = tmp_path / "drop"
+    drop.mkdir()
+    profile, ws = _write_file_profile(tmp_path)
+    blocks = {"folder": {"repos": [str(drop)]}, **({"github": {"repos": ["a/b"]}} if github else {})}
+    with profile.open("a") as f:
+        f.write(f"sources: {json.dumps(blocks)}\nrepo_map: {json.dumps({str(drop): 'tools', 'a/b': 'tools'})}\n")
+    return profile, ws, drop
+
+
+def test_a_folder_pull_files_each_dropped_file_and_moves_it_to_done(tmp_path):
+    profile, ws, drop = _folder_profile(tmp_path)
+    (drop / "dark-mode.md").write_text("# Add a dark mode\nUsers want it.\n")
+    assert main(["route", "pull", "--profile", str(profile), "--source", "folder"]) == 0
+    [written] = (ws / "intake").glob("*.md")
+    text = written.read_text(encoding="utf-8")
+    assert "title: \"Add a dark mode\"" in text or "title: Add a dark mode" in text
+    assert "repo: tools" in text and "source: folder" in text and "Users want it." in text
+    assert not (drop / "dark-mode.md").exists()
+    assert (drop / "done" / "dark-mode.md").exists()
+
+
+def test_a_bare_pull_reads_every_configured_source_naming_each_that_wrote_nothing(tmp_path, monkeypatch, capsys):
+    from agent_tools import cli
+
+    profile, ws, drop = _folder_profile(tmp_path, github=True)
+    (drop / "a.md").write_text("# From the folder\n")
+    real_run = cli._run_argv
+    monkeypatch.setattr(cli, "_run_argv", lambda argv: (0, "[]", "") if argv[0] == "gh" else real_run(argv))
+    assert main(["route", "pull", "--profile", str(profile)]) == 0
+    out = capsys.readouterr().out
+    assert "routing: pull wrote nothing from github: no eligible candidates\n" in out
+    assert "wrote nothing from folder" not in out
+    assert len(list((ws / "intake").glob("*.md"))) == 1
+
+
+def test_a_bare_pull_with_no_sources_says_so(tmp_path, capsys):
+    profile, _ws = _write_file_profile(tmp_path)
+    assert main(["route", "pull", "--profile", str(profile)]) == 2
+    assert capsys.readouterr().out == "routing: no sources in the profile\n"
