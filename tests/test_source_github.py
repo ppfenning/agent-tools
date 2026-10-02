@@ -91,7 +91,7 @@ def test_list_argv_builds_the_gh_issue_list_command():
         "--label",
         "intake",
         "--json",
-        "number,title,body,labels,url,repository",
+        "number,title,body,labels,url",
     ]
 
 
@@ -137,3 +137,12 @@ def test_mark_argv_returns_one_argv_that_swaps_the_label_then_comments():
         "gh issue edit 12 --repo acme/widgets --remove-label intake --add-label intake:taken"
         " && gh issue comment 12 --repo acme/widgets --body work/intake/acme-widgets-12.md",
     ]
+
+
+def test_an_issue_listed_without_a_repository_field_takes_its_repo_from_the_url():
+    raw = {k: v for k, v in RAW_ISSUE.items() if k != "repository"}
+    config = SourceConfig(repos=("acme/widgets",), filter="label:intake", token_env="")
+    assert source_github.candidates(config, [raw]) == (
+        Ref(link="https://github.com/acme/widgets/issues/12", repo="acme/widgets"),
+    )
+    assert source_github.read(raw).repo == "acme/widgets"
