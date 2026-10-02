@@ -24,8 +24,9 @@ A forge is a module that defines these five functions. Each returns
 names a forge that predates them, so a land can refuse before its first step.
 
 The profile's `forge` key names the forge and `DEFAULT` applies when it is
-absent. `agent_tools.forge_<name>` is built in; a package can register more
-under the `coxswain.forges` entry-point group.
+absent. `agent_tools.forge_<name>` is built in (`local`, `github`, and `auto`,
+which picks one of those two per repository from its `origin`); a package can
+register more under the `coxswain.forges` entry-point group.
 """
 
 from __future__ import annotations

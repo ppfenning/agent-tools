@@ -48,6 +48,14 @@ def _forge_row(facts: Mapping) -> dict:
             return {"check": "forge", "ok": True, "detail": "github: gh authenticated"}
         return {"check": "forge", "ok": False,
                 "detail": "github: gh missing or not logged in (run `gh auth login`), or set forge: local in the profile"}
+    if name == "auto":
+        auth = facts.get("gh_auth", _MISSING)
+        if auth is _MISSING:
+            return _not_checked("forge")
+        if auth is True:
+            return {"check": "forge", "ok": True, "detail": "auto: github-origin repos through gh (authenticated), the rest local"}
+        return {"check": "forge", "ok": False,
+                "detail": "auto: gh missing or not logged in, so github-origin repos cannot land (run `gh auth login`)"}
     found = facts.get("forge_found", _MISSING)
     if found is _MISSING:
         return _not_checked("forge")

@@ -2189,7 +2189,7 @@ def _runs_land(a: argparse.Namespace) -> int:
     forge_choice = forge.forge_name(profile)
     forge_module = forge.forge_for(forge_choice)
     if forge_module is None:
-        print(f"land: no forge named {forge_choice} (built in: local, github)")
+        print(f"land: no forge named {forge_choice} (built in: local, github, auto)")
         return 2
     stale = forge.missing_refs(forge_module)
     if stale:
@@ -4479,7 +4479,7 @@ def _git_and_forge_facts(profile: dict) -> dict:
         git_version = None
     name = forge.forge_name(profile)
     facts = {"git_version": git_version or None, "forge": name, "forge_found": forge.forge_for(name) is not None}
-    if name == "github":
+    if name in ("github", "auto"):
         try:
             facts["gh_auth"] = route_sync_gh.auth_ok(subprocess.run)
         except OSError:

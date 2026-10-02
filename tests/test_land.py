@@ -1800,7 +1800,7 @@ def test_a_profile_naming_an_unknown_forge_refuses_with_exit_2(repo, tmp_path, c
     argv = _forge_land(tmp_path, "forge: nope\n")
     rc = cli.main(["runs", "land", "epic-x-5", "--repo", str(repo), *argv])
     assert rc == 2
-    assert capsys.readouterr().out.splitlines()[-1] == "land: no forge named nope (built in: local, github)"
+    assert capsys.readouterr().out.splitlines()[-1] == "land: no forge named nope (built in: local, github, auto)"
     assert "pr/seams-task" not in cleanup.git_branches(repo)
 
 
