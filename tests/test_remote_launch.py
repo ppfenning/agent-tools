@@ -6,7 +6,7 @@ import pytest
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import launch_argv, ssh_argv, sync_argv
 from agent_tools.remote_lane import remote_record
-from agent_tools.remote_launch import LaunchError, launch_on_host, launch_plan
+from agent_tools.remote_launch import LaunchError, env_preflight, launch_on_host, launch_plan
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 
@@ -131,3 +131,13 @@ def test_a_preflight_refusal_returns_the_auth_error_before_anything_runs():
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, preflight=line)
     assert result == LaunchError("auth", line)
     assert calls == []
+
+
+def test_env_preflight_names_the_first_empty_variable_and_is_none_when_all_are_set():
+    assert env_preflight(("MY_API_KEY",), {"MY_API_KEY": (1, "")}) == "env vars: MY_API_KEY is not set on the host (set it there)"
+    assert env_preflight(("MY_API_KEY",), {"MY_API_KEY": (0, "sk-1\n")}) is None
+
+
+def test_env_preflight_reports_a_failed_ssh_and_an_empty_name_list_without_calling_them_unset():
+    assert env_preflight(("K",), {"K": (255, "ssh: Connection refused\n")}) == "env var check failed on the host: ssh: Connection refused"
+    assert env_preflight((), {}) == "no auth_env or endpoint_env configured: nothing to check on the host"

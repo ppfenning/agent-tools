@@ -272,6 +272,127 @@ def test_without_the_flags_the_local_path_is_unchanged(tmp_path, capsys):
     assert not (ws / "runs" / "demo-1.remote.json").exists()
 
 
+def _non_claude_provider(tmp_path, env_lines="auth_env: MY_API_KEY\n"):
+    """Points `_setup`'s profile at a provider file whose runner is not claude-code and which sets `env_lines`."""
+    provider = tmp_path / "provider.yaml"
+    provider.write_text(f"runner: other-runner\n{env_lines}")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(profile.read_text().replace("/opt/providers/acme.yaml", str(provider)))
+
+
+def _no_claude_auth(argv):
+    raise AssertionError(f"claude auth status must not run for a non-claude-code runner: {argv}")
+
+
+def _host_env(monkeypatch, answers):
+    """The host's `printenv NAME` as (exit code, text) by name; claude auth status is refused."""
+    asked = []
+
+    def probe(argv):
+        asked.append(argv)
+        return answers[argv[-1].split()[-1]]
+
+    monkeypatch.setattr(cli, "_host_auth_output", _no_claude_auth)
+    monkeypatch.setattr(cli, "_host_env_probe", probe)
+    return asked
+
+
+def test_on_an_unreadable_provider_profile_keeps_the_claude_auth_check(tmp_path, monkeypatch):
+    ws, _, argv = _setup(tmp_path)  # /opt/providers/acme.yaml does not exist
+    calls, asked = [], []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    monkeypatch.setattr(cli, "_host_auth_output", lambda a: asked.append(a) or '{"loggedIn": true}')
+    assert main([*argv, "--on", "box"]) == 0
+    assert asked == [["ssh", "me@box", "claude auth status"]]
+
+
+def test_on_a_non_claude_runner_checks_the_auth_env_var_and_never_asks_claude_auth(tmp_path, monkeypatch):
+    ws, _, argv = _setup(tmp_path)
+    _non_claude_provider(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    asked = _host_env(monkeypatch, {"MY_API_KEY": (0, "sk-1\n")})
+    rc = main([*argv, "--on", "box"])
+    assert rc == 0
+    assert asked == [["ssh", "me@box", "printenv MY_API_KEY"]]
+    assert [c[0] for c in calls] == ["rsync", "ssh", "ssh"]  # push, sync the repo, start the lane
+    assert (ws / "runs" / "demo-1.remote.json").exists()
+
+
+def test_on_a_non_claude_runner_with_an_empty_auth_env_var_refuses_before_copying(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _non_claude_provider(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    _host_env(monkeypatch, {"MY_API_KEY": (1, "")})
+    rc = main([*argv, "--on", "box"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "routing: launch on box failed at auth: env vars: MY_API_KEY is not set on the host (set it there)" in out
+    assert calls == []
+    assert _run_files(ws) == []
+
+
+def test_on_a_non_claude_runner_names_a_missing_endpoint_env_var(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _non_claude_provider(tmp_path, "auth_env: MY_API_KEY\nendpoint_env: MY_ENDPOINT\n")
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    _host_env(monkeypatch, {"MY_API_KEY": (0, "sk-1\n"), "MY_ENDPOINT": (1, "")})
+    assert main([*argv, "--on", "box"]) == 2
+    assert "failed at auth: env vars: MY_ENDPOINT is not set on the host (set it there)" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_on_a_non_claude_runner_that_cannot_reach_the_host_says_so_not_unset(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _non_claude_provider(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    _host_env(monkeypatch, {"MY_API_KEY": (255, "ssh: connect to host box port 22: Connection refused\n")})
+    assert main([*argv, "--on", "box"]) == 2
+    out = capsys.readouterr().out
+    assert "failed at auth: env var check failed on the host: ssh: connect to host box port 22: Connection refused" in out
+    assert "not set" not in out
+    assert calls == [] and _run_files(ws) == []
+
+
+def test_on_a_non_claude_runner_with_no_env_names_refuses_before_copying(tmp_path, monkeypatch, capsys):
+    ws, _, argv = _setup(tmp_path)
+    _non_claude_provider(tmp_path, "")
+    calls = []
+    _fake_edge(monkeypatch, calls)
+    _no_local_process(monkeypatch)
+    _host_env(monkeypatch, {})
+    assert main([*argv, "--on", "box"]) == 2
+    assert "failed at auth: no auth_env or endpoint_env configured: nothing to check on the host" in capsys.readouterr().out
+    assert calls == [] and _run_files(ws) == []
+
+
+@pytest.mark.parametrize(
+    ("done", "expected"),
+    [
+        (subprocess.CompletedProcess([], 1, stdout="", stderr="Warning: Permanently added 'box'.\n"), (1, "Warning: Permanently added 'box'.\n")),
+        (subprocess.CompletedProcess([], 255, stdout="", stderr="ssh: Connection refused\n"), (255, "ssh: Connection refused\n")),
+        (subprocess.CompletedProcess([], 0, stdout="sk-1\n", stderr="Warning: Permanently added 'box'.\n"), (0, "sk-1\n")),
+        (OSError("No such file or directory"), (127, "ssh: No such file or directory")),
+    ],
+)
+def test_host_env_probe_is_stdout_on_success_and_stderr_otherwise(monkeypatch, done, expected):
+    def fake_run(argv, **kwargs):
+        if isinstance(done, OSError):
+            raise done
+        return done
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._host_env_probe(["ssh", "me@box", "printenv MY_API_KEY"]) == expected
+
+
 def test_parse_profile_skips_the_lane_hosts_block_and_reads_the_keys_after_it():
     text = "team: acme\nlane_hosts:\n  - name: box\n    ssh: me@box\n    workspace_dir: /srv\nassume: b\n"
     assert route.parse_profile(text) == {"team": "acme", "assume": "b"}
