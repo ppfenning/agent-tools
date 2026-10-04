@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from agent_tools import cli
 from agent_tools.pacing import Window
@@ -132,3 +132,55 @@ def test_a_fresh_meter_calibrates_against_the_runs_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(_um, "record_implied_ceiling", lambda kind, e, runs_dir, when, *a, **k: seen.append((kind, runs_dir)))
     _cli._usage_assessment(tmp_path / "runs", window_ceiling_usd=200.0, weekly_ceiling_usd=1380.0)
     assert seen == [("five_hour", _Path(tmp_path / "runs")), ("weekly", _Path(tmp_path / "runs"))]
+
+
+def _chair_doc(age_minutes: float) -> dict:
+    now = datetime.now(UTC)
+    entry = {"used_percentage": 84.0, "resets_at": int((now + timedelta(hours=1)).timestamp())}
+    return {"five_hour": entry, "seven_day": entry, "observed_at": (now - timedelta(minutes=age_minutes)).isoformat()}
+
+
+def _estimate_only(monkeypatch):
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _unmeasured_window())
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _unmeasured_window())
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: None)
+
+
+def test_a_fresh_chair_reading_with_no_local_one_sets_the_window(monkeypatch, tmp_path):
+    _estimate_only(monkeypatch)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
+    assert "weekly 84% of weekly ceiling" in cli._usage_assessment(tmp_path).reason
+
+
+def test_a_chair_reading_older_than_fifteen_minutes_gives_the_estimate_result(monkeypatch, tmp_path):
+    _estimate_only(monkeypatch)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: None)
+    expected = cli._usage_assessment(tmp_path)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(16))
+    stale = cli._usage_assessment(tmp_path)
+    assert stale == expected and "84%" not in stale.reason
+
+
+def test_a_chair_reading_never_writes_an_implied_ceiling(monkeypatch, tmp_path):
+    _estimate_only(monkeypatch)
+    seen = []
+    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda *a, **k: seen.append(a))
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
+    cli._usage_assessment(tmp_path)
+    assert seen == []
+
+
+def test_a_chair_reading_with_a_naive_observed_at_falls_back_to_the_estimate(monkeypatch, tmp_path):
+    _estimate_only(monkeypatch)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: None)
+    expected = cli._usage_assessment(tmp_path)
+    naive = {**_chair_doc(5), "observed_at": datetime.now(UTC).replace(tzinfo=None).isoformat()}
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: naive)
+    assert cli._usage_assessment(tmp_path) == expected
+
+
+def test_the_policy_files_weekly_hard_stop_applies_to_the_chair_reading(monkeypatch, tmp_path):
+    _estimate_only(monkeypatch)
+    (tmp_path / "policy.pacing.json").write_text(json.dumps({"weekly_hard_stop_fraction": 0.80}), encoding="utf-8")
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: _chair_doc(5))
+    assert cli._usage_assessment(tmp_path).verdict == "stop"

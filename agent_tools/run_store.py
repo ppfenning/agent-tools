@@ -39,7 +39,7 @@ except ImportError:
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
     "call_events", "call_from_row", "connect_readonly", "cost_since", "efficiency_rows", "gate_call_rows",
-    "harness_python", "hosts", "last_call_at", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_id", "run_ids", "run_spans",
+    "harness_python", "hosts", "last_call_at", "latest_chair_meter", "lease", "live_lanes", "parquet_readable", "phase_manifests", "phase_names", "remote_lanes", "resolve_id", "run_ids", "run_spans",
     "run_started", "store_usages", "summarize", "task_verdict_rows", "usage", "usages",
 ]
 
@@ -417,6 +417,27 @@ def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | 
         return None
     finally:
         conn.close()
+
+
+def latest_chair_meter(runs_dir: Path) -> dict | None:
+    """Edge. The newest `meter` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
+    try:
+        opened = _open(runs_dir)
+    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        return None
+    if opened is None:
+        return None
+    conn, token = opened
+    try:
+        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        row = conn.execute(sql, ("meter",)).fetchone()
+    except _DB_ERRORS:
+        return None
+    finally:
+        conn.close()
+    # Postgres rows are `dict_row`, so the cell is read by name, never `row[0]`; `_json_cell` takes text or a decoded dict.
+    doc = _json_cell(row["action_json"]) if row is not None else None
+    return doc if isinstance(doc, dict) else None
 
 
 def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:

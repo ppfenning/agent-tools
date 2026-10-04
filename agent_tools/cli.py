@@ -5093,8 +5093,15 @@ def _usage_assessment(
     reset = usage_window.parse_weekly_reset(weekly_reset)
     usage = usage_window.read_usage(runs_dir, now, reset)
     meter = usage_meter.read()
-    # Calibration divides spend up to `now` by the reading's percentage, so only a face-value reading may write it.
-    calibrate = meter is not None and usage_meter.fresh(meter, now)
+    local = meter
+    if meter is None or not usage_meter.fresh(meter, now):
+        doc = run_store.latest_chair_meter(Path(runs_dir))
+        chair = usage_meter.parse(doc) if doc else None
+        # A naive `observed_at` cannot be compared with an aware `now`; `fresh` would raise, so it is not adopted.
+        if chair is not None and chair.observed_at.tzinfo is not None and usage_meter.fresh(chair, now):
+            meter = chair
+    # Calibration divides spend up to `now` by the reading's percentage, so only a fresh local reading may write it.
+    calibrate = local is not None and usage_meter.fresh(local, now)
 
     five_hour_ceiling = usage_meter.implied_ceiling("five_hour", now)
     if five_hour_ceiling is None:
