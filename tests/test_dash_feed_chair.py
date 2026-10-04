@@ -22,7 +22,10 @@ ROWS = [
 
 
 def test_chair_section_from_staged_inputs_equals_the_fixture_chair_block():
-    chair = dash_feed._chair_v1(ROW, LEASE, RECORD, AT, STATUS, ACTION, ROWS, 1)
+    chair = dash_feed._chair_v1(
+        ROW, LEASE, RECORD, AT, STATUS, ACTION, ROWS, 1,
+        last_housekeeping_at="2026-09-28T23:00:00Z", inbox_entries=[{"to": "pat"}], drafts=[1, 2],
+    )
 
     assert chair == FIXTURE["chair"]
 
@@ -32,7 +35,8 @@ def test_chair_section_with_no_action_running_has_a_null_current_action():
 
     assert chair["current_action"] is None
     assert chair["today"] == {"lands": 0, "launches": 0, "refused_or_failed": 0, "needs_chair_open": 0}
-    assert {**chair, "current_action": ACTION, "today": FIXTURE["chair"]["today"]} == FIXTURE["chair"]
+    extras = {k: FIXTURE["chair"][k] for k in ("lands_today", "phases_today", "needs_you", "drafts", "housekeeping_age_s")}
+    assert {**chair, "current_action": ACTION, "today": FIXTURE["chair"]["today"], **extras} == FIXTURE["chair"]
 
 
 def test_chair_section_with_no_heartbeat_or_status_reads_zero_and_empty_strings():
