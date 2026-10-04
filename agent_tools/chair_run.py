@@ -8,7 +8,6 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from agent_tools import chair_exec, chair_land, chair_report, land_repo_lease, usage_meter
 from agent_tools.chair_exec import Result
@@ -24,7 +23,6 @@ __all__ = [
 
 DEFAULT_INTERVAL = 60.0
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
-LAND_LEASE_TTL = 1200  # the ttl `cox runs land` itself takes its repo lease with
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
@@ -103,7 +101,7 @@ class WorkerLands:
 
     def submit(self, action: Action, work: Callable[[], Result]) -> Result:
         repo = action.get("repo", "")
-        submitted = self._worker.submit(repo, lambda _lease: work())
+        submitted = self._worker.submit(repo, work)
         if submitted.handle is None:
             holder = submitted.outcome.holder if isinstance(submitted.outcome, chair_land.Refused) else None
             reason = land_repo_lease.refusal_message(repo, holder or "another land")
@@ -111,9 +109,9 @@ class WorkerLands:
         self._handles[repo] = (action, submitted.handle)
         return {"action": action, "status": "in_progress", "reason": f"landing in {repo}"}
 
-    def stop(self) -> tuple[str, ...]:
-        """Releases every repository lease the worker holds; a land still running is left to finish."""
-        return self._worker.stop()
+    def stop(self) -> None:
+        """Refuses the queued lands and any later one; a land still running is left to finish."""
+        self._worker.stop()
 
     def collect(self) -> list[Result]:
         done = [repo for repo, (_, handle) in self._handles.items() if not handle.in_progress()]
@@ -121,11 +119,10 @@ class WorkerLands:
 
 
 def land_sink(
-    runs_dir: Path, holder: str, beat: Callable[[], None], clock: Callable[[], float] = time.monotonic,
-    wait: Callable[[float], None] = time.sleep,
+    beat: Callable[[], None], clock: Callable[[], float] = time.monotonic, wait: Callable[[float], None] = time.sleep,
 ) -> WorkerLands:
     """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs."""
-    return WorkerLands(chair_land.LandWorker(runs_dir, holder, LAND_LEASE_TTL, beat, LAND_BEAT_INTERVAL, clock, wait))
+    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait))
 
 
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
