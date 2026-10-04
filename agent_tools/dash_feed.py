@@ -10,10 +10,22 @@ import json
 import os
 import re
 import socket
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from agent_tools import chair, console_screen, courier, decisions, route, run_store, usage_meter, usage_window
+from agent_tools import (
+    chair,
+    chair_capacity,
+    chair_login_check,
+    console_screen,
+    courier,
+    decisions,
+    route,
+    run_store,
+    usage_meter,
+    usage_window,
+)
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_types import EASTERN
 from agent_tools.dash_chair_action import read_current_action
@@ -24,7 +36,7 @@ from agent_tools.runs_detail import NODE_ORDER
 __all__ = ["gather_feed", "snapshot"]
 
 _LANDED_STATES = ("done", "dropped")
-_DEFAULT_MAX_IN_FLIGHT = 3
+_LOGIN_CHECK_TIMEOUT_S = 15
 _DEFAULT_PROFILE_PATH = Path.home() / ".config" / "agent-tools" / "profile.yaml"
 _MAX_ROWS = 50
 _DECISION_PREFIX = "coxswain://decision/"
@@ -128,18 +140,32 @@ def _spend(runs_dir: Path, now: str) -> dict:
     }
 
 
-def _local_identity(runs_dir: Path) -> tuple[str, int]:
-    """This machine's own name and lane capacity: `socket.gethostname()` and `<runs_dir>/policy.pacing.json`'s
-    `max_in_flight` when it is a positive int, else the same default the chair loop falls back to."""
-    # Not the cap `chair run` enforces for every team: `cli._chair_max_in_flight` reads the team cartridge's
-    # `policy.dispatch.max_in_flight` and its `extends` chain first. That chain is cli-private and not read here.
+def _local_identity(runs_dir: Path, profile: dict) -> tuple[str, int]:
+    """This machine's own name and the lane capacity `cox chair run` enforces, from `chair_capacity`."""
+    return socket.gethostname(), chair_capacity.chair_max_in_flight(Path(runs_dir), profile)
+
+
+def _run_capturing(argv: list[str]) -> tuple[int, str]:
+    """Edge. `(exit code, stdout and stderr joined)`; `(1, "")` when the command is missing or times out."""
     try:
-        raw = json.loads((Path(runs_dir) / "policy.pacing.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raw = {}
-    value = raw.get("max_in_flight") if isinstance(raw, dict) else None
-    capacity = value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else _DEFAULT_MAX_IN_FLIGHT
-    return socket.gethostname(), capacity
+        done = subprocess.run(
+            argv, capture_output=True, text=True, timeout=_LOGIN_CHECK_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout + done.stderr
+
+
+def _local_login(local_name: str) -> bool | None:
+    """Edge. Whether `claude auth status` says this machine is logged in, as `chair_login_check` reads it for
+    a host named `socket.gethostname()`: True or False when the reply says so, None when it cannot be read."""
+    return chair_login_check._login_ok(local_name, "", _run_capturing)
+
+
+def _local_versions(login_ok: bool | None, now: str) -> dict | None:
+    """The local row's `versions_json` after a login check at `now`; None when the check could not tell, so
+    the row stays unchecked and reads as unknown."""
+    return None if login_ok is None else {"login_ok": login_ok, "login_checked_at": now}
 
 
 def _initiative_progress(rows: list[dict], initiative: str) -> tuple[int, int, str | None]:
@@ -308,7 +334,7 @@ def _machine_v1(row: dict, at: datetime) -> dict:
         "state": str(row.get("state") or ""),
         "lanes_in_use": int(row.get("in_use") or 0),
         "capacity": int(row.get("capacity") or 0),
-        "login_ok": bool(versions.get("login_ok")),
+        "login_ok": versions.get("login_ok"),
         "login_checked_at": str(versions.get("login_checked_at") or ""),
         "beat_age_s": _age_s(row.get("beat_at"), at),
         "checkouts": {},
@@ -397,14 +423,19 @@ def _chair_edge(runs_dir: Path) -> dict:
     }
 
 
-def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
+def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
-    tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write."""
+    tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
+    except a machine's `login_ok`, which is null while its login is unchecked. `profile` is the parsed profile
+    the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
-    local_name, local_capacity = _local_identity(runs_dir)
+    local_name, local_capacity = _local_identity(runs_dir, profile or {})
+    local_versions = _local_versions(_local_login(local_name), now)
     spend = _spend(runs_dir, now)
-    sections = console_screen.gather(runs_dir, work_dir, now, local_name, local_capacity, spend)
+    sections = console_screen.gather(
+        runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=local_versions,
+    )
     chair_row = sections["chair"][0] if sections["chair"] else {}
     queue, queue_total = _queue(runs_dir)
     blob = _courier_blob(work_dir)

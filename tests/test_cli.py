@@ -789,7 +789,7 @@ def test_chair_perform_with_smoke_keeps_the_hold_and_the_land_result_when_the_re
 
 def test_dash_once_prints_the_gathered_feed_as_one_json_line(monkeypatch, tmp_path, capsys):
     feed = {"runs": [], "as_of": "2026-09-29T00:00:00+00:00"}
-    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now: feed)
+    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now, profile=None: feed)
     assert cli.main(["dash", "--once", "--runs-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out == json.dumps(feed) + "\n"
 
@@ -802,7 +802,7 @@ def test_dash_feed_and_once_together_is_rejected(tmp_path, capsys):
 
 def test_dash_feed_loops_printing_one_line_per_pass_until_stopped(monkeypatch, tmp_path, capsys):
     feed = {"runs": [], "as_of": "x"}
-    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now: feed)
+    monkeypatch.setattr(cli.dash_feed, "gather_feed", lambda runs_dir, work_dir, now, profile=None: feed)
     sleeps = []
 
     def fake_sleep(seconds):
