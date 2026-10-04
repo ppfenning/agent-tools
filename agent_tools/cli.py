@@ -139,7 +139,7 @@ from agent_tools import (
     work_state,
 )
 from agent_tools import runs as runs_module
-from agent_tools.remote_argv import auth_status_argv, ssh_argv
+from agent_tools.remote_argv import auth_status_argv, env_check_argv, ssh_argv
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -3923,13 +3923,33 @@ def _host_auth_output(argv: list[str]) -> str:
     return done.stdout + done.stderr
 
 
+def _host_env_probe(argv: list[str]) -> tuple[int, str]:
+    """Edge: (exit code, text) of a `printenv` over ssh; text is stdout on 0, else stderr. An ssh that cannot run is (127, error).
+
+    Not `_host_auth_output`: ssh stderr (a host-key warning) is never the variable's value."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, f"{argv[0]}: {exc}"
+    return done.returncode, done.stdout if done.returncode == 0 else done.stderr
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
     launched_at = datetime.datetime.now(datetime.UTC).isoformat()
-    preflight = remote_doctor.auth_verdict(_host_auth_output(ssh_argv(host.ssh, auth_status_argv())))
+    provider, _ = _lake_provider(a)  # an unreadable profile is `{}`: runner unset, so the claude-code check as today
+    # The one read of runner/auth_env/endpoint_env, shared with the chair's check_login. Move to the
+    # `setup doctor --host` helper once remote-doctor-runner-check lands one; do not write a second read.
+    runner, env_names = chair_exec._login_runner_and_env(dict(provider))
+    if runner == "claude-code":
+        preflight = remote_doctor.auth_verdict(_host_auth_output(ssh_argv(host.ssh, auth_status_argv())))
+    else:
+        preflight = remote_launch.env_preflight(
+            env_names, {name: _host_env_probe(ssh_argv(host.ssh, env_check_argv(name))) for name in env_names}
+        )
     result = remote_launch.launch_on_host(
         host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, preflight=preflight
     )

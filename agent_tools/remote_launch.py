@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import launch_argv, rsync_push_argv, ssh_argv, sync_argv
+from agent_tools.remote_doctor import env_verdict
 from agent_tools.remote_lane import remote_record
 
-__all__ = ["LaunchError", "launch_on_host", "launch_plan"]
+__all__ = ["LaunchError", "env_preflight", "launch_on_host", "launch_plan"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,17 @@ def launch_plan(
     if repo is None:
         return [rsync_step, launch_step]
     return [rsync_step, ssh_argv(host.ssh, sync_argv(repo)), launch_step]
+
+
+def env_preflight(names: tuple[str, ...], probes: Mapping[str, tuple[int, str]]) -> str | None:
+    """None when every name's probe (printenv exit code, text) is a non-empty value. Exit 1 is unset; any other non-zero is ssh failing."""
+    if not names:
+        return "no auth_env or endpoint_env configured: nothing to check on the host"
+    broken = next((probes[name][1] for name in names if probes[name][0] not in (0, 1)), None)
+    if broken is not None:
+        return f"env var check failed on the host: {broken.strip()[:80]}"
+    verdict = env_verdict(names, lambda name: probes[name][1] if probes[name][0] == 0 else "")
+    return None if verdict is None else f"{verdict} (set it there)"
 
 
 def launch_on_host(
