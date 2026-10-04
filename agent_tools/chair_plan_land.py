@@ -57,11 +57,18 @@ def planned_tasks(approved: list[ApprovedTask], initiatives: list[InitiativeFact
 
 def _run_suffix(run: str) -> int:
     """The integer after a run id's last '-'; a carried phase's newest run has the highest one."""
-    return int(run.rsplit("-", 1)[-1])
+    tail = run.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdigit() else -1
 
 
 def newest_run(runs: Collection[str]) -> str:
-    """The one run, or the highest-suffixed of several: fetching an older run of a carried phase leaves the newest absent."""
+    """The one run, or the highest-suffixed of several: fetching an older run of a carried phase leaves the newest absent.
+
+    Empty when any task's run is unknown: a remote run approves its tasks in the store while it is still running, and
+    the chair learns the run only once it is fetched, so landing the phase from an older known run would leave the
+    newer task's work behind. The phase waits (needs_chair `no_run`) until every run is known."""
+    if "" in runs:
+        return ""
     return next(iter(runs)) if len(runs) == 1 else max(runs, key=_run_suffix)
 
 
