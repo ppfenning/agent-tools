@@ -52,6 +52,11 @@ def test_snapshot_matches_committed_fixture():
         "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1",
         "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"},
         "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1},
+        "lands_today": 2,
+        "phases_today": 1,
+        "needs_you": 1,
+        "drafts": 2,
+        "housekeeping_age_s": 3600,
     }
     spend = {
         "five_hour_fraction": 0.16,

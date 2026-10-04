@@ -11,7 +11,7 @@ import os
 import re
 import socket
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from agent_tools import (
@@ -26,11 +26,15 @@ from agent_tools import (
     usage_meter,
     usage_window,
 )
+from agent_tools.chair_read_housekeeping import latest_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_types import EASTERN
 from agent_tools.dash_chair_action import read_current_action
+from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
-from agent_tools.dash_chair_today import chair_today
+from agent_tools.dash_chair_counters import chair_counters
+from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
+from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
 
 __all__ = ["gather_feed", "snapshot"]
@@ -284,9 +288,13 @@ def _chair_v1(
     action: dict | None = None,
     action_rows: list[dict] | None = None,
     needs_chair_open: int = 0,
+    last_housekeeping_at: str | None = None,
+    inbox_entries: list[dict] | None = None,
+    drafts: list | None = None,
 ) -> dict:
     """The console's chair row (holder, state), the lease file, the chair.json record and the edge's reads
-    (status line, open action, action-log rows) as the schema-1 chair. Pure: `at` is the one clock.
+    (status line, open action, action-log rows, inbox entries, drafts) as the schema-1 chair. Pure: `at` is
+    the one clock.
 
     `current_action` is the one null the feed allows: no action is running. Day boundaries are Eastern, the
     zone the status line prints in.
@@ -297,6 +305,12 @@ def _chair_v1(
     host = full.split("@", 1)[1].split(":", 1)[0] if full else ""
     age = beat_age_s(record.get("heartbeat_at"), at)
     last_tick_at, last_status = status
+    offset = at.astimezone(EASTERN).utcoffset()
+    rows = action_rows or []
+    extras = {
+        **chair_counters(_as_results(rows, at, offset), rows, last_housekeeping_at, at, offset),
+        **chair_attention(inbox_entries, drafts),
+    }
     return {
         "holder": holder,
         "host": host,
@@ -309,8 +323,19 @@ def _chair_v1(
         "last_tick_at": last_tick_at or "",
         "last_status": last_status or "",
         "current_action": action,
-        "today": chair_today(action_rows or [], needs_chair_open, at, at.astimezone(EASTERN).utcoffset()),
+        "today": chair_today(rows, needs_chair_open, at, offset),
+        **{key: int(value or 0) for key, value in extras.items()},
     }
+
+
+def _as_results(action_rows: list[dict], at: datetime, utc_offset: timedelta) -> list[dict]:
+    """Today's action-log rows in the `Result` shape `lands_this_tick` reads; the feed holds no per-tick results."""
+    start = local_midnight(at, utc_offset)
+    return [
+        {"action": {"kind": row.get("kind")}, "status": row.get("status")}
+        for row in action_rows
+        if (stamp := _ts(row)) is not None and stamp >= start
+    ]
 
 
 def _spend_v1(spend: dict) -> dict:
@@ -416,10 +441,12 @@ def _chair_edge(runs_dir: Path) -> dict:
     The status line is the newest `status` row in the store; chair-loop.log's last line only when the store has none.
     """
     stored = status_from_store(run_store.latest_chair_status(runs_dir))
+    action_rows = _action_rows(runs_dir)
     return {
         "status": stored if stored != (None, None) else read_status_record(runs_dir / "chair-loop.log"),
         "action": read_current_action(runs_dir),
-        "action_rows": _action_rows(runs_dir),
+        "action_rows": action_rows,
+        "last_housekeeping_at": latest_housekeeping(action_rows),
     }
 
 
@@ -445,7 +472,11 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         now,
         _chair_v1(
             chair_row, _lease(runs_dir), _chair_record(runs_dir), at,
-            needs_chair_open=_needs_chair_open(entries), **_chair_edge(runs_dir),
+            needs_chair_open=_needs_chair_open(entries),
+            # Other seats drop out as in `_inbox`; `chair_attention` drops `chair` itself.
+            inbox_entries=[e for e in entries if _reaches_a_person(str(e.get("to") or ""))],
+            drafts=read_drafts(work_dir, now),
+            **_chair_edge(runs_dir),
         ),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
