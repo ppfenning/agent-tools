@@ -6805,13 +6805,6 @@ def _chair_run_deps(
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
     )
-    if not dry_run:
-        # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
-        # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
-        exec_deps = dataclasses.replace(
-            exec_deps,
-            lands=chair_run.land_sink(runs_dir, holder, lambda: chair.renew_lease(runs_dir, session, pid, host)),
-        )
     return chair_run.RunDeps(
         facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
