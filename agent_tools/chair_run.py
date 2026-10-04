@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import signal
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from agent_tools.chair_types import Action, Facts, PlanTick
 
 __all__ = [
     "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink",
-    "run", "tick",
+    "no_lands_to_stop", "run", "tick",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -40,6 +41,23 @@ def _read_meter_doc() -> dict | None:
     return doc if isinstance(doc, dict) else None
 
 
+def no_lands_to_stop() -> None:
+    """The stop hook of a chair with no land worker."""
+
+
+def sigterm_as_interrupt() -> Callable[[], None]:
+    """Edge. SIGTERM raises KeyboardInterrupt in the main thread; the callable returned puts the old handler back."""
+
+    def interrupt(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, interrupt)
+    except ValueError:  # signal handlers can only be set from the main thread
+        return lambda: None
+    return lambda: signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+
+
 @dataclass(frozen=True)
 class RunDeps:
     """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next."""
@@ -57,6 +75,8 @@ class RunDeps:
     plan: PlanTick = plan_tick
     perform: Perform = chair_exec.perform
     meter_doc: Callable[[], dict | None] = _read_meter_doc
+    stop_lands: Callable[[], object] = no_lands_to_stop
+    install_sigterm: Callable[[], Callable[[], None]] = sigterm_as_interrupt
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -90,6 +110,10 @@ class WorkerLands:
             return {"action": action, "status": "busy", "reason": reason}
         self._handles[repo] = (action, submitted.handle)
         return {"action": action, "status": "in_progress", "reason": f"landing in {repo}"}
+
+    def stop(self) -> tuple[str, ...]:
+        """Releases every repository lease the worker holds; a land still running is left to finish."""
+        return self._worker.stop()
 
     def collect(self) -> list[Result]:
         done = [repo for repo, (_, handle) in self._handles.items() if not handle.in_progress()]
@@ -177,7 +201,8 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
 
 
 def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
-    """Ticks until interrupted, or once; a KeyboardInterrupt releases the lease only if this process holds it."""
+    """Ticks until interrupted or SIGTERM, or once; an interrupt stops the land worker, then releases the lease if held."""
+    restore = (lambda: None) if dry_run else deps.install_sigterm()
     try:
         while True:
             _attempt(deps, dry_run)
@@ -185,5 +210,10 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
                 return
             deps.sleep(interval)
     except KeyboardInterrupt:
+        restore()  # a second SIGTERM during the release below ends the process as it would have
+        with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held
+            deps.stop_lands()
         if deps.holds():
             deps.release()
+    finally:
+        restore()

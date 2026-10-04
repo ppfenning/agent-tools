@@ -130,11 +130,14 @@ class LandWorker:
         self._queues: dict[str, deque[tuple[Land, LandHandle]]] = {}
         self._warnings: dict[str, tuple[str, ...]] = {}
         self._beating = False
+        self._stopped = False
         self.beat_errors: tuple[BaseException, ...] = ()
 
     def submit[T](self, repo: str, land: Callable[[RepoLease], T]) -> Submitted[T]:
         handle: LandHandle[T] = LandHandle()
         with self._mutex:
+            if self._stopped:
+                return Submitted(Refused(None), None)
             if repo in self._running:
                 queue = self._queues.setdefault(repo, deque())
                 outcome = may_start(True, len(queue), None)
@@ -149,10 +152,16 @@ class LandWorker:
             return Submitted(outcome, None)
         lease = granted_lease(repo, self._holder, got)
         with self._mutex:
-            self._running[repo] = lease
-            if not self._beating:
-                self._beating = True
-                threading.Thread(target=self._beat_loop, daemon=True).start()
+            stopped = self._stopped
+            if not stopped:
+                self._running[repo] = lease
+                if not self._beating:
+                    self._beating = True
+                    threading.Thread(target=self._beat_loop, daemon=True).start()
+        if stopped:  # stop() ran between the acquire and here, so nothing else will release this lease
+            self._abandon(repo)
+            self._release_held(lease)
+            return Submitted(Refused(None), None)
         threading.Thread(target=self._land_loop, args=(lease, land, handle), daemon=True).start()
         return Submitted(outcome, handle)
 
@@ -191,7 +200,12 @@ class LandWorker:
             return _refused(repo, outcome.holder)
         lease = granted_lease(repo, self._holder, got)
         with self._mutex:
-            self._running[repo] = lease
+            stopped = self._stopped
+            if not stopped:
+                self._running[repo] = lease
+        if stopped:
+            self._release_held(lease)
+            return _refused(repo, None)
         return self._execute(lease, land)
 
     def _execute(self, lease: RepoLease, land: Land) -> LandResult:
@@ -205,8 +219,29 @@ class LandWorker:
             # Back to in-flight before the release, so a beat cannot renew a lease being given up.
             self._running[lease.repo] = None
             renew_warnings = self._warnings.pop(lease.repo, ())
-        warnings = (*renew_warnings, *((self._release(current),) if current.epoch is not None else ()))
+            stopped = self._stopped
+        # After stop() the lease is already released; releasing it again could free a lease another holder has taken.
+        release = (self._release(current),) if current.epoch is not None and not stopped else ()
+        warnings = (*renew_warnings, *release)
         return LandResult(value, error, "\n".join(w for w in warnings if w) or None)
+
+    def _release_held(self, lease: RepoLease) -> str | None:
+        return self._release(lease) if lease.epoch is not None else None
+
+    def stop(self) -> tuple[str, ...]:
+        """Releases every lease held and returns the warnings; a land still running is left to finish, unleased.
+
+        Queued lands finish refused and no later land starts, so the worker takes no lease after this returns.
+        """
+        with self._mutex:
+            self._stopped = True
+            held = renewals(self._running)
+            self._running = dict.fromkeys(self._running)  # in-flight, so a beat cannot renew a lease given up here
+            queued = tuple(handle for queue in self._queues.values() for _, handle in queue)
+            self._queues = {}
+        for handle in queued:
+            handle._finish(LandResult(None, LandRefused("chair stopped"), None))
+        return tuple(warning for warning in map(self._release, held) if warning)
 
     def _release(self, lease: RepoLease) -> str | None:
         try:
@@ -234,7 +269,7 @@ class LandWorker:
             with self._mutex:
                 running = len(self._running)
                 leases = renewals(self._running)
-                if running == 0:
+                if running == 0 or self._stopped:
                     self._beating = False
                     return
             now = self._clock()

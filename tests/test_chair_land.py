@@ -124,6 +124,18 @@ def test_the_land_uses_the_workers_lease_and_is_not_refused_by_it(monkeypatch):
     assert submitted.handle.result().value == ("me", store_cli.LeaseGranted(1, "me"))
 
 
+def test_stopping_the_worker_while_a_land_is_in_flight_releases_its_lease_once(monkeypatch):
+    worker, lease, fake_time = make_worker(monkeypatch, lambda: None)
+    gate = threading.Event()
+    submitted = worker.submit("/repo", lambda held: gate.wait(5))
+    assert worker.stop() == ()
+    assert lease.held == {}
+    gate.set()
+    assert submitted.handle.wait(5)
+    fake_time.ticks.release(10)
+    assert lease.calls.count(("release", "land:/repo")) == 1
+
+
 def test_a_store_outage_fails_open_and_walks_without_the_lease(monkeypatch):
     worker, lease, fake_time = make_worker(monkeypatch, lambda: None)
     monkeypatch.setattr(store_cli, "lease_acquire", lambda runs_dir, name, holder, ttl, steal=False: store_cli.NotAvailable())
