@@ -6,12 +6,13 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "reused", "run_alive", "run_live", "summarize_log", "wait_lanes", "watch"]
+__all__ = ["alive", "launched_epoch", "log_ended", "proc_start_epoch", "ps_lstart_epoch", "reused", "run_alive", "run_live", "summarize_log", "wait_lanes", "watch"]
 
 _LINE = re.compile(r"^\s*(quarantined task|quarantined phase|approved but not landed|reused|epic |  usage)", re.M)
 
@@ -35,6 +36,14 @@ def proc_start_epoch(stat_text: str, boot_epoch: float, clk_tck: int) -> float |
         return None
 
 
+def ps_lstart_epoch(text: str) -> float | None:
+    """Pure: epoch seconds from `ps -o lstart=` output, which is local time; None when empty or unparseable."""
+    try:
+        return time.mktime(time.strptime(text.strip(), "%a %b %d %H:%M:%S %Y"))
+    except (ValueError, OverflowError):
+        return None
+
+
 def reused(started_at: float, launched_at: float, slack: float = 2.0) -> bool:
     """Pure: a process that started after the run was launched (plus `slack` seconds for btime rounding) is a reused pid, not the run."""
     return started_at > launched_at + slack
@@ -53,13 +62,23 @@ def log_ended(text: str) -> bool:
     return summarize_log(text)["summary"] is not None
 
 
-def _start_epoch(pid: int) -> float | None:
-    """Edge. None when /proc cannot say, so the caller falls back to the bare pid probe."""
+def _ps_lstart(pid: int) -> str | None:
+    """Edge. `ps -o lstart=` for the pid, C locale so day and month names stay English; None on any failure."""
     try:
-        boot = next(float(l.split()[1]) for l in Path("/proc/stat").read_text().splitlines() if l.startswith("btime "))
-        return proc_start_epoch(Path(f"/proc/{pid}/stat").read_text(), boot, os.sysconf("SC_CLK_TCK"))
-    except (OSError, StopIteration, ValueError):
+        done = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5, env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.SubprocessError):
         return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _start_epoch(pid: int, proc_root: str = "/proc", ps: Callable[[int], str | None] = _ps_lstart) -> float | None:
+    """Edge. /proc first, then `ps` where /proc is absent (macOS). None when neither can say, so the caller falls back to the bare pid probe."""
+    try:
+        boot = next(float(l.split()[1]) for l in Path(f"{proc_root}/stat").read_text().splitlines() if l.startswith("btime "))
+        return proc_start_epoch(Path(f"{proc_root}/{pid}/stat").read_text(), boot, os.sysconf("SC_CLK_TCK"))
+    except (OSError, StopIteration, ValueError):
+        text = ps(pid)
+        return None if text is None else ps_lstart_epoch(text)
 
 
 def run_alive(pid: int, launched_at: float | None, log_text: str | None) -> bool:
