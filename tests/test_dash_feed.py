@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from test_dash_detail_initiative import _INITIATIVE, _RAW_INITIATIVE
 from test_dash_detail_machine import HOST_ROW, RUNS
 from test_dash_detail_machine import NOW as _MACHINE_NOW
@@ -14,6 +15,12 @@ from agent_tools.dash_detail_run import build_run_detail
 from agent_tools.dash_feed import snapshot
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_claude(monkeypatch):
+    """`gather_feed` asks `claude auth status`; no test here may start that process."""
+    monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: None)
 
 
 def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
@@ -215,7 +222,7 @@ def test_spend_reports_the_pacing_policys_weekly_hard_stop_fraction(monkeypatch,
 def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
     calls = {"console": 0, "queue": 0, "inbox": 0}
 
-    def fake_console_gather(runs_dir, work_dir, now, local_name, local_capacity, spend):
+    def fake_console_gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
         calls["console"] += 1
         return {
             "hosts": [{"name": "omarchy"}],
@@ -267,7 +274,7 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     }
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
-    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir: ("omarchy", 3))
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("omarchy", 3))
     monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([
         {"initiative": "x", "priority": None, "phases_landed": 0, "phases_total": 1, "current_phase": None},
     ], 1))
@@ -415,7 +422,7 @@ def _built_feed(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
     monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
-    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir: ("omarchy", 3))
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("omarchy", 3))
     monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
     return dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
 
@@ -470,3 +477,66 @@ def test_a_chair_record_with_no_claude_session_yields_an_empty_session(monkeypat
     }))
 
     assert _built_feed(monkeypatch, tmp_path)["chair"]["session"] == ""
+
+
+_CHECKED = "2026-10-04T00:00:00Z"
+
+
+def _local_machine(login_ok):
+    versions = dash_feed._local_versions(login_ok, _CHECKED)
+    row = console_screen.with_local_host([], "omarchy", 1, versions)[0]
+    return dash_feed._machine_v1({**row, "in_use": 0}, datetime(2026, 10, 4, tzinfo=UTC))
+
+
+def test_the_local_row_reads_login_unknown_before_a_check():
+    machine = _local_machine(None)
+
+    assert (machine["login_ok"], machine["login_checked_at"]) == (None, "")
+
+
+def test_the_local_row_reads_login_true_after_a_passing_check():
+    machine = _local_machine(True)
+
+    assert (machine["login_ok"], machine["login_checked_at"]) == (True, _CHECKED)
+
+
+def test_a_check_that_says_not_logged_in_reads_false():
+    assert _local_machine(False)["login_ok"] is False
+
+
+def test_local_login_is_true_false_or_unknown_by_what_claude_auth_status_said(monkeypatch):
+    def says(code, output):
+        monkeypatch.setattr(dash_feed, "_run_capturing", lambda argv: (code, output))
+        return dash_feed.chair_login_check._login_ok("m", "", dash_feed._run_capturing)
+
+    assert [says(0, '{"loggedIn": true}'), says(0, '{"loggedIn": false}'), says(1, ""), says(0, "x")] == [
+        True, False, None, None,
+    ]
+
+
+def test_gather_feed_seats_the_local_login_check_on_the_local_row(monkeypatch, tmp_path):
+    def fake_gather(runs_dir, work_dir, now, local_name, local_capacity, spend, local_versions=None):
+        hosts = console_screen.with_local_host([], local_name, local_capacity, local_versions)
+        return {"hosts": hosts, "lanes": [], "chair": [], "spend": {}}
+
+    monkeypatch.setattr(dash_feed.console_screen, "gather", fake_gather)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+
+    unchecked = dash_feed.gather_feed(tmp_path, tmp_path, _CHECKED)["machines"][0]
+    monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: True)
+    checked = dash_feed.gather_feed(tmp_path, tmp_path, _CHECKED)["machines"][0]
+
+    assert (unchecked["login_ok"], checked["login_ok"], checked["login_checked_at"]) == (None, True, _CHECKED)
+
+
+def test_the_feeds_local_capacity_follows_the_cartridge_not_the_pacing_default(tmp_path):
+    runs_dir, cartridges = tmp_path / "runs", tmp_path / "cartridges"
+    (cartridges / "pat").mkdir(parents=True)
+    runs_dir.mkdir()
+    (cartridges / "pat" / "cartridge.yaml").write_text("policy:\n  dispatch:\n    max_in_flight: 1\n")
+    (runs_dir / "policy.pacing.json").write_text('{"max_in_flight": 5}')
+    profile = {"cartridges_dir": str(cartridges), "team": "pat"}
+
+    assert dash_feed._local_identity(runs_dir, profile)[1] == 1
+    assert dash_feed._local_identity(runs_dir, {})[1] == 5

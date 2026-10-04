@@ -76,12 +76,16 @@ def newest_per_item(rows: list[dict]) -> list[dict]:
     return sorted(newest.values(), key=_needs_chair_key)
 
 
-def with_local_host(hosts: list[dict], local_name: str, local_capacity: int) -> list[dict]:
+def with_local_host(
+    hosts: list[dict], local_name: str, local_capacity: int, local_versions: dict | None = None,
+) -> list[dict]:
     """Pure. `hosts` unchanged when a row already names `local_name`; otherwise `hosts` plus a synthetic active
-    row for it, so the local machine always has a row even before `cox host beat` first writes one."""
+    row for it, so the local machine always has a row even before `cox host beat` first writes one.
+    `local_versions` is the login check's result for that row; with none, the row carries no `versions_json`."""
     if any(row.get("name") == local_name for row in hosts):
         return hosts
-    return [*hosts, {"name": local_name, "capacity": local_capacity, "state": "active"}]
+    row = {"name": local_name, "capacity": local_capacity, "state": "active"}
+    return [*hosts, row if local_versions is None else {**row, "versions_json": local_versions}]
 
 
 def _lanes_in_use(lanes: list, local_name: str) -> dict[str, int]:
@@ -156,18 +160,20 @@ def _lane_rows(lanes: list, run_rows: dict, items: Sequence[dict]) -> list[LaneR
 
 def gather(
     runs_dir: Path, work_dir: Path, now: str, local_name: str, local_capacity: int, spend: dict,
+    local_versions: dict | None = None,
 ) -> dict[str, list]:
     """Edge. One call to each reader (`work_items` through `_work_items_snapshot`, so it runs at most once per
     `_PHASE_SNAPSHOT_S` window); no other I/O beyond that. `work_dir` is the workspace; drafts live in its
     `work` directory. `local_name`/`local_capacity` seat the local machine's own hosts row and its lanes-in-use
-    count. `spend` is a plain dict the caller already computed (the CLI edge, from the same sources the chair
-    loop uses); this module never reads usage, pacing or run-store cost to build it."""
+    count; `local_versions`, when given, is that row's login check. `spend` is a plain dict the caller
+    already computed (the CLI edge, from the same sources the chair loop uses); this module never reads
+    usage, pacing or run-store cost to build it."""
     chair_state = runs_top_screen.chair_now(runs_dir)
     actions = chair_read_stale.read_chair_actions(runs_dir)
     end = _parse_iso(now)
     recent = [row for row in actions if end is not None and _is_recent_needs_chair(row, end)]
     lanes = run_store.live_lanes(runs_dir, now)
-    hosts = with_local_host(run_store.hosts(runs_dir), local_name, local_capacity)
+    hosts = with_local_host(run_store.hosts(runs_dir), local_name, local_capacity, local_versions)
     run_rows = {row.run: row for row in runs_top_screen.rows_now(runs_dir)}
     items = _work_items_snapshot(str(runs_dir), int(time.monotonic() // _PHASE_SNAPSHOT_S))
     return {

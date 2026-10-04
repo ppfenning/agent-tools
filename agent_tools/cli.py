@@ -33,7 +33,7 @@ import yaml
 
 from agent_tools import (
     chair,
-    chair_cap,
+    chair_capacity,
     chair_exec,
     chair_facts,
     chair_read_approved,
@@ -2502,7 +2502,7 @@ DEFAULT_PROFILE = "~/.config/agent-tools/profile.yaml"
 
 
 def _profile_path(a: argparse.Namespace) -> Path:
-    return Path(a.profile or os.environ.get("AGENT_TOOLS_PROFILE") or DEFAULT_PROFILE).expanduser()
+    return Path(getattr(a, "profile", None) or os.environ.get("AGENT_TOOLS_PROFILE") or DEFAULT_PROFILE).expanduser()
 
 
 def _read_text_or_none(p: Path):
@@ -4954,14 +4954,18 @@ def _console_spend(runs_dir: Path, profile: dict, now: datetime.datetime) -> dic
     }
 
 
-def _console(a: argparse.Namespace) -> int:
-    # Resolved the same tolerant way `_usage_assess` resolves its profile: a missing or unreadable one just
-    # means no cartridge cap and no ceiling, not a raise.
+def _tolerant_profile(a: argparse.Namespace) -> dict:
+    """Edge. The parsed profile, resolved the way `_usage_assess` does: a missing or unreadable one just
+    means no cartridge cap and no ceiling, so it is `{}`, not a raise."""
     text = _read_text_or_none(_profile_path(a))
     try:
-        profile = route.parse_profile(text) if text is not None else {}
+        return route.parse_profile(text) if text is not None else {}
     except route.ProfileError:
-        profile = {}
+        return {}
+
+
+def _console(a: argparse.Namespace) -> int:
+    profile = _tolerant_profile(a)
     runs_dir = Path(a.runs_dir)
     local_name = socket.gethostname()
     local_capacity = _chair_max_in_flight(runs_dir, profile)
@@ -5015,6 +5019,7 @@ def _dash(a: argparse.Namespace) -> int:
         print("cox dash: --feed and --once are mutually exclusive", file=sys.stderr)
         return 2
     runs_dir, work_dir = Path(a.runs_dir), Path(a.work_dir)
+    profile = _tolerant_profile(a)
     if a.detail:
         kind, id_ = a.detail[0], (a.detail[1] if len(a.detail) > 1 else None)
         now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -5024,12 +5029,12 @@ def _dash(a: argparse.Namespace) -> int:
         return rc
     if a.once:
         now = datetime.datetime.now(datetime.UTC).isoformat()
-        print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now)))
+        print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
         return 0
     if a.feed:
         while True:
             now = datetime.datetime.now(datetime.UTC).isoformat()
-            print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now)))
+            print(json.dumps(dash_feed.gather_feed(runs_dir, work_dir, now, profile)))
             sys.stdout.flush()
             time.sleep(a.interval)
     print("cox dash: pass --feed, --once or --detail", file=sys.stderr)
@@ -6407,39 +6412,9 @@ def _chair_once_exit(last_line: str) -> int:
     return 1 if "| tick error: " in last_line else 0
 
 
-# The graphs dispatch loop's default (`_DEFAULT_MAX_IN_FLIGHT` in harness/cos.py), used when no cartridge or policy file names a cap.
-_CHAIR_MAX_IN_FLIGHT = 3
-
-
-def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
-    """Edge. The first `policy.dispatch.max_in_flight` along the team cartridge and its `extends` chain, all read from `cartridges_dir`."""
-    pending, seen = [team], set()
-    while pending:
-        name = pending.pop(0)
-        if name in seen:
-            continue
-        seen.add(name)
-        text = _read_text_or_none(cartridges_dir / name / "cartridge.yaml")
-        cap = chair_cap.cap_from_cartridge(text)
-        if cap is not None:
-            return cap
-        pending.extend(chair_cap.extends_of(text))
-    return None
-
-
 def _chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
-    """Edge. The lane cap: the team cartridge's `policy.dispatch.max_in_flight`, else its `extends` chain's, else `<runs_dir>/policy.pacing.json`'s, else 3."""
-    cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
-    from_cartridge = _cartridge_cap(Path(cartridges_dir).expanduser(), team) if cartridges_dir and isinstance(team, str) and team else None
-    if from_cartridge is not None:
-        return from_cartridge
-    text = _read_text_or_none(runs_dir / "policy.pacing.json")
-    try:
-        raw = json.loads(text) if text is not None else {}
-    except json.JSONDecodeError:
-        raw = {}
-    value = raw.get("max_in_flight") if isinstance(raw, dict) else None
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else _CHAIR_MAX_IN_FLIGHT
+    """Edge. The lane cap `chair_capacity.chair_max_in_flight` reads, the same one the `cox dash` feed reads."""
+    return chair_capacity.chair_max_in_flight(runs_dir, profile)
 
 
 def _local_max_in_flight(runs_dir: Path, profile: dict, hostname: str) -> int:
