@@ -3,20 +3,27 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
-from agent_tools import chair_exec, chair_report, usage_meter
+from agent_tools import chair_exec, chair_land, chair_report, land_repo_lease, usage_meter
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import plan_tick
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_types import Action, Facts, PlanTick
 
-__all__ = ["DEFAULT_INTERVAL", "RunDeps", "as_holder", "error_line", "run", "tick"]
+__all__ = [
+    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink",
+    "run", "tick",
+]
 
 DEFAULT_INTERVAL = 60.0
+LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
+LAND_LEASE_TTL = 1200  # the ttl `cox runs land` itself takes its repo lease with
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
@@ -50,6 +57,51 @@ class RunDeps:
     plan: PlanTick = plan_tick
     perform: Perform = chair_exec.perform
     meter_doc: Callable[[], dict | None] = _read_meter_doc
+
+
+def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
+    """The tick result of a land the worker has finished; a land that raised, or lost its repo, is a result and not an error."""
+    if outcome is None:
+        return {"action": action, "status": "failed", "reason": "land finished without a result"}
+    if isinstance(outcome.error, chair_land.LandRefused):
+        return {"action": action, "status": "busy", "reason": str(outcome.error)}
+    if outcome.error is not None or outcome.value is None:
+        return {"action": action, "status": "failed", "reason": f"{type(outcome.error).__name__}: {outcome.error}"}
+    value = outcome.value
+    return {**value, "reason": f"{value['reason']}\n{outcome.warning}"} if outcome.warning else value
+
+
+class WorkerLands:
+    """Edge. Lands handed to a LandWorker, one handle per repository, held until the next tick collects them."""
+
+    def __init__(self, worker: chair_land.LandWorker) -> None:
+        self._worker = worker
+        self._handles: dict[str, tuple[Action, chair_land.LandHandle[Result]]] = {}
+
+    def pending(self, repo: str) -> bool:
+        return repo in self._handles
+
+    def submit(self, action: Action, work: Callable[[], Result]) -> Result:
+        repo = action.get("repo", "")
+        submitted = self._worker.submit(repo, lambda _lease: work())
+        if submitted.handle is None:
+            holder = submitted.outcome.holder if isinstance(submitted.outcome, chair_land.Refused) else None
+            reason = land_repo_lease.refusal_message(repo, holder or "another land")
+            return {"action": action, "status": "busy", "reason": reason}
+        self._handles[repo] = (action, submitted.handle)
+        return {"action": action, "status": "in_progress", "reason": f"landing in {repo}"}
+
+    def collect(self) -> list[Result]:
+        done = [repo for repo, (_, handle) in self._handles.items() if not handle.in_progress()]
+        return [finished_land(action, handle.result()) for action, handle in (self._handles.pop(repo) for repo in done)]
+
+
+def land_sink(
+    runs_dir: Path, holder: str, beat: Callable[[], None], clock: Callable[[], float] = time.monotonic,
+    wait: Callable[[float], None] = time.sleep,
+) -> WorkerLands:
+    """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs."""
+    return WorkerLands(chair_land.LandWorker(runs_dir, holder, LAND_LEASE_TTL, beat, LAND_BEAT_INTERVAL, clock, wait))
 
 
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
