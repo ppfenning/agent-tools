@@ -40,3 +40,32 @@ def test_doctor_on_host_fails_a_passing_doctor_when_claude_is_logged_out():
 def test_doctor_on_host_adds_an_ok_row_when_claude_is_logged_in():
     host = LaneHost("box", "me@box", "/srv")
     assert doctor_on_host(host, _fake_run('{"loggedIn": true}')) == (0, ["ok rows", "claude auth      ok"])
+
+
+def test_doctor_on_host_keeps_the_claude_auth_row_when_runner_is_named_explicitly():
+    host = LaneHost("box", "me@box", "/srv")
+    result = doctor_on_host(host, _fake_run('{"loggedIn": true}'), runner="claude-code")
+    assert result == (0, ["ok rows", "claude auth      ok"])
+
+
+def _fake_run_env(env_output, doctor_code=0):
+    def run(argv):
+        if argv[2] == "printenv MY_API_KEY":
+            return 0, env_output
+        return doctor_code, "ok rows"
+
+    return run
+
+
+def test_doctor_on_host_adds_an_ok_env_vars_row_when_a_non_claude_runner_has_the_variable():
+    host = LaneHost("box", "me@box", "/srv")
+    code, rows = doctor_on_host(host, _fake_run_env("secret"), runner="codex", env_names=("MY_API_KEY",))
+    assert code == 0
+    assert rows == ["ok rows", "env vars      ok"]
+
+
+def test_doctor_on_host_fails_a_passing_doctor_when_a_non_claude_runner_is_missing_a_variable():
+    host = LaneHost("box", "me@box", "/srv")
+    code, rows = doctor_on_host(host, _fake_run_env(""), runner="codex", env_names=("MY_API_KEY",))
+    assert code == 1
+    assert any("MY_API_KEY" in row for row in rows)

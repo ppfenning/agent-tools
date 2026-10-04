@@ -783,6 +783,23 @@ def test_a_fenced_check_login_action_calls_nothing() -> None:
     assert [r["status"] for r in results] == ["fenced"]
 
 
+def test_the_login_edge_passes_the_provider_profile_s_runner_and_env_names(monkeypatch, tmp_path) -> None:
+    calls: list = []
+
+    def fake_check_login_on_host(host, ssh, current_versions, now, ssh_run, cli_run, *, runner="claude-code", env_names=()):
+        calls.append((runner, env_names))
+        return {}
+
+    monkeypatch.setattr(chair_exec.chair_login_check, "check_login_on_host", fake_check_login_on_host)
+    deps = chair_exec.edge_deps(
+        tmp_path, tmp_path, "chair-loop", 1, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
+        host="omarchy", harness_python="python",
+        provider_profile=lambda: {"runner": "openai-compatible", "auth_env": "MY_API_KEY"},
+    )
+    deps.check_login("shed")
+    assert calls == [("openai-compatible", ("MY_API_KEY",))]
+
+
 def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:
     recorded: list = []
     deps = Deps(

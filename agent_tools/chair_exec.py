@@ -790,14 +790,27 @@ def _cli_run(runs_dir: Path, argv: list[str]) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _check_login_edge(runs_dir: Path, ssh_run: Run, host: str) -> dict:
+def _login_runner_and_env(profile: dict) -> tuple[str, tuple[str, ...]]:
+    """A provider profile's check_login `runner` (its `runner` key, or today's default `"claude-code"`) and
+    `env_names`: the tuple of whichever of `auth_env`, `endpoint_env` the profile sets, in that order,
+    skipping an absent one."""
+    runner = profile.get("runner") or "claude-code"
+    env_names = tuple(v for v in (profile.get("auth_env"), profile.get("endpoint_env")) if v)
+    return runner, env_names
+
+
+def _check_login_edge(runs_dir: Path, ssh_run: Run, provider_profile: Callable[[], dict], host: str) -> dict:
     """Edge. `check_login_on_host` for `host`, its ssh and versions read from the hosts table, "now" read
-    from the clock at call time -- never at `edge_deps` construction time."""
+    from the clock at call time -- never at `edge_deps` construction time. Its `runner` and `env_names`
+    come from `provider_profile()`, resolved fresh on each call through `_login_runner_and_env`."""
     row = _host_row(runs_dir, host)
     ssh = str(row.get("ssh", ""))
     current_versions = chair_login_watch._versions(row)
     now = datetime.now(UTC).isoformat()
-    return chair_login_check.check_login_on_host(host, ssh, current_versions, now, ssh_run, partial(_cli_run, runs_dir))
+    runner, env_names = _login_runner_and_env(provider_profile())
+    return chair_login_check.check_login_on_host(
+        host, ssh, current_versions, now, ssh_run, partial(_cli_run, runs_dir), runner=runner, env_names=env_names,
+    )
 
 
 def edge_deps(
@@ -812,11 +825,14 @@ def edge_deps(
     harness_python: str,
     log_retention_days: int = 7,
     ids_mode: str = "slug",
+    provider_profile: Callable[[], dict] = lambda: {},
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
 
     Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
     A take_lease action names no holder, so the lease is always taken as this loop's own session, pid and host.
+    `provider_profile` is the routing profile's `provider_profile` YAML, already resolved; unset, it names no
+    runner override and `check_login` keeps today's `"claude-code"` default.
     """
     run = partial(run_argv, cwd=workspace)
     return Deps(
@@ -830,7 +846,9 @@ def edge_deps(
         intake_id=partial(read_intake_id, workspace),
         runs_dir=runs_dir,
         work_dir=workspace,
-        check_login=partial(_check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S)),
+        check_login=partial(
+            _check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S), provider_profile,
+        ),
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,
