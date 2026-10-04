@@ -10,7 +10,7 @@ from typing import NamedTuple
 from agent_tools.route import intake_entries, parse_frontmatter
 from agent_tools.stats_ingest import LEDGER_PATH, _read_ledger
 
-__all__ = ["Reference", "ack", "append_line", "format_reference", "inbox", "parse_reference", "resolve", "send"]
+__all__ = ["Reference", "ack", "ack_file", "append_line", "format_reference", "inbox", "parse_reference", "resolve", "send"]
 
 _KINDS = ("run", "task", "pr", "intake", "proposal", "finding", "initiative")
 _PATTERN = re.compile(r"^coxswain://([a-z]+)/(.+)$")
@@ -136,8 +136,13 @@ def _latest_by_id(blob: str) -> dict[str, dict]:
     """Last line per id wins, in first-seen order."""
     latest: dict[str, dict] = {}
     for line in blob.splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and "id" in entry:
             latest[entry["id"]] = entry
     return latest
 
@@ -159,6 +164,22 @@ def inbox(blob: str, label: str | None = None, holder: str | None = None) -> lis
 def ack(blob: str, message_id: str) -> str:
     entry = _latest_by_id(blob).get(message_id)
     return blob if entry is None else append_line(blob, {**entry, "ack": True})
+
+
+def ack_file(path: Path, message_id: str) -> bool:
+    """Appends one ack line and never rewrites the file; False when no entry has `message_id`.
+    A final line missing its newline (a torn write) is closed first so the ack stays on its own line."""
+    try:
+        blob = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    entry = _latest_by_id(blob).get(message_id)
+    if entry is None:
+        return False
+    prefix = "\n" if blob and not blob.endswith("\n") else ""
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(prefix + json.dumps({**entry, "ack": True}) + "\n")
+    return True
 
 
 def entries(blob: str) -> list[dict]:

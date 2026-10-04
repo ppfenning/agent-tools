@@ -3,7 +3,18 @@ import json
 
 import pytest
 
-from agent_tools.courier import Reference, ack, append_line, format_reference, inbox, parse_reference, resolve, send
+from agent_tools.courier import (
+    Reference,
+    ack,
+    ack_file,
+    append_line,
+    entries,
+    format_reference,
+    inbox,
+    parse_reference,
+    resolve,
+    send,
+)
 
 _REFS = [
     Reference("run", "r1"),
@@ -207,6 +218,38 @@ def test_ack_flips_one_entrys_flag_and_leaves_the_others_unchanged():
 def test_ack_of_an_unknown_id_leaves_the_blob_unchanged():
     blob = _bus([send(Reference("run", "r1"), "a", "cos", "one", "m1")])
     assert ack(blob, "nope") == blob
+
+
+def test_two_acks_of_different_ids_both_survive(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    path.write_text(
+        _bus([send(Reference("run", "r1"), "a", "cos", "one", "m1"), send(Reference("run", "r2"), "a", "cos", "two", "m2")]),
+        encoding="utf-8",
+    )
+    assert ack_file(path, "m1") and ack_file(path, "m2")
+    assert [e["ack"] for e in entries(path.read_text(encoding="utf-8"))] == [True, True]
+
+
+def test_ack_file_of_an_unknown_id_writes_nothing(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    text = _bus([send(Reference("run", "r1"), "a", "cos", "one", "m1")])
+    path.write_text(text, encoding="utf-8")
+    assert not ack_file(path, "nope")
+    assert path.read_text(encoding="utf-8") == text
+
+
+def test_a_torn_line_is_skipped_by_the_reader():
+    good = send(Reference("run", "r1"), "a", "cos", "one", "m1")
+    blob = _bus([good]) + '{"ref": "coxswain://run/a", "fr\n42\n'
+    assert entries(blob) == [good]
+    assert inbox(blob) == [good]
+
+
+def test_ack_after_a_torn_final_line_still_lands(tmp_path):
+    path = tmp_path / "courier.jsonl"
+    path.write_text(_bus([send(Reference("run", "r1"), "a", "cos", "one", "m1")]) + '{"ref": "co', encoding="utf-8")
+    assert ack_file(path, "m1")
+    assert [e["ack"] for e in entries(path.read_text(encoding="utf-8"))] == [True]
 
 
 def _profile(tmp_path):

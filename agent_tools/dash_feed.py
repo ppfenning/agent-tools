@@ -84,10 +84,19 @@ def _profile_ceilings() -> tuple[float | None, float | None]:
     return profile.get("window_ceiling_usd"), profile.get("weekly_ceiling_usd")
 
 
+def _hard_stop_fraction(runs_dir: Path) -> float:
+    """The weekly hard stop the chair loop enforces, from the loader it uses on the same runs directory."""
+    # Deferred: cli.py imports this module, so a top-level import of cli is circular.
+    from agent_tools import cli
+
+    return cli._resolved_pacing_policy(Path(runs_dir)).weekly_hard_stop_fraction
+
+
 def _spend(runs_dir: Path, now: str) -> dict:
     """The spend header: a fresh usage meter wins outright; otherwise an estimate ceilinged by an implied
     ceiling the meter has recorded, falling back to the routing profile's own ceilings."""
     at = _parse_now(now)
+    hard_stop_fraction = _hard_stop_fraction(runs_dir)
     meter = usage_meter.read()
     if meter is not None and usage_meter.fresh(meter, at):
         return {
@@ -97,7 +106,7 @@ def _spend(runs_dir: Path, now: str) -> dict:
             "weekly_fraction": meter.seven_day.used_percentage / 100,
             "weekly_source": "meter",
             "weekly_resets_at": meter.seven_day.resets_at.isoformat(),
-            "hard_stop_fraction": usage_window.DEFAULT_POLICY.weekly_hard_stop_fraction,
+            "hard_stop_fraction": hard_stop_fraction,
         }
     profile_window_ceiling, profile_weekly_ceiling = _profile_ceilings()
     window_ceiling = usage_meter.implied_ceiling("five_hour", at)
@@ -115,7 +124,7 @@ def _spend(runs_dir: Path, now: str) -> dict:
         "weekly_fraction": _fraction(weekly.spent_usd, weekly.ceiling_usd),
         "weekly_source": "est",
         "weekly_resets_at": None,
-        "hard_stop_fraction": usage_window.DEFAULT_POLICY.weekly_hard_stop_fraction,
+        "hard_stop_fraction": hard_stop_fraction,
     }
 
 

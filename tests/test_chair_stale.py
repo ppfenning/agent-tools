@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 from agent_tools.chair_stale import stale_reason
 
 NOW = "2026-01-08T00:00:00Z"
@@ -42,9 +40,5 @@ def test_quarantined_twice_for_a_non_harness_cause_counts_regardless_of_age():
     )
 
 
-def test_approved_task_never_touched_at_all_is_stale():
-    expected_days = (datetime.fromisoformat(NOW) - datetime.min.replace(tzinfo=UTC)).days
-    assert (
-        stale_reason("approved", None, None, None, 0, 7, NOW)
-        == f"no file change, run, or chair action in {expected_days} days"
-    )
+def test_approved_task_with_no_signal_at_all_says_no_activity_recorded():
+    assert stale_reason("approved", None, None, None, 0, 7, NOW) == "no activity recorded"

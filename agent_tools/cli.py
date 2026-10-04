@@ -6080,10 +6080,7 @@ def _courier_ack(a: argparse.Namespace) -> int:
     workspace = _courier_workspace(a)
     if workspace is None: return 2
     path = workspace / "courier.jsonl"
-    blob = _read_text_or_none(path) or ""
-    updated = courier.ack(blob, a.id)
-    if updated == blob: print(f"courier: no entry {a.id}"); return 2
-    path.write_text(updated, encoding="utf-8")
+    if not courier.ack_file(path, a.id): print(f"courier: no entry {a.id}"); return 2
     return 0
 
 

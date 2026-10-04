@@ -194,6 +194,24 @@ def test_spend_estimate_no_meter_no_profile(monkeypatch, tmp_path):
     assert spend["weekly_source"] == "est"
 
 
+def test_spend_reports_the_pacing_policys_weekly_hard_stop_fraction(monkeypatch, tmp_path):
+    (tmp_path / "policy.pacing.json").write_text(json.dumps({"weekly_hard_stop_fraction": 0.98}))
+    now = "2026-09-29T00:10:00Z"
+    monkeypatch.setattr(dash_feed.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "missing.yaml"))
+    _spy_readers(monkeypatch, window_spent=0.0, weekly_spent=0.0)
+
+    fresh = _meter(8, 58, datetime(2026, 9, 29, 0, 5, tzinfo=UTC))
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: fresh)
+    from_meter = dash_feed._spend(tmp_path, now)
+    monkeypatch.setattr(dash_feed.usage_meter, "read", lambda: None)
+    from_estimate = dash_feed._spend(tmp_path, now)
+
+    assert (from_meter["weekly_source"], from_estimate["weekly_source"]) == ("meter", "est")
+    assert from_meter["hard_stop_fraction"] == 0.98
+    assert from_estimate["hard_stop_fraction"] == 0.98
+
+
 def test_gather_feed_calls_each_reader_once(monkeypatch, tmp_path):
     calls = {"console": 0, "queue": 0, "inbox": 0}
 
