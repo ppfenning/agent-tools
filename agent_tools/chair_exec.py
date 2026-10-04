@@ -706,6 +706,49 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     return _result(action, "refused", f"unsupported action kind {kind!r}")
 
 
+def notices_to_ack(tasks: list[dict], notices: list[dict]) -> list[str]:
+    """Ids of the open land notices whose task is done, in first-seen order.
+
+    A land notice is an unacked `coxswain://task/<id>` entry whose note mentions landing. Acked entries and
+    unknown tasks yield nothing, so acking twice or acking an absent notice is a no-op.
+    """
+    done = {t["id"] for t in tasks if t.get("state") == "done"}
+    prefix = "coxswain://task/"
+    return [
+        n["id"]
+        for n in notices
+        if not n.get("ack") and str(n.get("ref", "")).startswith(prefix)
+        and str(n["ref"])[len(prefix):] in done and "land" in str(n.get("note", "")).lower()
+    ]
+
+
+def _ack_done_land_notices(deps: Deps) -> list[str]:
+    """Edge. Acks, through `courier.ack_file`, every open land notice in `work_dir/courier.jsonl` whose task is
+    done under `work_dir/work/*/*/*.md`; returns the ids acked. A missing or unreadable file acks nothing."""
+    path = deps.work_dir / "courier.jsonl"
+    try:
+        notices = courier.entries(path.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+    if not any(not n.get("ack") for n in notices):
+        return []
+    tasks = []
+    for task_path in sorted((deps.work_dir / "work").glob("*/*/*.md")):
+        try:
+            fields, _ = route.parse_frontmatter(task_path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        tasks.append({"id": fields.get("id", task_path.stem), "state": fields.get("state", "todo")})
+    acked = []
+    for message_id in notices_to_ack(tasks, notices):
+        try:
+            if courier.ack_file(path, message_id):
+                acked.append(message_id)
+        except OSError:
+            continue
+    return acked
+
+
 def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool) -> list[Result]:
     """Edge. One result per action, in order; each is recorded after it runs.
 
@@ -720,6 +763,8 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
+    if not dry_run:
+        _ack_done_land_notices(deps)
     for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
         land = finished["action"]
         if finished["status"] == "not_landed" or "needs_chair" in finished:
