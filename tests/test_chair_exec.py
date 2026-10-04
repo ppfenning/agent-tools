@@ -1136,6 +1136,22 @@ def test_the_same_action_sends_one_courier_note_referencing_the_initiative(tmp_p
     assert (entry["ref"], entry["note"]) == ("coxswain://initiative/demo", "idle 10 days")
 
 
+def test_a_tick_acks_the_open_land_notice_of_a_done_task(tmp_path) -> None:
+    _write_stale_initiative(tmp_path)
+    phase = tmp_path / "work" / "demo" / "phase-1"
+    (phase / "t2.md").write_text("---\nid: t2\nstate: todo\n---\nBody.\n", encoding="utf-8")
+    lines = [
+        courier.send(courier.Reference("task", task), "chair-loop", "chair", "land it", f"m-{task}")
+        for task in ("t1", "t2")
+    ]
+    (tmp_path / "courier.jsonl").write_text("".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8")
+    perform([], _stale_deps([], tmp_path), lambda: 1, False)
+    blob = (tmp_path / "courier.jsonl").read_text(encoding="utf-8")
+    assert [e["id"] for e in courier.inbox(blob)] == ["m-t2"]
+    perform([], _stale_deps([], tmp_path), lambda: 1, False)
+    assert (tmp_path / "courier.jsonl").read_text(encoding="utf-8") == blob
+
+
 def test_a_stale_to_draft_for_an_already_draft_initiative_writes_nothing(tmp_path) -> None:
     _write_stale_initiative(tmp_path, draft="true")
     before_initiative = (tmp_path / "work" / "demo" / "initiative.md").read_text(encoding="utf-8")
