@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import time
 import tomllib
 from pathlib import Path
 
@@ -40,6 +41,26 @@ def test_proc_start_epoch_reads_field_22_after_a_comm_holding_parens():
 
 def test_proc_start_epoch_is_none_for_a_line_without_the_field():
     assert epic.proc_start_epoch("garbage", 1000.0, 100) is None
+
+
+LSTART = "Sun Oct  4 09:58:42 2026\n"
+LSTART_EPOCH = time.mktime(time.strptime("2026-10-04 09:58:42", "%Y-%m-%d %H:%M:%S"))
+
+
+def test_ps_lstart_epoch_reads_local_time():
+    assert epic.ps_lstart_epoch(LSTART) == LSTART_EPOCH
+
+
+def test_ps_lstart_epoch_is_none_for_empty_text():
+    assert epic.ps_lstart_epoch("") is None
+
+
+def test_start_epoch_falls_back_to_ps_when_proc_is_unreadable(tmp_path):
+    assert epic._start_epoch(1, proc_root=str(tmp_path), ps=lambda pid: LSTART) == LSTART_EPOCH
+
+
+def test_start_epoch_is_none_when_proc_and_ps_both_fail(tmp_path):
+    assert epic._start_epoch(1, proc_root=str(tmp_path), ps=lambda pid: None) is None
 
 
 def test_a_process_started_after_the_launch_is_a_reused_pid():
