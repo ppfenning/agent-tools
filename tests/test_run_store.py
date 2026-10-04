@@ -98,6 +98,61 @@ def test_cost_since_is_none_for_a_store_without_a_node_calls_table(tmp_path):
     assert run_store.cost_since(tmp_path, "2026-09-25") is None
 
 
+def chair_actions_table(runs_dir, *rows):
+    conn = sqlite3.connect(runs_dir / "cox.db")
+    conn.execute("CREATE TABLE chair_actions (kind TEXT, ts TEXT, action_json TEXT)")
+    for row in rows:
+        conn.execute(f"INSERT INTO chair_actions ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    conn.commit()
+    conn.close()
+
+
+METER_DOC = {
+    "five_hour": {"used_percentage": 84.0, "resets_at": 1780000000},
+    "seven_day": {"used_percentage": 10.0, "resets_at": 1780500000},
+    "observed_at": "2026-09-29T00:00:00+00:00",
+}
+
+
+def test_latest_chair_meter_returns_the_three_keys_of_its_one_row(tmp_path):
+    chair_actions_table(tmp_path, {"kind": "meter", "ts": "2026-09-29T00:00:00+00:00", "action_json": json.dumps(METER_DOC)})
+    assert run_store.latest_chair_meter(tmp_path) == METER_DOC
+
+
+def test_latest_chair_meter_returns_the_row_with_the_newer_ts(tmp_path):
+    older = {**METER_DOC, "five_hour": {"used_percentage": 1.0, "resets_at": 1780000000}}
+    chair_actions_table(
+        tmp_path,
+        {"kind": "meter", "ts": "2026-09-29T00:00:00+00:00", "action_json": json.dumps(older)},
+        {"kind": "meter", "ts": "2026-09-29T00:05:00+00:00", "action_json": json.dumps(METER_DOC)},
+    )
+    assert run_store.latest_chair_meter(tmp_path) == METER_DOC
+
+
+def test_latest_chair_meter_is_none_with_no_meter_row(tmp_path):
+    chair_actions_table(tmp_path, {"kind": "housekeeping", "ts": "2026-09-29T00:00:00+00:00", "action_json": "{}"})
+    assert run_store.latest_chair_meter(tmp_path) is None
+
+
+def test_latest_chair_meter_is_none_without_a_store(tmp_path):
+    assert run_store.latest_chair_meter(tmp_path) is None
+
+
+class _DictRowConn:
+    """Postgres's shape: a `dict_row` with `action_json` already decoded, and no integer index."""
+
+    def execute(self, sql, params):
+        return types.SimpleNamespace(fetchone=lambda: {"action_json": METER_DOC})
+
+    def close(self):
+        pass
+
+
+def test_latest_chair_meter_reads_a_postgres_dict_row_with_a_decoded_cell(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_store, "_open", lambda runs_dir: (_DictRowConn(), "%s"))
+    assert run_store.latest_chair_meter(tmp_path) == METER_DOC
+
+
 def test_last_call_at_maps_each_run_to_its_own_newest_ts(tmp_path):
     store(
         tmp_path,
