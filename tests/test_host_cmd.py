@@ -338,3 +338,52 @@ def test_run_store_hosts_reads_rows_by_name_and_is_empty_with_no_store_or_table(
     conn.commit()
     conn.close()
     assert [r["name"] for r in run_store.hosts(tmp_path)] == ["jarvis", "pi"]
+
+
+def _remove_args(tmp_path, monkeypatch, state, lanes, dry_run=False):
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {tmp_path / 'ws'}\n", encoding="utf-8")
+    monkeypatch.delenv("COX_SESSION_LABEL", raising=False)
+    monkeypatch.setattr(cli.run_store, "hosts", lambda runs_dir: [{**JARVIS, "state": state}])
+    monkeypatch.setattr(cli.run_store, "live_lanes", lambda runs_dir, now: lanes)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli.store_cli, "runner", lambda runs_dir: lambda argv: seen.append(argv) or (0, "{}"))
+    return argparse.Namespace(profile=str(profile), name="jarvis", dry_run=dry_run), seen
+
+
+def test_cox_host_remove_deletes_a_draining_idle_host_and_prints_the_row(tmp_path, monkeypatch, capsys):
+    args, seen = _remove_args(tmp_path, monkeypatch, "draining", [])
+    assert cli._host_remove(args) == 0
+    assert seen == [["host", "delete", "jarvis", "--by", "unlabeled"]]
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        'removed jarvis: {"beat_at": "2026-09-26T11:58:00+00:00", "capacity": 8, "name": "jarvis", "ssh": "jarvis", '
+        '"state": "draining", "versions_json": "{\\"login_ok\\": true}"}',
+        "  restore: cox host add jarvis --ssh jarvis --capacity 8",
+    ]
+
+
+def test_cox_host_remove_refuses_an_active_host_and_names_host_drain(tmp_path, monkeypatch, capsys):
+    args, seen = _remove_args(tmp_path, monkeypatch, "active", [])
+    assert cli._host_remove(args) == 1
+    assert seen == []
+    assert capsys.readouterr().out == "refused jarvis: active; run `cox host drain jarvis` first\n"
+
+
+def test_cox_host_remove_refuses_a_draining_host_with_a_live_lane(tmp_path, monkeypatch, capsys):
+    args, seen = _remove_args(tmp_path, monkeypatch, "draining", [run_store.Lane("r1", "jarvis", "t", "t")])
+    assert cli._host_remove(args) == 1
+    assert seen == []
+    assert capsys.readouterr().out == "refused jarvis: live run r1 still on it; wait for it to finish\n"
+
+
+def test_cox_host_remove_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
+    args, seen = _remove_args(tmp_path, monkeypatch, "draining", [], dry_run=True)
+    assert cli._host_remove(args) == 0
+    assert seen == []
+    assert capsys.readouterr().out.splitlines()[-1] == "  restore: cox host add jarvis --ssh jarvis --capacity 8"
+
+
+def test_removed_line_restores_a_null_ssh_row_with_its_name():
+    row = {"name": "pi", "ssh": None, "capacity": 2, "state": "draining"}
+    assert host_cmd.removed_line(row).splitlines()[-1] == "  restore: cox host add pi --ssh pi --capacity 2"

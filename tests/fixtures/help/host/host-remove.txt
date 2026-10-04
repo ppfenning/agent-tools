@@ -1,0 +1,8 @@
+usage: cox host remove [-h] [--dry-run] name
+
+positional arguments:
+  name
+
+options:
+  -h, --help  show this help message and exit
+  --dry-run   print the row that would be removed; write nothing

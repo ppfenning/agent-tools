@@ -122,6 +122,7 @@ cox chair service [--install] [--status] [--label LABEL] [--interval INTERVAL] [
 cox host add NAME --ssh SSH --capacity CAPACITY [--weight WEIGHT] [--capabilities CAPABILITIES]   add or update a host in the table
 cox host list   one line per host: state, capacity, beat age, login
 cox host drain NAME   stop launching on a host; its live lanes finish
+cox host remove NAME [--dry-run]   delete a drained idle host from the hosts table
 cox host activate NAME   make a host a lane host again
 cox host capacity NAME N [--json]   change only a host's capacity, leaving ssh, weight and capabilities as they are
 cox host beat [NAME]   record this machine's versions and claude login in the table

@@ -1,0 +1,28 @@
+usage: cox host [-h] [--profile PROFILE]
+                {add,list,drain,remove,activate,capacity,beat,doctor,sync} ...
+
+The hosts table: lane hosts, their capacity, versions and login.
+
+positional arguments:
+  {add,list,drain,remove,activate,capacity,beat,doctor,sync}
+    add                 add or update a host in the table
+    list                one line per host: state, capacity, beat age, login
+    drain               stop launching on a host; its live lanes finish
+    remove              delete a drained idle host from the hosts table
+    activate            make a host a lane host again
+    capacity            change only a host's capacity, leaving ssh, weight and capabilities as
+                        they are
+    beat                record this machine's versions and claude login in the table
+    doctor              the table's line for a host, then its doctor over ssh
+    sync                git pull --ff-only in the harness, cartridges and tools checkouts on a
+                        host
+
+options:
+  -h, --help            show this help message and exit
+  --profile PROFILE
+
+examples:
+  cox host add jarvis --ssh jarvis --capacity 8
+  cox host list
+  cox host beat
+  cox host sync jarvis

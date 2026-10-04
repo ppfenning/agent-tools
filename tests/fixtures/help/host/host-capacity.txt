@@ -1,0 +1,9 @@
+usage: cox host capacity [-h] [--json] name n
+
+positional arguments:
+  name
+  n           lanes the host may run at once; 0 suspends new placement
+
+options:
+  -h, --help  show this help message and exit
+  --json      print the row as JSON

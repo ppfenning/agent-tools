@@ -7090,6 +7090,28 @@ def _host_drain(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.set_state_argv(a.name, "draining", _holder_label(a)))
 
 
+def _host_remove(a: argparse.Namespace) -> int:
+    """Deletes a draining host's row once no lane runs on it, and prints the row so `host add` can restore it.
+    A refusal and `--dry-run` both stop before the store is called."""
+    _, runs_dir, rc = _leader_runs_dir_or_refuse(a)
+    if rc is not None:
+        return rc
+    row = next((r for r in run_store.hosts(runs_dir) if r.get("name") == a.name), None)
+    local = socket.gethostname()
+    live_runs = [lane.run for lane in run_store.live_lanes(runs_dir, _now_iso()) if (local if lane.host in (None, local) else lane.host) == a.name]
+    refusal = host_cmd.remove_refusal(row, live_runs, a.name)
+    if refusal is not None or row is None:
+        print(refusal)
+        return 1
+    if a.dry_run:
+        print(f"would remove {host_cmd.removed_line(row)}")
+        return 0
+    code = _host_store_write(a, host_cmd.delete_argv(a.name, _holder_label(a)))
+    if code == 0:
+        print(f"removed {host_cmd.removed_line(row)}")
+    return code
+
+
 def _host_activate(a: argparse.Namespace) -> int:
     return _host_store_write(a, host_cmd.set_state_argv(a.name, "active", _holder_label(a)))
 
@@ -7234,6 +7256,11 @@ HOST_COMMANDS = [
     ),
     commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), _host_list, False, ()),
     commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), _host_drain, False, ()),
+    commands.Command(
+        "remove", "host", "delete a drained idle host from the hosts table",
+        (commands.Arg(("name",)), commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the row that would be removed; write nothing"})),
+        _host_remove, False, (),
+    ),
     commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), _host_activate, False, ()),
     commands.Command(
         "capacity", "host", "change only a host's capacity, leaving ssh, weight and capabilities as they are",
