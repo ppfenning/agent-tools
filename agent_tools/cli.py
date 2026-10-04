@@ -6530,7 +6530,8 @@ def _chair_perform_with_smoke(runs_dir: Path, perform: chair_run.Perform) -> cha
             record = chair_smoke.hold_record(land, failing)
             chair_smoke.write_hold(str(runs_dir), record)
             try:
-                chair_smoke.run_revert_pr(chair_smoke.revert_pr_argv(land, record["tail"]))
+                run = _land_action_for(results, land).get("run") or None
+                chair_smoke.run_revert_pr(chair_smoke.revert_pr_argv(land, record["tail"], run))
             except (subprocess.CalledProcessError, OSError) as exc:
                 return [*results, _smoke_revert_failure_result(_land_action_for(results, land), land, exc)]
         elif chair_smoke.read_hold(str(runs_dir)) is not None:

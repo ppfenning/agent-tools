@@ -14,6 +14,7 @@ from agent_tools.chair_smoke import (
     smoke_verdict,
     write_hold,
 )
+from agent_tools.land import pr_footer
 
 _OK = {"command": ["cox", "route", "context"], "ok": True, "tail": "fine"}
 _LAND = {"repo": "org/repo", "pr": 42, "commit": "abc123"}
@@ -93,6 +94,13 @@ def test_revert_pr_argv_carries_commit_and_pr() -> None:
     assert "abc123" in argv["revert"]
     assert any("42" in part for part in argv["checkout"])
     assert any("42" in part for part in argv["pr_create"])
+
+
+def test_revert_pr_body_ends_with_footer() -> None:
+    argv = revert_pr_argv(_LAND, "boom", "r-1")["pr_create"]
+    body = argv[argv.index("--body") + 1]
+    assert body == "boom\n\n" + pr_footer("r-1")
+    assert body.endswith(" · run r-1")
 
 
 def _fake_run(calls: list[list[str]], fail_on: str | None) -> Callable[..., None]:
