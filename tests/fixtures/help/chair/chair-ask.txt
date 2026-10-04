@@ -1,0 +1,13 @@
+usage: cox chair ask [-h] [--option OPTION] [--context CONTEXT] [--label LABEL]
+                     [--profile PROFILE]
+                     question
+
+positional arguments:
+  question
+
+options:
+  -h, --help         show this help message and exit
+  --option OPTION    an answer pat may give; repeat for each, at least two
+  --context CONTEXT  text or a URL that helps pat decide
+  --label LABEL      the chair's label (default: $COX_SESSION_LABEL, else unlabeled)
+  --profile PROFILE

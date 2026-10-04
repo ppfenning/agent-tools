@@ -159,3 +159,8 @@ def inbox(blob: str, label: str | None = None, holder: str | None = None) -> lis
 def ack(blob: str, message_id: str) -> str:
     entry = _latest_by_id(blob).get(message_id)
     return blob if entry is None else append_line(blob, {**entry, "ack": True})
+
+
+def entries(blob: str) -> list[dict]:
+    """Every entry once, in first-seen order, at its latest state."""
+    return list(_latest_by_id(blob).values())

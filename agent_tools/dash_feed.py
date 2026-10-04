@@ -13,7 +13,7 @@ import socket
 from datetime import datetime
 from pathlib import Path
 
-from agent_tools import console_screen, courier, route, run_store, usage_meter, usage_window
+from agent_tools import chair, console_screen, courier, decisions, route, run_store, usage_meter, usage_window
 from agent_tools.runs_detail import NODE_ORDER
 
 __all__ = ["gather_feed", "snapshot"]
@@ -22,15 +22,18 @@ _LANDED_STATES = ("done", "dropped")
 _DEFAULT_MAX_IN_FLIGHT = 3
 _DEFAULT_PROFILE_PATH = Path.home() / ".config" / "agent-tools" / "profile.yaml"
 _MAX_ROWS = 50
+_DECISION_PREFIX = "coxswain://decision/"
+_ASK_KEYS = ("options", "context", "asked_at", "note")
 # The graphs `cox route launch` starts (cli.py's route launch commands); courier `to` labels name graphs too.
 _GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
 # Every seat that is neither the chair nor a person: each node in the graph roster, and each graph.
 _SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
 
 
-def snapshot(at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch) -> dict:
+def snapshot(at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=()) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
-    section's filtered count before the 50-row cap, for coxtop to render "50 of N"."""
+    section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
+    decision asks, newest first."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     return {
         "schema": 1,
@@ -43,6 +46,7 @@ def snapshot(at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_
         "queue_total": queue_total,
         "inbox": inbox,
         "inbox_total": inbox_total,
+        "decisions": list(decisions),
         "watch": watch,
     }
 
@@ -195,17 +199,35 @@ def _reaches_a_person(to: str) -> bool:
     return to == "chair" or to.startswith("chair-") or to not in _SEATS
 
 
-def _inbox(work_dir: Path) -> tuple[list[dict], int]:
-    """Unacknowledged bus entries addressed to `chair` or to a person, newest first (any other seat drops
-    out entirely). With no label `courier.inbox` never consults the lock holder, so the chair lock is not
-    read. Capped at `_MAX_ROWS`; the second element is the filtered count before the cap."""
+def _courier_blob(work_dir: Path) -> str:
+    """The raw courier.jsonl; "" when it cannot be read."""
     try:
-        blob = (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8")
+        return (Path(work_dir) / "courier.jsonl").read_text(encoding="utf-8")
     except OSError:
-        blob = ""
+        return ""
+
+
+def _inbox(entries: list[dict]) -> tuple[list[dict], int]:
+    """The `entries` addressed to `chair` or to a person, newest first (any other seat drops out entirely).
+    With no label `courier.inbox` never consults the lock holder, so the chair lock is not read. Capped at
+    `_MAX_ROWS`; the second element is the filtered count before the cap."""
     # `courier.inbox` preserves each id's first-appearance (oldest-first) order; reverse for newest first.
-    entries = [e for e in courier.inbox(blob) if _reaches_a_person(str(e.get("to") or ""))][::-1]
-    return entries[:_MAX_ROWS], len(entries)
+    reached = [e for e in entries if _reaches_a_person(str(e.get("to") or ""))][::-1]
+    return reached[:_MAX_ROWS], len(reached)
+
+
+def _is_decision(entry: dict) -> bool:
+    return str(entry.get("ref") or "").startswith(_DECISION_PREFIX)
+
+
+def _open_decisions(entries: list[dict], blob: str) -> list[dict]:
+    """Unacknowledged asks in `entries` with no answer anywhere in `blob`, newest first. An answer carries
+    `answer`; an ask carries `_ASK_KEYS`, and a decision entry with neither is left out."""
+    asks = [e for e in entries if _is_decision(e) and "answer" not in e and all(key in e for key in _ASK_KEYS)]
+    # An acked answer drops out of `courier.inbox`, so answers come from every line of the blob, acked or not.
+    lines = [json.loads(line) for line in blob.splitlines() if line.strip()]
+    answers = [e for e in lines if _is_decision(e) and "answer" in e]
+    return decisions.open_decisions_newest_first(decisions.merge_decisions(asks, answers))
 
 
 def _age_s(text, at: datetime) -> int:
@@ -216,8 +238,9 @@ def _age_s(text, at: datetime) -> int:
         return 0
 
 
-def _chair_v1(row: dict, lease: dict, at: datetime) -> dict:
-    """The console's chair row (holder, state, minutes_ago) and the lease file as the schema-1 chair."""
+def _chair_v1(row: dict, lease: dict, record: dict, at: datetime) -> dict:
+    """The console's chair row (holder, state, minutes_ago), the lease file and the chair.json record as the
+    schema-1 chair."""
     holder = str(row.get("holder") or lease.get("holder") or "")
     # The console row carries the label alone; the lease's holder carries `label@host:pid`.
     full = next((str(h) for h in (row.get("holder"), lease.get("holder")) if h and "@" in str(h)), "")
@@ -229,6 +252,9 @@ def _chair_v1(row: dict, lease: dict, at: datetime) -> dict:
         "epoch": int(lease.get("epoch") or 0),
         "liveness": str(row.get("state") or "unknown"),
         "beat_age_s": int(minutes * 60) if isinstance(minutes, (int, float)) else 0,
+        # Neither the console row nor chair.lease.json (holder and epoch only) carries `claude_session`;
+        # chair.json does, written by `chair.take` and kept by `chair.beat`.
+        "session": str(record.get("claude_session") or "")[:8],
     }
 
 
@@ -297,6 +323,15 @@ def _lease(runs_dir: Path) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _chair_record(runs_dir: Path) -> dict:
+    """runs/chair.json via `chair.read`; {} when absent or unreadable, as `runs_top_screen.chair_now` does."""
+    try:
+        record = chair.read(runs_dir)
+    except (OSError, json.JSONDecodeError):
+        record = None
+    return record if isinstance(record, dict) else {}
+
+
 def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write."""
@@ -307,10 +342,12 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
     sections = console_screen.gather(runs_dir, work_dir, now, local_name, local_capacity, spend)
     chair_row = sections["chair"][0] if sections["chair"] else {}
     queue, queue_total = _queue(runs_dir)
-    inbox, inbox_total = _inbox(work_dir)
+    blob = _courier_blob(work_dir)
+    entries = courier.inbox(blob)
+    inbox, inbox_total = _inbox(entries)
     return snapshot(
         now,
-        _chair_v1(chair_row, _lease(runs_dir), at),
+        _chair_v1(chair_row, _lease(runs_dir), _chair_record(runs_dir), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
         [_run_v1(lane, local_name) for lane in sections["lanes"]],
@@ -319,4 +356,5 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
         [_inbox_v1(entry) for entry in inbox],
         inbox_total,
         [],
+        _open_decisions(entries, blob),
     )

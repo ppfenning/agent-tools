@@ -1,0 +1,8 @@
+usage: cox chair decisions [-h] [--open | --answered] [--json] [--profile PROFILE]
+
+options:
+  -h, --help         show this help message and exit
+  --open             only decisions without an answer
+  --answered         only decisions with an answer
+  --json
+  --profile PROFILE
