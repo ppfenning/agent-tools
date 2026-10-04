@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from agent_tools import dash_feed
 from agent_tools.dash_chair_beat import beat_age_s, parse_status_line, read_status_record
 
 NOW = datetime(2026, 10, 4, 12, 1, 0, tzinfo=UTC)
@@ -50,3 +51,15 @@ def test_read_status_record_reads_file_and_tolerates_a_missing_one(tmp_path):
     log.write_text(f"{LINE}\n", encoding="utf-8")
     assert read_status_record(log) == ("10-04 08:01 EDT", LINE)
     assert read_status_record(tmp_path / "absent.log") == (None, None)
+
+
+def test_the_feed_reads_the_newest_store_row_over_an_older_log_line(tmp_path, monkeypatch):
+    (tmp_path / "chair-loop.log").write_text(LINE.replace("08:01", "07:56") + "\n", encoding="utf-8")
+    monkeypatch.setattr(dash_feed.run_store, "latest_chair_status", lambda _runs: {"line": LINE})
+    assert dash_feed._chair_edge(tmp_path)["status"] == ("10-04 08:01 EDT", LINE)
+
+
+def test_the_feed_reads_the_log_when_the_store_has_no_status_row(tmp_path, monkeypatch):
+    (tmp_path / "chair-loop.log").write_text(LINE + "\n", encoding="utf-8")
+    monkeypatch.setattr(dash_feed.run_store, "latest_chair_status", lambda _runs: None)
+    assert dash_feed._chair_edge(tmp_path)["status"] == ("10-04 08:01 EDT", LINE)

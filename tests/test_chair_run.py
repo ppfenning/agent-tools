@@ -275,6 +275,19 @@ def test_a_gather_that_raises_still_publishes_the_meter_once():
     assert len(_meter_actions(rig)) == 1
 
 
+def test_a_tick_records_one_status_row_with_its_line():
+    rig = Rig()
+    run(True, 60, False, rig.deps())
+    (row,) = [a for a in rig.recorded if a.get("kind") == "status"]
+    assert row["line"] == rig.lines[0] and row["status"] == "recorded"
+
+
+def test_a_dry_run_records_no_status_row():
+    rig = Rig(lease=FREE)
+    run(True, 60, True, rig.deps())
+    assert [a for a in rig.recorded if a.get("kind") == "status"] == []
+
+
 def test_a_failing_meter_read_or_record_cannot_break_the_tick():
     rig = Rig()
 

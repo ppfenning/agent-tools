@@ -17,7 +17,7 @@ from agent_tools import chair, console_screen, courier, decisions, route, run_st
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_types import EASTERN
 from agent_tools.dash_chair_action import read_current_action
-from agent_tools.dash_chair_beat import beat_age_s, read_status_record
+from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
 from agent_tools.dash_chair_today import chair_today
 from agent_tools.runs_detail import NODE_ORDER
 
@@ -385,9 +385,13 @@ def _needs_chair_open(entries: list[dict]) -> int:
 
 
 def _chair_edge(runs_dir: Path) -> dict:
-    """Edge: the new chair reads as `_chair_v1` keyword arguments. The status line is chair-loop.log's last line."""
+    """Edge: the new chair reads as `_chair_v1` keyword arguments.
+
+    The status line is the newest `status` row in the store; chair-loop.log's last line only when the store has none.
+    """
+    stored = status_from_store(run_store.latest_chair_status(runs_dir))
     return {
-        "status": read_status_record(runs_dir / "chair-loop.log"),
+        "status": stored if stored != (None, None) else read_status_record(runs_dir / "chair-loop.log"),
         "action": read_current_action(runs_dir),
         "action_rows": _action_rows(runs_dir),
     }
