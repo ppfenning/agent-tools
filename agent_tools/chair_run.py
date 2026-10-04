@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from agent_tools import chair_exec, chair_report
+from agent_tools import chair_exec, chair_report, usage_meter
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import plan_tick
@@ -19,6 +20,17 @@ DEFAULT_INTERVAL = 60.0
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
+
+
+def _read_meter_doc() -> dict | None:
+    """The raw JSON of the local meter file, so a fresh reading forwards unchanged; None when `usage_meter.read` finds none."""
+    if usage_meter.read() is None:
+        return None
+    try:
+        doc = json.loads(usage_meter.DEFAULT_PATH.read_text())
+    except (OSError, ValueError):  # ValueError covers JSONDecodeError and UnicodeDecodeError
+        return None
+    return doc if isinstance(doc, dict) else None
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,7 @@ class RunDeps:
     gather: Gather = gather_facts
     plan: PlanTick = plan_tick
     perform: Perform = chair_exec.perform
+    meter_doc: Callable[[], dict | None] = _read_meter_doc
 
 
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
@@ -53,12 +66,30 @@ def as_holder(facts: Facts) -> Facts:
     return {**facts, "lease": {**lease, "mine": True}} if won else facts
 
 
+def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
+    """Record the local meter reading as a `meter` action when it is fresh; nothing raised here leaves the tick."""
+    if dry_run:
+        return
+    with contextlib.suppress(Exception):
+        doc = deps.meter_doc()
+        meter = None if doc is None else usage_meter.parse(doc)
+        if meter is None or not usage_meter.fresh(meter, now):
+            return
+        # `status` is required: the store's record-action refuses a line without ts, epoch, kind and status.
+        deps.exec_deps.record({
+            "kind": "meter", "status": "recorded",
+            "five_hour": doc["five_hour"], "seven_day": doc["seven_day"], "observed_at": doc["observed_at"],
+        })
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
     A dry run never takes the lease, so it plans as the holder would to show the actions a live tick would take.
+    The meter is published right after the beat, so a gather, plan or perform that raises cannot skip it.
     """
     deps.beat()
+    _publish_meter(deps, dry_run, now)
     gathered = deps.gather(deps.facts_deps, now)
     facts = as_holder(gathered) if dry_run else gathered
     actions = deps.plan(facts, now)

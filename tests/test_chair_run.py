@@ -1,15 +1,25 @@
 import copy
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from agent_tools import chair_exec, chair_report
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, run
+from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, run, tick
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 MINE = {"holder": "me", "host": "box", "epoch": 3, "mine": True, "released": False, "stale": False}
 FOREIGN = {**MINE, "holder": "other", "mine": False}
 FREE = {**MINE, "mine": False, "released": True}
+
+
+def _meter_doc(age_minutes):
+    return {
+        "five_hour": {"used_percentage": 42, "resets_at": 1798650300},
+        "seven_day": {"used_percentage": 7, "resets_at": 1799000000},
+        "observed_at": (NOW - timedelta(minutes=age_minutes)).isoformat(),
+    }
 
 
 def _facts(lease):
@@ -38,6 +48,7 @@ class Rig:
 
     def __init__(self, lease=MINE, sleeps_before_interrupt=1, beat_loses=False):
         self.log, self.lines, self.commands, self.acquired, self.sleeps, self.released = [], [], [], [], [], []
+        self.recorded = []
         self.lease, self.limit, self.beat_loses, self.holding = lease, sleeps_before_interrupt, beat_loses, True
 
     def _gather(self, _deps, _now):
@@ -66,7 +77,7 @@ class Rig:
             run=self._run,
             delete_branches=lambda repo, pattern: ([], ""),
             acquire_lease=self._acquire,
-            record=lambda action: None,
+            record=self.recorded.append,
             run_id=lambda action: "run-1",
             repo_for=lambda action: "r",
         )
@@ -223,3 +234,52 @@ def test_interrupt_releases_the_lease_only_when_held():
     run(False, 60, False, held.deps())
     run(False, 60, False, not_held.deps())
     assert held.released == [True] and not_held.released == []
+
+
+def _meter_actions(rig):
+    return [a for a in rig.recorded if a.get("kind") == "meter"]
+
+
+def test_a_fresh_meter_reading_is_recorded_once_with_the_docs_fields():
+    rig, doc = Rig(), _meter_doc(5)
+    tick(replace(rig.deps(), meter_doc=lambda: doc), False, NOW)
+    (action,) = _meter_actions(rig)
+    assert action["status"] == "recorded"
+    assert (action["five_hour"], action["seven_day"], action["observed_at"]) == (
+        doc["five_hour"], doc["seven_day"], doc["observed_at"],
+    )
+
+
+@pytest.mark.parametrize("reading", [None, _meter_doc(16)], ids=["missing", "16-minutes-old"])
+def test_a_missing_or_stale_meter_reading_records_no_meter_action(reading):
+    rig = Rig()
+    tick(replace(rig.deps(), meter_doc=lambda: reading), False, NOW)
+    assert _meter_actions(rig) == []
+
+
+def test_a_dry_run_records_no_meter_action_even_when_fresh():
+    rig = Rig()
+    tick(replace(rig.deps(), meter_doc=lambda: _meter_doc(5)), True, NOW)
+    assert _meter_actions(rig) == []
+
+
+def test_a_gather_that_raises_still_publishes_the_meter_once():
+    rig = Rig()
+
+    def boom(_deps, _now):
+        raise RuntimeError("gather down")
+
+    deps = replace(rig.deps(), gather=boom, meter_doc=lambda: _meter_doc(5))
+    with pytest.raises(RuntimeError):
+        tick(deps, False, NOW)
+    assert len(_meter_actions(rig)) == 1
+
+
+def test_a_failing_meter_read_or_record_cannot_break_the_tick():
+    rig = Rig()
+
+    def read_fails():
+        raise OSError("gone")
+
+    tick(replace(rig.deps(), meter_doc=read_fails), False, NOW)
+    assert rig.log == ["beat", "gather"]
