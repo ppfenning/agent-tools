@@ -912,3 +912,64 @@ def test_dash_detail_unknown_kind_exits_2_and_prints_nothing(tmp_path, capsys):
     assert cli.main(["dash", "--detail", "bogus", "x", "--runs-dir", str(tmp_path)]) == 2
     out, err = capsys.readouterr()
     assert out == "" and "unknown kind" in err
+
+
+def _decision_bus(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(f"workspace_dir: {workspace}\n", encoding="utf-8")
+    return str(profile), workspace / "courier.jsonl"
+
+
+def _chair(profile, *argv):
+    return cli.main(["chair", *argv, "--profile", profile])
+
+
+def test_chair_ask_then_answer_leaves_open_and_stays_answered(tmp_path, capsys):
+    profile, _ = _decision_bus(tmp_path)
+    assert _chair(profile, "ask", "ship it?", "--option", "yes", "--option", "no") == 0
+    decision_id = capsys.readouterr().out.strip()
+    assert _chair(profile, "decisions", "--open", "--json") == 0
+    assert [d["id"] for d in json.loads(capsys.readouterr().out)] == [decision_id]
+    assert _chair(profile, "answer", decision_id, "yes") == 0
+    assert _chair(profile, "decisions", "--open", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert _chair(profile, "decisions", "--answered", "--json") == 0
+    assert [(d["id"], d["answer"]) for d in json.loads(capsys.readouterr().out)] == [(decision_id, "yes")]
+
+
+def test_chair_answer_twice_refuses_the_second_and_adds_no_second_answer_line(tmp_path, capsys):
+    profile, bus = _decision_bus(tmp_path)
+    _chair(profile, "ask", "ship it?", "--option", "yes", "--option", "no")
+    decision_id = capsys.readouterr().out.strip()
+    assert _chair(profile, "answer", decision_id, "yes") == 0
+    lines = bus.read_text(encoding="utf-8")
+    assert _chair(profile, "answer", decision_id, "no") == 2
+    assert "decision already answered" in capsys.readouterr().out
+    assert bus.read_text(encoding="utf-8") == lines
+    assert lines.count('"to": "chair"') == 1
+
+
+def test_chair_answer_with_an_option_not_asked_refuses(tmp_path, capsys):
+    profile, bus = _decision_bus(tmp_path)
+    _chair(profile, "ask", "ship it?", "--option", "yes", "--option", "no")
+    decision_id = capsys.readouterr().out.strip()
+    before = bus.read_text(encoding="utf-8")
+    assert _chair(profile, "answer", decision_id, "maybe") == 2
+    assert "option not offered: maybe" in capsys.readouterr().out
+    assert bus.read_text(encoding="utf-8") == before
+
+
+def test_chair_ask_with_a_single_option_refuses_before_writing(tmp_path, capsys):
+    profile, bus = _decision_bus(tmp_path)
+    assert _chair(profile, "ask", "ship it?", "--option", "yes") == 2
+    assert "need at least two options" in capsys.readouterr().out
+    assert not bus.exists()
+
+
+def test_chair_decisions_refuses_open_with_answered(tmp_path):
+    profile, _ = _decision_bus(tmp_path)
+    with pytest.raises(SystemExit) as raised:
+        _chair(profile, "decisions", "--open", "--answered")
+    assert raised.value.code == 2

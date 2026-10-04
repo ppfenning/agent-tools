@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -68,6 +69,7 @@ from agent_tools import (
     dash_detail_run,
     dash_detail_spend,
     dash_feed,
+    decisions,
     doctor,
     draft_apply,
     draft_list,
@@ -6961,10 +6963,81 @@ def _chair_service(a: argparse.Namespace) -> int:
     return 0
 
 
+_DECISION_PREFIX = "coxswain://decision/"
+
+
+def _decision_bus(a: argparse.Namespace) -> tuple[Path, str, list[dict]] | None:
+    """The courier path, its raw text and its latest-per-id entries; None when no workspace resolves."""
+    workspace = _courier_workspace(a)
+    if workspace is None: return None
+    path = workspace / "courier.jsonl"
+    blob = _read_text_or_none(path) or ""
+    return path, blob, courier.entries(blob)
+
+
+def _decision_entries(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(asks, answers): decision entries addressed to pat, and those addressed to the chair."""
+    mine = [e for e in entries if e["ref"].startswith(_DECISION_PREFIX)]
+    return [e for e in mine if e["to"] == "pat"], [e for e in mine if e["to"] == "chair"]
+
+
+def _new_decision_id(taken: set[str]) -> str | None:
+    """Up to five draws; None when every one collides with a taken ref."""
+    drawn = (f"d-{secrets.token_hex(4)}" for _ in range(5))
+    return next((d for d in drawn if f"{_DECISION_PREFIX}{d}" not in taken), None)
+
+
+def _decision_now() -> str:
+    return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def _chair_ask(a: argparse.Namespace) -> int:
+    bus = _decision_bus(a)
+    if bus is None: return 2
+    path, blob, entries = bus
+    problem = decisions.validate_options(a.option)
+    if problem: print(f"chair ask: {problem}"); return 2
+    decision_id = _new_decision_id({e["ref"] for e in entries})
+    if decision_id is None: print("chair ask: could not draw an unused decision id"); return 2
+    entry = decisions.make_ask_entry(a.question, a.option, a.context, _holder_label(a), decision_id, _decision_now())
+    path.write_text(courier.append_line(blob, entry), encoding="utf-8")
+    print(decision_id)
+    return 0
+
+
+def _chair_answer(a: argparse.Namespace) -> int:
+    bus = _decision_bus(a)
+    if bus is None: return 2
+    path, blob, entries = bus
+    asks, _ = _decision_entries(entries)
+    ask_entry = next((e for e in asks if e["ref"] == f"{_DECISION_PREFIX}{a.id}"), None)
+    problem = decisions.validate_answer(ask_entry, a.option)
+    if problem: print(f"chair answer: {problem}"); return 2
+    answer = decisions.make_answer_entry(ask_entry, a.option, answered_at=_decision_now(), message_id=uuid.uuid4().hex)
+    path.write_text(courier.ack(courier.append_line(blob, answer), ask_entry["id"]), encoding="utf-8")
+    return 0
+
+
+def _decision_line(d: dict) -> str:
+    answer = f" -> {d['answer']}" if d["answer"] is not None else ""
+    return f"{d['id']}  {d['asked_at']}  {d['question']}  [{' | '.join(d['options'])}]{answer}"
+
+
+def _chair_decisions(a: argparse.Namespace) -> int:
+    bus = _decision_bus(a)
+    if bus is None: return 2
+    asks, answers = _decision_entries(bus[2])
+    listed = decisions.filter_decisions(decisions.merge_decisions(asks, answers), open_only=a.open, answered_only=a.answered)
+    if a.json: print(json.dumps(listed))
+    else:
+        for d in listed: print(_decision_line(d))
+    return 0
+
+
 CHAIR_GROUP = commands.Group(
     name="chair", help="the chair loop that runs the landing and launch ticks itself",
     description="The chair loop that runs the landing and launch ticks itself.",
-    epilog="examples:\n  cox chair run --once --dry-run\n  cox chair run --interval 30\n  cox chair service --install",
+    epilog='examples:\n  cox chair run --once --dry-run\n  cox chair run --interval 30\n  cox chair service --install\n  cox chair ask "ship it?" --option yes --option no',
 )
 CHAIR_COMMANDS = [
     commands.Command(
@@ -7001,6 +7074,33 @@ CHAIR_COMMANDS = [
             "--install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.\n"
             "It does not run systemctl."
         ),
+    ),
+    commands.Command(
+        "ask", "chair", "put a question with its options to pat on the courier bus",
+        (
+            commands.Arg(("question",)),
+            commands.Arg(("--option",), {"action": "append", "default": [], "help": "an answer pat may give; repeat for each, at least two"}),
+            commands.Arg(("--context",), {"default": "", "help": "text or a URL that helps pat decide"}),
+            commands.Arg(("--label",), {"help": "the chair's label (default: $COX_SESSION_LABEL, else unlabeled)"}),
+            commands.Arg(("--profile",)),
+        ),
+        _chair_ask, False, (),
+    ),
+    commands.Command(
+        "answer", "chair", "answer an open decision with one of its options",
+        (commands.Arg(("id",)), commands.Arg(("option",)), commands.Arg(("--profile",))),
+        _chair_answer, False, (),
+    ),
+    commands.Command(
+        "decisions", "chair", "list decisions asked of pat and their answers",
+        (
+            commands.Arg(("--open",), {"action": "store_true", "help": "only decisions without an answer"}),
+            commands.Arg(("--answered",), {"action": "store_true", "help": "only decisions with an answer"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+            commands.Arg(("--profile",)),
+        ),
+        _chair_decisions, False, (),
+        exclusive=("--open", "--answered"),
     ),
 ]
 

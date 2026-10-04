@@ -1,0 +1,9 @@
+usage: cox chair answer [-h] [--profile PROFILE] id option
+
+positional arguments:
+  id
+  option
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE

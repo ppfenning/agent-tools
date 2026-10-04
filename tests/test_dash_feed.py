@@ -40,6 +40,7 @@ def test_snapshot_matches_committed_fixture():
         "epoch": 7,
         "liveness": "live",
         "beat_age_s": 4,
+        "session": "a1b2c3d4",
     }
     spend = {
         "five_hour_fraction": 0.16,
@@ -92,8 +93,17 @@ def test_snapshot_matches_committed_fixture():
         }
     ]
     watch = []
+    decisions = [
+        {
+            "id": "d-1",
+            "question": "Ship 0.27 with the dash decisions pane?",
+            "options": ["ship", "hold"],
+            "context": "The pane is behind a flag and the fixture is already in coxswain-dash.",
+            "asked_at": "2026-09-29T00:00:00Z",
+        }
+    ]
 
-    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch)
+    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch, decisions)
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)
@@ -345,7 +355,7 @@ def test_inbox_drops_an_entry_addressed_to_another_seat(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
 
-    inbox, total = dash_feed._inbox(tmp_path)
+    inbox, total = dash_feed._inbox(dash_feed.courier.inbox(""))
 
     assert [entry["id"] for entry in inbox] == ["7", "2", "1"]
     assert total == 3
@@ -364,9 +374,75 @@ def test_queue_and_inbox_cap_at_fifty_rows_with_the_full_total(monkeypatch, tmp_
     monkeypatch.setattr(dash_feed.courier, "inbox", lambda blob: entries)
 
     queue, queue_total = dash_feed._queue(tmp_path)
-    inbox, inbox_total = dash_feed._inbox(tmp_path)
+    inbox, inbox_total = dash_feed._inbox(dash_feed.courier.inbox(""))
 
     assert (len(queue), queue_total) == (50, 51)
     assert [row["initiative"] for row in queue] == [f"init-{i:02d}" for i in range(50)]
     assert (len(inbox), inbox_total) == (50, 55)
     assert inbox[0]["id"] == "54"
+
+
+def _built_feed(monkeypatch, tmp_path):
+    sections = {
+        "chair": [{"holder": "chair-loop", "state": "live", "minutes_ago": 1}],
+        "spend": {},
+        "hosts": [],
+        "lanes": [],
+    }
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir: ("omarchy", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
+    return dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
+
+
+def test_gather_feed_lists_only_the_open_decision(monkeypatch, tmp_path):
+    bus = {"from": "chair", "to": "pat", "ack": False, "options": ["ship", "hold"]}
+    entries = [
+        bus | {"ref": "coxswain://decision/d-1", "id": "d-1", "note": "Ship it?", "context": "0.27 preview", "asked_at": "2026-09-29T20:00:00Z"},
+        bus | {"ref": "coxswain://decision/d-2", "id": "d-2", "note": "Hold it?", "context": "0.26 preview", "asked_at": "2026-09-29T19:00:00Z"},
+        {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "pat", "to": "chair", "note": "answer: hold", "ack": False, "answer": "hold", "asked_at": "2026-09-29T20:30:00Z"},
+    ]
+    (tmp_path / "courier.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert feed["decisions"] == [
+        {
+            "id": "d-1",
+            "question": "Ship it?",
+            "options": ["ship", "hold"],
+            "context": "0.27 preview",
+            "asked_at": "2026-09-29T20:00:00Z",
+        }
+    ]
+
+
+def test_an_acked_answer_still_closes_its_unacked_ask():
+    ask = {"ref": "coxswain://decision/d-2", "id": "d-2", "from": "chair", "to": "pat", "note": "Hold it?",
+           "ack": False, "options": ["ship", "hold"], "context": "c", "asked_at": "2026-09-29T19:00:00Z"}
+    answer = {"ref": "coxswain://decision/d-2", "id": "a-2", "from": "pat", "to": "chair", "note": "answer: hold",
+              "ack": True, "answer": "hold", "asked_at": "2026-09-29T20:30:00Z"}
+    blob = "".join(json.dumps(entry) + "\n" for entry in (ask, answer))
+
+    assert dash_feed._open_decisions(dash_feed.courier.inbox(blob), blob) == []
+
+
+def test_the_chair_section_carries_the_first_eight_characters_of_claude_session(monkeypatch, tmp_path):
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@omarchy:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text(json.dumps({
+        "session": "chair-loop", "pid": 42, "host": "omarchy", "taken_at": "2026-09-29T20:00:00+00:00",
+        "heartbeat_at": "2026-09-29T20:59:00+00:00", "runs": [], "claude_session": "0123456789abcdef",
+    }))
+
+    assert _built_feed(monkeypatch, tmp_path)["chair"]["session"] == "01234567"
+
+
+def test_a_chair_record_with_no_claude_session_yields_an_empty_session(monkeypatch, tmp_path):
+    (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@omarchy:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text(json.dumps({
+        "session": "chair-loop", "pid": 42, "host": "omarchy", "taken_at": "2026-09-29T20:00:00+00:00",
+        "heartbeat_at": "2026-09-29T20:59:00+00:00", "runs": [],
+    }))
+
+    assert _built_feed(monkeypatch, tmp_path)["chair"]["session"] == ""

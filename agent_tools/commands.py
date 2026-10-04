@@ -35,6 +35,7 @@ class Command:
     sub_required: bool = False
     defaults: dict = field(default_factory=dict)
     description: str = ""  # shown by `<group> <name> --help`, one line per statement
+    exclusive: tuple[str, ...] = ()  # first flags of `args` that argparse refuses to accept together
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,9 @@ def _add_row(sub: argparse._SubParsersAction, row: Command) -> None:
     """One subparser for `row`; a row with `subcommands` recurses into its own."""
     formatter = argparse.RawDescriptionHelpFormatter if row.description else argparse.HelpFormatter
     rp = sub.add_parser(row.name, help=row.summary, description=row.description or None, formatter_class=formatter)
+    group = rp.add_mutually_exclusive_group() if row.exclusive else rp
     for arg in row.args:
-        rp.add_argument(*arg.flags, **arg.kwargs)
+        (group if arg.flags[0] in row.exclusive else rp).add_argument(*arg.flags, **arg.kwargs)
     if row.subcommands:
         rp_sub = rp.add_subparsers(dest=row.sub_dest, required=row.sub_required)
         for child in row.subcommands:
