@@ -1,12 +1,16 @@
 import copy
+import os
+import signal
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_exec, chair_report
+from agent_tools import chair_exec, chair_report, store_cli
 from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, run, tick
+from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, land_sink, run, tick
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 MINE = {"holder": "me", "host": "box", "epoch": 3, "mine": True, "released": False, "stale": False}
@@ -234,6 +238,26 @@ def test_interrupt_releases_the_lease_only_when_held():
     run(False, 60, False, held.deps())
     run(False, 60, False, not_held.deps())
     assert held.released == [True] and not_held.released == []
+
+
+def test_sigterm_with_a_pending_land_releases_its_lease_and_returns(monkeypatch):
+    held, gate = {}, threading.Event()
+    monkeypatch.setattr(store_cli, "lease_acquire", lambda d, name, holder, ttl, steal=False: held.setdefault(name, holder) and store_cli.LeaseGranted(1, holder))
+    monkeypatch.setattr(store_cli, "lease_release", lambda d, name, holder, epoch: held.pop(name) and store_cli.LeaseReleased())
+    lands = land_sink(Path("/runs"), "me", lambda: None, wait=lambda s: gate.wait(0.01))
+    assert lands.submit({"kind": "land", "repo": "/repo"}, lambda: gate.wait(5))["status"] == "in_progress"
+    rig = Rig()
+    rig._sleep = lambda seconds: os.kill(os.getpid(), signal.SIGTERM)
+    assert run(False, 60, False, replace(rig.deps(), stop_lands=lands.stop)) is None
+    assert held == {} and rig.released == [True]
+    gate.set()
+
+
+def test_a_dry_run_installs_no_sigterm_handler():
+    installed = []
+    rig = Rig(lease=FREE)
+    run(True, 60, True, replace(rig.deps(), install_sigterm=lambda: installed.append(True) or (lambda: None)))
+    assert installed == []
 
 
 def _meter_actions(rig):
