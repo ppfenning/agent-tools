@@ -160,3 +160,17 @@ def test_a_task_whose_run_is_empty_gets_needs_chair_no_run_and_no_land_phase():
     actions = plan_lands(_facts([task]))
     assert actions == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
     assert not [a for a in actions if a["kind"] == "land_phase"]
+
+
+def test_a_phase_with_one_known_run_and_one_unknown_waits_with_no_run_instead_of_raising():
+    # A remote run approved task b in the store while still running; the chair knows a's older run only.
+    known = {"id": "a", "initiative": "i", "repo": "r", "phase": "p", "phase_done": True, "needs": [], "run": "i-5", "needs_fetch": False}
+    unknown = {**known, "id": "b", "run": ""}
+    assert plan_lands(_facts([known, unknown])) == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
+
+
+def test_newest_run_orders_a_non_numeric_suffix_first_instead_of_raising():
+    from agent_tools.chair_plan_land import newest_run
+
+    assert newest_run({"i-2", "i-10", "i-x"}) == "i-10"
+
