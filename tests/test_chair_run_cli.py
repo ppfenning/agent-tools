@@ -230,3 +230,14 @@ def test_the_loops_lease_take_names_its_label_and_own_pid(monkeypatch, tmp_path)
     holder = json.loads((tmp_path / chair.LEASE_FILENAME).read_text(encoding="utf-8"))["holder"]
     assert holder == f"lane-a@h:{os.getpid()}"
     assert "unlabeled" not in holder and f":{os.getppid()}" not in holder
+
+
+def test_a_live_chair_runs_its_lands_on_the_land_worker(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
+    assert isinstance(deps.exec_deps.lands, chair_run.WorkerLands)
+
+
+def test_a_dry_run_keeps_its_lands_in_line(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
+    assert deps.exec_deps.lands is None
+
