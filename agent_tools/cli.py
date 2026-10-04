@@ -6809,7 +6809,7 @@ def _chair_run_deps(
     if not dry_run:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
-        sink = chair_run.land_sink(runs_dir, holder, lambda: chair.renew_lease(runs_dir, session, pid, host))
+        sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host))
         exec_deps = dataclasses.replace(exec_deps, lands=sink)
         stop_lands = sink.stop
     return chair_run.RunDeps(

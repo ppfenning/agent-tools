@@ -34,6 +34,16 @@ def test_chair_run_help_names_the_steal_flag_and_the_hard_stop(capsys) -> None:
     assert "weekly_hard_stop_fraction" in out
 
 
+def test_a_live_chairs_exec_deps_carry_the_land_worker(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
+    assert isinstance(deps.exec_deps.lands, chair_run.WorkerLands)
+
+
+def test_a_dry_runs_exec_deps_carry_no_land_worker(tmp_path) -> None:
+    deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
+    assert deps.exec_deps.lands is None
+
+
 def test_the_real_bundle_names_no_source_it_cannot_read(tmp_path) -> None:
     deps = cli._chair_run_deps(tmp_path, {}, "chair", 1, "h", False, print, tmp_path / "p.yaml", "files")
     assert isinstance(deps, chair_run.RunDeps)

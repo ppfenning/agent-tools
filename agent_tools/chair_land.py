@@ -1,21 +1,17 @@
 """Land worker: starts a land on a background thread and returns at once, one land per repository.
 
-The repo lease in land_repo_lease is the source of truth for one-at-a-time. The worker takes it, renews it on
-every beat, and hands it to the land callable as a RepoLease, so the land must use that lease and not acquire
-`land:<repo>` a second time under another holder: a second acquire would refuse the land against its own worker.
-The worker's mutex only guards its bookkeeping (which repos it is landing in, the queue behind them) and is never
-held across a lease call.
+The worker holds no repo lease. `cox runs land` takes `land:<repo>` itself, as its own holder, and that lease is the
+guard across processes. A lease the worker took first made that subprocess refuse every land against its own chair
+(tools #1290). The worker keeps only in-memory bookkeeping, which repos it is landing in and the queue behind them, so
+two lands in one repository never overlap, plus a beat of the chair lease while any land runs.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
-from pathlib import Path
-
-from agent_tools import land_repo_lease, store_cli
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -34,15 +30,6 @@ class Refused:
 
 
 @dataclass(frozen=True)
-class RepoLease:
-    """`epoch` is None when the store could not answer and the land walks without the lease, as cli's land does."""
-
-    repo: str
-    holder: str
-    epoch: int | None
-
-
-@dataclass(frozen=True)
 class LandResult[T]:
     value: T | None
     error: BaseException | None
@@ -53,25 +40,13 @@ class LandRefused(Exception):
     pass
 
 
-def may_start(running_here: bool, queued: int, lease: store_cli.LeaseResult | None) -> Started | Queued | Refused:
-    """Queue behind this worker's own land; refuse only a lease held elsewhere; a store outage fails open."""
-    if running_here:
-        return Queued(queued + 1)
-    if isinstance(lease, store_cli.LeaseRefused):
-        return Refused(lease.holder)
-    return Started()
+def may_start(running_here: bool, queued: int) -> Started | Queued:
+    """Queue behind this worker's own land in the repository; otherwise start."""
+    return Queued(queued + 1) if running_here else Started()
 
 
 def beat_due(now: float, last_beat: float | None, interval: float, running: int) -> bool:
     return running > 0 and (last_beat is None or now - last_beat >= interval)
-
-
-def renewals(running: Mapping[str, RepoLease | None]) -> tuple[RepoLease, ...]:
-    return tuple(lease for lease in running.values() if lease is not None and lease.epoch is not None)
-
-
-def granted_lease(repo: str, holder: str, lease: store_cli.LeaseResult) -> RepoLease:
-    return RepoLease(repo, holder, lease.epoch if isinstance(lease, store_cli.LeaseGranted) else None)
 
 
 class LandHandle[T]:
@@ -99,176 +74,74 @@ class Submitted[T]:
     handle: LandHandle[T] | None
 
 
-Land = Callable[[RepoLease], object]
-
-
-def _warning(repo: str, verb: str, result: object) -> str:
-    return f"warning: land lease {land_repo_lease.lease_name(repo)} not {verb}: {result!r}"
-
-
-def _refused(repo: str, holder: str | None) -> LandResult:
-    return LandResult(None, LandRefused(land_repo_lease.refusal_message(repo, holder or "another land")), None)
+Land = Callable[[], object]
 
 
 class LandWorker:
     def __init__(
-        self,
-        runs_dir: Path,
-        holder: str,
-        ttl: int,
-        beat: Callable[[], None],
-        interval: float,
-        clock: Callable[[], float],
-        wait: Callable[[float], None],
+        self, beat: Callable[[], None], interval: float, clock: Callable[[], float], wait: Callable[[float], None],
     ) -> None:
-        """`interval` must be shorter than `ttl`: the lease is renewed once per beat."""
-        self._runs_dir, self._holder, self._ttl = runs_dir, holder, ttl
+        """`beat` renews the chair lease once per `interval` while any land runs."""
         self._beat, self._interval, self._clock, self._wait = beat, interval, clock, wait
         self._mutex = threading.Lock()
-        # None marks a repo whose lease call is in flight.
-        self._running: dict[str, RepoLease | None] = {}
+        self._running: set[str] = set()
         self._queues: dict[str, deque[tuple[Land, LandHandle]]] = {}
-        self._warnings: dict[str, tuple[str, ...]] = {}
         self._beating = False
         self._stopped = False
         self.beat_errors: tuple[BaseException, ...] = ()
 
-    def submit[T](self, repo: str, land: Callable[[RepoLease], T]) -> Submitted[T]:
+    def submit[T](self, repo: str, land: Callable[[], T]) -> Submitted[T]:
         handle: LandHandle[T] = LandHandle()
         with self._mutex:
             if self._stopped:
                 return Submitted(Refused(None), None)
             if repo in self._running:
                 queue = self._queues.setdefault(repo, deque())
-                outcome = may_start(True, len(queue), None)
+                outcome = may_start(True, len(queue))
                 queue.append((land, handle))
                 return Submitted(outcome, handle)
-            self._running[repo] = None
-        got = self._acquire(repo)
-        outcome = may_start(False, 0, got)
-        if isinstance(outcome, Refused):
-            for _, queued in self._abandon(repo):
-                queued._finish(_refused(repo, outcome.holder))
-            return Submitted(outcome, None)
-        lease = granted_lease(repo, self._holder, got)
-        with self._mutex:
-            stopped = self._stopped
-            if not stopped:
-                self._running[repo] = lease
-                if not self._beating:
-                    self._beating = True
-                    threading.Thread(target=self._beat_loop, daemon=True).start()
-        if stopped:  # stop() ran between the acquire and here, so nothing else will release this lease
-            self._abandon(repo)
-            self._release_held(lease)
-            return Submitted(Refused(None), None)
-        threading.Thread(target=self._land_loop, args=(lease, land, handle), daemon=True).start()
-        return Submitted(outcome, handle)
+            self._running.add(repo)
+            if not self._beating:
+                self._beating = True
+                threading.Thread(target=self._beat_loop, daemon=True).start()
+        threading.Thread(target=self._land_loop, args=(repo, land, handle), daemon=True).start()
+        return Submitted(may_start(False, 0), handle)
 
-    def _acquire(self, repo: str) -> store_cli.LeaseResult:
-        """Edge. An exception from the store is an outage, and an outage fails open."""
-        try:
-            return land_repo_lease.acquire(self._runs_dir, repo, self._holder, self._ttl)
-        except Exception as exc:
-            return store_cli.LeaseError(f"{type(exc).__name__}: {exc}")
-
-    def _abandon(self, repo: str) -> tuple[tuple[Land, LandHandle], ...]:
-        with self._mutex:
-            self._running.pop(repo, None)
-            self._warnings.pop(repo, None)
-            return tuple(self._queues.pop(repo, deque()))
-
-    def _land_loop(self, lease: RepoLease, land: Land, handle: LandHandle) -> None:
-        handle._finish(self._execute(lease, land))
-        for queued_land, queued_handle in iter(lambda: self._next_queued(lease.repo), None):
-            queued_handle._finish(self._run_queued(lease.repo, queued_land))
+    def _land_loop(self, repo: str, land: Land, handle: LandHandle) -> None:
+        handle._finish(self._execute(land))
+        for queued_land, queued_handle in iter(lambda: self._next_queued(repo), None):
+            queued_handle._finish(self._execute(queued_land))
 
     def _next_queued(self, repo: str) -> tuple[Land, LandHandle] | None:
         with self._mutex:
             queue = self._queues.get(repo)
             if queue:
-                self._running[repo] = None
                 return queue.popleft()
             self._queues.pop(repo, None)
-            self._running.pop(repo, None)
+            self._running.discard(repo)
             return None
 
-    def _run_queued(self, repo: str, land: Land) -> LandResult:
-        got = self._acquire(repo)
-        outcome = may_start(False, 0, got)
-        if isinstance(outcome, Refused):
-            return _refused(repo, outcome.holder)
-        lease = granted_lease(repo, self._holder, got)
-        with self._mutex:
-            stopped = self._stopped
-            if not stopped:
-                self._running[repo] = lease
-        if stopped:
-            self._release_held(lease)
-            return _refused(repo, None)
-        return self._execute(lease, land)
-
-    def _execute(self, lease: RepoLease, land: Land) -> LandResult:
+    def _execute(self, land: Land) -> LandResult:
         """Edge. Never raises: the land's failure, of any kind, is the result's error."""
         try:
-            value, error = land(lease), None
+            return LandResult(land(), None, None)
         except BaseException as exc:
-            value, error = None, exc
-        with self._mutex:
-            current = self._running.get(lease.repo) or lease
-            # Back to in-flight before the release, so a beat cannot renew a lease being given up.
-            self._running[lease.repo] = None
-            renew_warnings = self._warnings.pop(lease.repo, ())
-            stopped = self._stopped
-        # After stop() the lease is already released; releasing it again could free a lease another holder has taken.
-        release = (self._release(current),) if current.epoch is not None and not stopped else ()
-        warnings = (*renew_warnings, *release)
-        return LandResult(value, error, "\n".join(w for w in warnings if w) or None)
+            return LandResult(None, exc, None)
 
-    def _release_held(self, lease: RepoLease) -> str | None:
-        return self._release(lease) if lease.epoch is not None else None
-
-    def stop(self) -> tuple[str, ...]:
-        """Releases every lease held and returns the warnings; a land still running is left to finish, unleased.
-
-        Queued lands finish refused and no later land starts, so the worker takes no lease after this returns.
-        """
+    def stop(self) -> None:
+        """Queued lands finish refused and no later land starts; a land still running is left to finish."""
         with self._mutex:
             self._stopped = True
-            held = renewals(self._running)
-            self._running = dict.fromkeys(self._running)  # in-flight, so a beat cannot renew a lease given up here
             queued = tuple(handle for queue in self._queues.values() for _, handle in queue)
             self._queues = {}
         for handle in queued:
             handle._finish(LandResult(None, LandRefused("chair stopped"), None))
-        return tuple(warning for warning in map(self._release, held) if warning)
-
-    def _release(self, lease: RepoLease) -> str | None:
-        try:
-            got = land_repo_lease.release(self._runs_dir, lease.repo, lease.holder, lease.epoch)
-        except Exception as exc:
-            return _warning(lease.repo, "released", exc)
-        return None if isinstance(got, store_cli.LeaseReleased) else _warning(lease.repo, "released", got)
-
-    def _renew(self, lease: RepoLease) -> None:
-        try:
-            got = land_repo_lease.renew(self._runs_dir, lease.repo, lease.holder, lease.epoch, self._ttl)
-        except Exception as exc:
-            got = store_cli.LeaseError(f"{type(exc).__name__}: {exc}")
-        with self._mutex:
-            if self._running.get(lease.repo) != lease:
-                return
-            if isinstance(got, store_cli.LeaseGranted):
-                self._running[lease.repo] = replace(lease, epoch=got.epoch)
-            else:
-                self._warnings[lease.repo] = (*self._warnings.get(lease.repo, ()), _warning(lease.repo, "renewed", got))
 
     def _beat_loop(self) -> None:
         last: float | None = None
         while True:
             with self._mutex:
                 running = len(self._running)
-                leases = renewals(self._running)
                 if running == 0 or self._stopped:
                     self._beating = False
                     return
@@ -278,7 +151,5 @@ class LandWorker:
                     self._beat()
                 except Exception as exc:
                     self.beat_errors = (*self.beat_errors, exc)
-                for lease in leases:
-                    self._renew(lease)
                 last = now
             self._wait(self._interval)
