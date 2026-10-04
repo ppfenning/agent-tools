@@ -206,6 +206,16 @@ def test_a_land_refused_by_the_repo_lease_is_busy_and_never_escalated() -> None:
     assert ("record", "needs_chair") not in calls
 
 
+def test_a_repo_lease_refusal_that_exits_non_zero_is_still_busy_for_a_land_and_a_land_phase() -> None:
+    # `cox runs land` exits 2 when another land holds the repository: busy, never refused or escalated.
+    output = "land: refusing, chair-loop@bp-macbook:77598 is landing in /repo"
+    for action in (_land("t1", "r"), _land_phase("p", "r")):
+        calls: list = []
+        results = perform([action], _deps(calls, output, code=2), lambda: 1, False)
+        assert [r["status"] for r in results] == ["busy"]
+        assert ("record", "needs_chair") not in calls
+
+
 def test_a_land_refused_for_any_other_reason_still_escalates_as_stranded() -> None:
     recorded: list = []
     deps = replace(_deps([], "land: refusing, /repo is dirty"), record=recorded.append)
