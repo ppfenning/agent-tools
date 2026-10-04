@@ -16,7 +16,7 @@ from agent_tools.notify import Notification
 
 __all__ = [
     "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment",
-    "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
+    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
 ]
 
 
@@ -89,6 +89,15 @@ def failed_items(results: Sequence[Result]) -> list[str]:
     ]
 
 
+def landing_items(results: Sequence[Result]) -> list[str]:
+    """`<task or phase> in <repo>` for every land still running behind the tick."""
+    return [
+        f"{r['action'].get('task_id') or r['action'].get('phase', '')} in {r['action'].get('repo', '')}"
+        for r in results
+        if r["status"] == "in_progress"
+    ]
+
+
 def fetched_items(results: Sequence[Result]) -> list[str]:
     """`<run> from <host>` for every fetch_exit that landed; a host of None reads `on another machine`."""
     return [
@@ -144,8 +153,9 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     limits, dispatch = facts["limits"], facts["dispatch"]
     stop = " hard stop" if limits["hard_stop"] else ""
     needs = needs_chair_items([*actions, *(r["action"] for r in results if r["status"] == "escalated")])
-    launched, fetched, failed, would = (
+    launched, fetched, failed, would, landing = (
         launched_items(results), fetched_items(results), failed_items(results), would_items(results),
+        landing_items(results),
     )
     drafts = facts.get("drafts", 0)
     parts = [
@@ -156,6 +166,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
+        *([f"landing: {', '.join(landing)}"] if landing else []),
         *([f"launched: {', '.join(launched)}"] if launched else []),
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),

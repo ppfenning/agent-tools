@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict
 
 from agent_tools import (
     chair,
@@ -38,12 +38,28 @@ from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.remote_argv import ssh_argv, sync_argv
 
 __all__ = [
-    "LAUNCH_KINDS", "Deps", "Refusal", "Result", "argv_for", "branch_pattern", "decompose_id", "delete_branches_with", "edge_deps",
-    "escalation", "land_commit", "land_refusal", "landed", "perform", "smoke_targets", "tail",
+    "LAUNCH_KINDS",
+    "Deps",
+    "LandSink",
+    "Refusal",
+    "Result",
+    "argv_for",
+    "branch_pattern",
+    "decompose_id",
+    "delete_branches_with",
+    "edge_deps",
+    "escalation",
+    "land_commit",
+    "land_refusal",
+    "landed",
+    "perform",
+    "smoke_targets",
+    "tail",
 ]
 
 Status = Literal[
     "fenced", "dry_run", "skipped", "refused", "recorded", "done", "failed", "landed", "not_landed", "escalated", "busy",
+    "in_progress",
 ]
 
 Run = Callable[[list[str]], tuple[int, str]]
@@ -58,6 +74,22 @@ class Result(TypedDict):
     needs_chair: NotRequired[Action]  # a refused land's classified needs_chair, escalated in place of the generic one;
     # or a clear_branches carry's conflicted-merge needs_chair, recorded alongside its own done result
     commit: NotRequired[str]  # a landed land's origin/main commit, from land_commit; set only when landed() was True
+
+
+class LandSink(Protocol):
+    """Where a tick hands a land and moves on; one land runs per repository, and its result comes back through `collect`."""
+
+    def pending(self, repo: str) -> bool:
+        """True while a land handed over for `repo` has not been collected."""
+        ...
+
+    def submit(self, action: Action, work: Callable[[], Result]) -> Result:
+        """Start `work` in the background and return at once: `in_progress`, or `busy` when another process holds the repo."""
+        ...
+
+    def collect(self) -> list[Result]:
+        """The lands that finished since the last call, each once."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -96,6 +128,7 @@ class Deps:
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
     send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
     ids_mode: str = "slug"  # the routing profile's `ids:` key; "sequence" makes a launch_decompose carry --initiative-id/--task-ids
+    lands: LandSink | None = None  # None runs a land in line, as before; a sink runs it behind the tick
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -254,6 +287,15 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     return _land_result(action, repo, code, output)
 
 
+def _land_async(action: Action, deps: Deps, sink: LandSink) -> Result:
+    """Hand the land to the sink and return at once; a repo whose land is still out is left alone."""
+    repo = action.get("repo", "")
+    if sink.pending(repo):
+        return _result(action, "in_progress", f"a land in {repo} is still running")
+    land = _land if action.get("kind") == "land" else _land_phase
+    return sink.submit(action, lambda: land(action, deps, {}))
+
+
 def _swept_branches(deps: Deps, repo: str, pattern: str, carry: set[str]) -> tuple[list[str], str]:
     """Like `deps.delete_branches`, but a branch on a carried phase is named and kept, not deleted.
 
@@ -398,6 +440,8 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
+    if deps.lands is not None and deps.lands.pending(repo):
+        return _result(action, "skipped", f"a land in {repo} is still running")
     host = action.get("host", "")
     ssh = deps.ssh_for(host) if host else ""
     if host and not ssh:
@@ -628,6 +672,11 @@ def _stalled(action: Action, deps: Deps, sig: int) -> Result:
 
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
+    if (
+        kind in ("land", "land_phase") and deps.lands is not None
+        and argv_for(action) is not None and action.get("repo", "") not in blocked
+    ):
+        return _land_async(action, deps, deps.lands)
     if kind == "land":
         return _land(action, deps, blocked)
     if kind == "land_phase":
@@ -663,10 +712,22 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
     A land or land_phase whose command exits nonzero is refused, escalated with the cause `land_refusal` read
     from its output, and blocks its repo's later lands and land_phases this tick. A land refused before its
     command runs blocks nothing.
+    With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
+    that finished since the last tick are collected first, so their results lead this tick's.
     """
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
+    for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
+        land = finished["action"]
+        if finished["status"] == "not_landed" or "needs_chair" in finished:
+            blocked[land.get("repo", "")] = _land_subject(land)
+        deps.record(_recorded(finished))
+        results.append(finished)
+        if finished["status"] not in ("landed", "fenced", "busy"):
+            escalated = _escalate(land, finished)
+            deps.record(_recorded(escalated))
+            results.append(escalated)
     for action in actions:
         if dry_run:
             results.append(_result(action, "dry_run"))
@@ -682,9 +743,10 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             blocked[action.get("repo", "")] = _land_subject(action)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
-        deps.record(_recorded(result))
+        if result["status"] != "in_progress":  # the land's own result is recorded when it is collected
+            deps.record(_recorded(result))
         results.append(result)
-        if action.get("kind") in ("land", "land_phase") and result["status"] not in ("landed", "fenced", "busy"):
+        if action.get("kind") in ("land", "land_phase") and result["status"] not in ("landed", "fenced", "busy", "in_progress"):
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
