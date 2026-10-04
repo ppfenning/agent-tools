@@ -102,9 +102,14 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
     )
 
 
-def remote_row(run: str, host: str | None, heartbeat_age: int | None) -> Row:
-    """Pure: the row for a live lane no local pidfile names. Its events and calls are not here, so only the lease speaks."""
-    return Row(run=run, alive=True, phase="", node="", attempt=0, turns=0, cost_usd=0.0, verdict="",
+def remote_row(run: str, host: str | None, heartbeat_age: int | None, calls: list[dict] = (), phase: str = "") -> Row:
+    """Pure: the row for a live lane no local pidfile names. Its events and verdicts are on the other machine, so the
+    lease gives the status and the store's `calls` (the `_call` shape) give node, attempt, turns and cost.
+    A run with no call recorded yet reads node `starting`, never a blank."""
+    last = calls[-1] if calls else None
+    return Row(run=run, alive=True, phase=phase,
+               node=last["node"] if last else "starting", attempt=last["attempt"] if last else 0,
+               turns=sum(c["turns"] for c in calls), cost_usd=round(sum(c["cost_usd"] for c in calls), 4), verdict="",
                status=_status([], True, False, heartbeat_age), heartbeat_age=heartbeat_age, host=host, remote=True)
 
 

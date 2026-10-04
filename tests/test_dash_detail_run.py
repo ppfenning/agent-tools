@@ -4,6 +4,7 @@ from pathlib import Path
 
 from test_runs_detail_screen import _write
 
+from agent_tools import run_store
 from agent_tools.dash_detail_run import build, build_run_detail
 
 _AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -171,6 +172,31 @@ def test_build_run_detail_matches_the_v1_fixture_keys_and_types_and_round_trips_
     assert _AT_PATTERN.match(result["at"])
     assert {**result, "at": fixture["at"]} == fixture
     assert json.loads(json.dumps(result)) == result
+
+
+def _remote_detail(monkeypatch, tmp_path, calls, phases):
+    lane = run_store.Lane("x-3", "omarchy", "2026-10-04T11:40:00Z", "2026-10-04T11:59:50Z")
+    monkeypatch.setattr(run_store, "live_lanes", lambda root, now: [lane])
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": calls} if calls else None)
+    monkeypatch.setattr(run_store, "phase_names", lambda root, run: phases)
+    return build("x-3", tmp_path, "2026-10-04T12:00:00Z")
+
+
+def test_build_reads_a_remote_runs_phase_and_cost_from_the_store(monkeypatch, tmp_path):
+    calls = [
+        {"role": "plan", "cost_usd": 0.25, "turns": 2, "ts": "2026-10-04T11:45:00Z"},
+        {"role": "build", "cost_usd": 0.5, "turns": 5, "ts": "2026-10-04T11:50:00Z"},
+    ]
+
+    result = _remote_detail(monkeypatch, tmp_path, calls, ["p1", "p2"])
+
+    assert result["phase"] == "p2"
+    assert [(s["node"], s["turns"], s["cost"], s["status"]) for s in result["steps"][:2]] == [
+        ("plan", 2, 0.25, "done"), ("build", 5, 0.5, "running")]
+
+
+def test_build_says_starting_for_a_remote_run_with_no_calls(monkeypatch, tmp_path):
+    assert _remote_detail(monkeypatch, tmp_path, [], [])["phase"] == "starting"
 
 
 def test_build_reshapes_the_runs_top_drill_down_into_a_plain_dict(tmp_path):

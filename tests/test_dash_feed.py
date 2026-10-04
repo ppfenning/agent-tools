@@ -7,7 +7,7 @@ from test_dash_detail_machine import HOST_ROW, RUNS
 from test_dash_detail_machine import NOW as _MACHINE_NOW
 from test_dash_detail_run import _BASE_RAW
 
-from agent_tools import console_screen, dash_feed, usage_meter, usage_window
+from agent_tools import console_screen, dash_feed, run_store, runs_top_screen, usage_meter, usage_window
 from agent_tools.dash_detail_initiative import build_initiative_detail
 from agent_tools.dash_detail_machine import build_machine_detail
 from agent_tools.dash_detail_run import build_run_detail
@@ -281,6 +281,43 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     machine_fixture = json.loads((_FIXTURES_DIR / "dash_detail_machine_v1.json").read_text(encoding="utf-8"))
     _assert_matches_fixture_keys_and_nulls(machine_output, machine_fixture)
     json.dumps(machine_output)
+
+
+def _remote_feed_run(monkeypatch, calls, phases):
+    """The feed's run row for one remote lane, with the store's usage and phase readers faked."""
+    now = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
+    lane = run_store.Lane("x-3", "omarchy", "2026-10-04T11:40:00Z", "2026-10-04T11:59:50Z")
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": calls} if calls else None)
+    monkeypatch.setattr(run_store, "phase_names", lambda root, run: phases)
+    row = runs_top_screen._remote_rows(Path("/nonexistent"), [lane], now)[0]
+    return dash_feed._run_v1(console_screen._lane_rows([lane], {"x-3": row}, [])[0], "bp-macbook")
+
+
+def test_the_feed_row_of_a_remote_run_with_two_calls_reports_the_second_and_the_summed_cost(monkeypatch):
+    calls = [
+        {"role": "plan", "cost_usd": 0.25, "turns": 2, "ts": "2026-10-04T11:45:00Z"},
+        {"role": "build", "cost_usd": 0.5, "turns": 5, "ts": "2026-10-04T11:50:00Z"},
+    ]
+
+    assert _remote_feed_run(monkeypatch, calls, ["p1", "p2"]) == {
+        "run": "x-3", "machine": "omarchy", "phase": "p2", "node": "build", "attempt": 1, "turns": 7, "cost": 0.75,
+        "verdict": "", "status": "running",
+    }
+
+
+def test_the_feed_row_of_a_remote_run_with_no_calls_says_starting(monkeypatch):
+    row = _remote_feed_run(monkeypatch, [], [])
+
+    assert (row["phase"], row["node"], row["attempt"], row["turns"], row["cost"]) == ("", "starting", 0, 0, 0.0)
+
+
+def test_the_feed_row_of_a_local_lane_is_what_the_console_gave_it():
+    lane = console_screen.LaneRow("r-1", None, "", "p1", "build", 1, 3, 0.5, 0, 2)
+
+    assert dash_feed._run_v1(lane, "omarchy") == {
+        "run": "r-1", "machine": "omarchy", "phase": "p1", "node": "build", "attempt": 1, "turns": 3, "cost": 0.5,
+        "verdict": "", "status": "running",
+    }
 
 
 def test_queue_drops_a_fully_landed_initiative(monkeypatch, tmp_path):
