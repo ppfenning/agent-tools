@@ -279,11 +279,12 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
     code, output = deps.run(argv)
+    # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
+    if _repo_busy(output):
+        return _result(action, "busy", output)
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    if _repo_busy(output):
-        return _result(action, "busy", output)
     return _land_result(action, repo, code, output)
 
 
@@ -422,11 +423,12 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
     code, output = deps.run(argv)
+    # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
+    if _repo_busy(output):
+        return _result(action, "busy", output)
     refusal = land_refusal(action, code, output)
     if refusal is not None:
         return {"action": action, "status": "refused", "reason": output, "needs_chair": refusal}
-    if _repo_busy(output):
-        return _result(action, "busy", output)
     return _land_result(action, repo, code, output)
 
 
