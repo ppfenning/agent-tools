@@ -1,0 +1,14 @@
+usage: cox host add [-h] --ssh SSH --capacity CAPACITY [--weight WEIGHT]
+                    [--capabilities CAPABILITIES]
+                    name
+
+positional arguments:
+  name
+
+options:
+  -h, --help            show this help message and exit
+  --ssh SSH
+  --capacity CAPACITY   lanes the host may run at once
+  --weight WEIGHT       share of new placements
+  --capabilities CAPABILITIES
+                        comma-separated, e.g. go,rust

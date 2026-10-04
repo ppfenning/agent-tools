@@ -20,9 +20,9 @@ Run = Callable[[list[str]], tuple[int, str]]
 Row = Mapping[str, object]
 
 __all__ = [
-    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "dispatchable", "doctor_line", "format_host_list",
-    "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "row_capabilities",
-    "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
+    "add_argv", "beat_argv", "beat_versions", "capacity_upsert_argv", "delete_argv", "dispatchable", "doctor_line", "format_host_list",
+    "host_line", "host_rows_to_lane_hosts", "local_host_add_argv", "local_host_missing", "local_workspace_dir", "recorded_repos", "remove_refusal",
+    "removed_line", "row_capabilities", "row_capacities", "row_weights", "set_state_argv", "shadowed", "sync_host", "versions_report",
 ]
 
 
@@ -193,6 +193,28 @@ def local_host_add_argv(hostname: str, capacity: int, by: str) -> list[str]:
 
 def set_state_argv(name: str, state: str, by: str) -> list[str]:
     return ["host", "set-state", name, state, "--by", by]
+
+
+def delete_argv(name: str, by: str) -> list[str]:
+    return ["host", "delete", name, "--by", by]
+
+
+def remove_refusal(row: Row | None, live_runs: Sequence[str], name: str) -> str | None:
+    """Why `host remove` must write nothing, or None when the row is a draining host with no live run."""
+    if row is None:
+        return f"refused {name}: no such host"
+    if row["state"] != "draining":
+        return f"refused {name}: {row['state']}; run `cox host drain {name}` first"
+    if live_runs:
+        return f"refused {name}: live run {', '.join(live_runs)} still on it; wait for it to finish"
+    return None
+
+
+def removed_line(row: Row) -> str:
+    """The whole row as JSON, then the `host add` call that restores it; a null ssh falls back to the name, as `local_host_add_argv` does."""
+    ssh = row.get("ssh") or row["name"]
+    restore = f"cox host add {row['name']} --ssh {ssh} --capacity {row['capacity']}"
+    return f"{row['name']}: {json.dumps(dict(row), sort_keys=True, default=str)}\n  restore: {restore}"
 
 
 def beat_argv(name: str, versions: dict) -> list[str]:

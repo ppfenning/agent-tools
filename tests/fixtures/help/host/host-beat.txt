@@ -1,0 +1,7 @@
+usage: cox host beat [-h] [name]
+
+positional arguments:
+  name        default: this machine's hostname
+
+options:
+  -h, --help  show this help message and exit
