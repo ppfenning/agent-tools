@@ -258,8 +258,17 @@ def test_a_home_with_a_free_lane_gets_the_relaunch_directly(monkeypatch):
     }
     facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"})
     assert plan_tick(facts) == [
-        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "host": "jarvis", "epoch": 7},
         {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
+
+
+def test_a_local_home_leaves_its_clear_without_a_host(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(run_exited={"a": True}, home={"a": ""})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "epoch": 7},
     ]
 
 

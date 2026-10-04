@@ -1,8 +1,10 @@
 import json
+import shlex
 import signal
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,7 @@ from agent_tools.chair_exec import (
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_report import format_status
 from agent_tools.draft_apply import plan_approve
+from agent_tools.remote_argv import ssh_argv, sync_argv
 from agent_tools.store_url import TracesRoot
 
 LANDED = "merge: ok\nmark_done: ok\n"
@@ -442,6 +445,10 @@ def _carry_run(argvs: list, listing: str, branches: set, conflict_branches: froz
             return 1, f"boom: {' '.join(fail)}"
         if "worktree" in argv and "list" in argv:
             return 0, listing
+        if "rev-parse" in argv:
+            return (0, "") if argv[-1].removeprefix("refs/heads/") in branches else (1, "")
+        if argv[0] == "mktemp":
+            return 0, "/tmp/cox-carry-abc\n"
         if "worktree" in argv and "add" in argv:
             tmp_branch[argv[-2]] = argv[-1]
             return 0, ""
@@ -483,6 +490,7 @@ def test_a_carried_phase_keeps_its_worktree_removed_branch_kept_then_merges_in_a
     assert argvs[4] == ["git", "-C", tmp, "merge", "--no-edit", "main"]
     assert argvs[5] == ["git", "-C", "/w/app", "worktree", "remove", "--force", tmp]
     assert len(argvs) == 6
+    assert not any(a[0] == "ssh" for a in argvs)
     assert not any("checkout" in a or "switch" in a for a in argvs)
 
 
@@ -536,6 +544,143 @@ def test_a_failed_worktree_add_fails_the_clear_and_holds_its_relaunch() -> None:
     results = perform(actions, deps, lambda: 1, False)
     assert [r["status"] for r in results] == ["failed", "skipped"]
     assert "worktree add" in results[0]["reason"] and "epic/i/p" in results[0]["reason"]
+
+
+def _host_carry_run(
+    argvs: list,
+    host_branches: set,
+    conflict_branches: frozenset = frozenset(),
+    host_listing: str = f"{_MAIN_WORKTREE}\n",
+    chair_branches: frozenset = frozenset(),
+    fail: tuple = (),
+) -> Run:
+    """A fake whose ssh argvs run against a host's own fake git and whose bare argvs run against the chair's."""
+    chair = _carry_run([], f"{_MAIN_WORKTREE}\n", set(chair_branches))
+    host = _carry_run([], host_listing, host_branches, conflict_branches, fail)
+
+    def run(argv):
+        argvs.append(argv)
+        return host(shlex.split(argv[2])) if argv[0] == "ssh" else chair(argv)
+
+    return run
+
+
+def _host_clear(run: Run, ssh: str = "me@jarvis", repo: str = "/w/app", relaunch: bool = False) -> list:
+    deps = replace(_deps([]), run=run, repo_for=lambda action: repo, ssh_for=lambda host: ssh)
+    clear = {**_clear("i"), "carry": ["p"], "repo": repo, "host": "jarvis"}
+    tail_actions = [{"kind": "relaunch", "initiative": "i", "host": "jarvis", "epoch": 1}] if relaunch else []
+    return perform([clear, *tail_actions], deps, lambda: 1, False)
+
+
+def test_a_host_homed_carry_runs_its_git_steps_on_that_host() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}))
+    assert results[0]["status"] == "done"
+    assert ssh_argv("me@jarvis", sync_argv("/w/app")) in argvs
+    assert ["ssh", "me@jarvis", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
+    assert ["ssh", "me@jarvis", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
+    assert not any(a[0] == "git" and ("merge" in a or "add" in a) for a in argvs)
+
+
+def test_a_phase_branch_present_only_on_the_host_is_carried_not_failed() -> None:
+    results = _host_clear(_host_carry_run([], {"epic/i/p"}))
+    assert results[0]["status"] == "done"
+    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
+
+
+def test_a_host_worktree_holding_the_carried_branch_is_removed_on_the_host_before_the_add() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, {"epic/i/p", "epic/i/p--t"}, host_listing=f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n"))
+    assert results[0]["status"] == "done"
+    assert results[0]["reason"] == "deleted ['epic/i/p--t'] in /w/app on jarvis; carried ['p'] past main on jarvis"
+    remove = ["ssh", "me@jarvis", "git -C /w/app worktree remove --force /w/app/.worktrees/i-p"]
+    add = ["ssh", "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"]
+    assert argvs.index(remove) < argvs.index(add)
+    assert ["ssh", "me@jarvis", "git -C /w/app branch -D epic/i/p"] not in argvs
+
+
+def test_a_phase_branch_only_the_chair_holds_is_pushed_to_the_host_then_carried_there() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, set(), chair_branches=frozenset({"epic/i/p"})))
+    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
+    push = ["git", "-C", "/w/app", "push", "me@jarvis:/w/app", "refs/heads/epic/i/p:refs/heads/epic/i/p"]
+    assert argvs.index(push) < argvs.index(["ssh", "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"])
+
+
+def test_a_conflict_on_the_host_raises_carry_conflict() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}, frozenset({"epic/i/p"})))
+    assert [r["status"] for r in results] == ["done", "recorded"]
+    assert results[1]["action"]["cause"] == "carry_conflict"
+    assert "src/app.py" in results[1]["reason"]
+    assert ["ssh", "me@jarvis", "git -C /tmp/cox-carry-abc merge --abort"] in argvs
+
+
+def test_a_phase_branch_missing_on_both_machines_is_nothing_to_carry() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, set()))
+    assert results[0]["status"] == "done"
+    assert results[0]["reason"] == "nothing to clear: no branch matched epic/i/* in /w/app"
+    assert not any(a[0] == "ssh" and "worktree add" in a[2] for a in argvs)
+    assert not any("push" in a for a in argvs)
+
+
+def test_a_host_sync_failure_fails_the_clear_and_holds_the_relaunch_it_would_also_fail() -> None:
+    results = _host_clear(_host_carry_run([], {"epic/i/p"}, fail=("bash",)), relaunch=True)
+    assert [r["status"] for r in results] == ["failed", "skipped"]
+    assert results[0]["reason"] == "updating /w/app on jarvis before the carry: boom: bash"
+
+
+def test_a_host_with_no_ssh_destination_fails_the_clear_instead_of_carrying_locally() -> None:
+    argvs: list = []
+    results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}), ssh="")
+    assert results[0]["status"] == "failed"
+    assert "jarvis" in results[0]["reason"]
+    assert argvs == []
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+def _commit(checkout: str, name: str) -> None:
+    (Path(checkout) / name).write_text(name, encoding="utf-8")
+    _git("-C", checkout, "add", name)
+    _git("-C", checkout, "commit", "-q", "-m", name)
+
+
+def _configured(checkout: str) -> None:
+    for key, value in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false")):
+        _git("-C", checkout, "config", key, value)
+
+
+def test_a_host_carry_runs_through_a_real_shell_against_real_git(tmp_path) -> None:
+    """Each ssh argv runs as `bash -c` would on the host. The host's previous run still holds the phase branch in
+    a worktree, and origin has a landed commit the host's main has not fetched yet."""
+    origin, app, other, held = (str(tmp_path.resolve() / n) for n in ("origin.git", "app", "other", "held"))
+    _git("init", "-q", "--bare", "-b", "main", origin)
+    _git("init", "-q", "-b", "main", app)
+    _configured(app)
+    _commit(app, "a.txt")
+    _git("-C", app, "remote", "add", "origin", origin)
+    _git("-C", app, "push", "-q", "origin", "main")
+    _git("-C", app, "worktree", "add", "-q", "-b", "epic/i/p", held)
+    _commit(held, "b.txt")
+    _git("clone", "-q", origin, other)
+    _configured(other)
+    _commit(other, "c.txt")
+    _git("-C", other, "push", "-q", "origin", "main")
+    chair = _carry_run([], f"{_MAIN_WORKTREE}\n", set())
+
+    def run(argv):
+        return run_argv(["bash", "-c", argv[2]]) if argv[0] == "ssh" else chair(argv)
+
+    results = _host_clear(run, repo=app)
+    assert results[0]["status"] == "done", results[0]["reason"]
+    assert results[0]["reason"] == "carried ['p'] past main on jarvis"
+    assert f"worktree {held}\n" not in _git("-C", app, "worktree", "list", "--porcelain")
+    assert _git("-C", app, "show", "epic/i/p:b.txt") == "b.txt"
+    assert _git("-C", app, "show", "epic/i/p:c.txt") == "c.txt"
 
 
 def test_a_missing_binary_is_an_exit_code_not_an_exception() -> None:
