@@ -134,6 +134,14 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         })
 
 
+def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
+    """Record the tick's status line as a `status` action, so the feed reads it from the store on any machine."""
+    if dry_run or not line.strip():
+        return
+    with contextlib.suppress(Exception):
+        deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat()})
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
@@ -159,6 +167,7 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
         line = tick(deps, dry_run, now)
     except Exception as exc:  # one bad tick must not stop the loop
         line = error_line(exc, now)
+    _publish_status(deps, dry_run, line, now)
     try:
         write_status(line, deps.report_deps)
     except Exception as exc:  # a failed notify or echo must not stop the loop either

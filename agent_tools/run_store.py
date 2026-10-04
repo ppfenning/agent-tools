@@ -440,6 +440,26 @@ def latest_chair_meter(runs_dir: Path) -> dict | None:
     return doc if isinstance(doc, dict) else None
 
 
+def latest_chair_status(runs_dir: Path) -> dict | None:
+    """Edge. The newest `status` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
+    try:
+        opened = _open(runs_dir)
+    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+        return None
+    if opened is None:
+        return None
+    conn, token = opened
+    try:
+        sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
+        row = conn.execute(sql, ("status",)).fetchone()
+    except _DB_ERRORS:
+        return None
+    finally:
+        conn.close()
+    doc = _json_cell(row["action_json"]) if row is not None else None
+    return doc if isinstance(doc, dict) else None
+
+
 def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
     """Edge. Each id in `run_ids` mapped to its newest `node_calls.ts`; a run with no call row is absent.
     `{}` with no store, an unreadable one, or an empty `run_ids`."""
