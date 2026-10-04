@@ -41,6 +41,10 @@ def test_snapshot_matches_committed_fixture():
         "liveness": "live",
         "beat_age_s": 4,
         "session": "a1b2c3d4",
+        "last_tick_at": "09-28 19:59 EDT",
+        "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1",
+        "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"},
+        "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1},
     }
     spend = {
         "five_hour_fraction": 0.16,
@@ -229,6 +233,7 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     with open("tests/fixtures/dash_feed_v1.json") as f:
         fixture = json.load(f)
     (tmp_path / "chair.lease.json").write_text('{"holder": "chair-loop@omarchy:42", "epoch": 7}')
+    (tmp_path / "chair.json").write_text('{"heartbeat_at": "2026-09-29T20:59:00+00:00"}')
     lane = console_screen.LaneRow(
         run="r-1", host=None, heartbeat_at="", phase="p1", node="build", attempt=1, turns=3, cost_usd=0.5,
         phases_landed=0, phases_total=2,
@@ -258,7 +263,8 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
     rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
-    assert all(value is not None for row in rows for value in row.values())
+    # `current_action` is null when nothing is running; it is the one null the feed allows.
+    assert all(value is not None for row in rows for key, value in row.items() if key != "current_action")
     assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("omarchy", 7, 60)
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60

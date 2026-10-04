@@ -14,6 +14,11 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_tools import chair, console_screen, courier, decisions, route, run_store, usage_meter, usage_window
+from agent_tools.chair_read_record import ACTION_LOG
+from agent_tools.chair_types import EASTERN
+from agent_tools.dash_chair_action import read_current_action
+from agent_tools.dash_chair_beat import beat_age_s, read_status_record
+from agent_tools.dash_chair_today import chair_today
 from agent_tools.runs_detail import NODE_ORDER
 
 __all__ = ["gather_feed", "snapshot"]
@@ -238,23 +243,38 @@ def _age_s(text, at: datetime) -> int:
         return 0
 
 
-def _chair_v1(row: dict, lease: dict, record: dict, at: datetime) -> dict:
-    """The console's chair row (holder, state, minutes_ago), the lease file and the chair.json record as the
-    schema-1 chair."""
+def _chair_v1(
+    row: dict, lease: dict, record: dict, at: datetime,
+    status: tuple[str | None, str | None] = (None, None),
+    action: dict | None = None,
+    action_rows: list[dict] | None = None,
+    needs_chair_open: int = 0,
+) -> dict:
+    """The console's chair row (holder, state), the lease file, the chair.json record and the edge's reads
+    (status line, open action, action-log rows) as the schema-1 chair. Pure: `at` is the one clock.
+
+    `current_action` is the one null the feed allows: no action is running. Day boundaries are Eastern, the
+    zone the status line prints in.
+    """
     holder = str(row.get("holder") or lease.get("holder") or "")
     # The console row carries the label alone; the lease's holder carries `label@host:pid`.
     full = next((str(h) for h in (row.get("holder"), lease.get("holder")) if h and "@" in str(h)), "")
     host = full.split("@", 1)[1].split(":", 1)[0] if full else ""
-    minutes = row.get("minutes_ago")
+    age = beat_age_s(record.get("heartbeat_at"), at)
+    last_tick_at, last_status = status
     return {
         "holder": holder,
         "host": host,
         "epoch": int(lease.get("epoch") or 0),
         "liveness": str(row.get("state") or "unknown"),
-        "beat_age_s": int(minutes * 60) if isinstance(minutes, (int, float)) else 0,
+        "beat_age_s": max(0, age) if age is not None else 0,
         # Neither the console row nor chair.lease.json (holder and epoch only) carries `claude_session`;
         # chair.json does, written by `chair.take` and kept by `chair.beat`.
         "session": str(record.get("claude_session") or "")[:8],
+        "last_tick_at": last_tick_at or "",
+        "last_status": last_status or "",
+        "current_action": action,
+        "today": chair_today(action_rows or [], needs_chair_open, at, at.astimezone(EASTERN).utcoffset()),
     }
 
 
@@ -332,6 +352,38 @@ def _chair_record(runs_dir: Path) -> dict:
     return record if isinstance(record, dict) else {}
 
 
+def _action_rows(runs_dir: Path) -> list[dict]:
+    """The chair action log's lines as dicts; [] when it is missing, blank lines and malformed ones skipped."""
+    try:
+        lines = (runs_dir / ACTION_LOG).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    rows = []
+    for line in lines:
+        try:
+            value = json.loads(line) if line.strip() else None
+        except ValueError:
+            value = None
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def _needs_chair_open(entries: list[dict]) -> int:
+    """Unacknowledged courier entries that reach a person and are `needs_chair` refs, before the inbox cap."""
+    refs = (_REF.fullmatch(str(e.get("ref") or "")) for e in entries if _reaches_a_person(str(e.get("to") or "")))
+    return len([m for m in refs if m and m.group(1) == "needs_chair"])
+
+
+def _chair_edge(runs_dir: Path) -> dict:
+    """Edge: the new chair reads as `_chair_v1` keyword arguments. The status line is chair-loop.log's last line."""
+    return {
+        "status": read_status_record(runs_dir / "chair-loop.log"),
+        "action": read_current_action(runs_dir),
+        "action_rows": _action_rows(runs_dir),
+    }
+
+
 def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write."""
@@ -347,7 +399,10 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str) -> dict:
     inbox, inbox_total = _inbox(entries)
     return snapshot(
         now,
-        _chair_v1(chair_row, _lease(runs_dir), _chair_record(runs_dir), at),
+        _chair_v1(
+            chair_row, _lease(runs_dir), _chair_record(runs_dir), at,
+            needs_chair_open=_needs_chair_open(entries), **_chair_edge(runs_dir),
+        ),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
         [_run_v1(lane, local_name) for lane in sections["lanes"]],

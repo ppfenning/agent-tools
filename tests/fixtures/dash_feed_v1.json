@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "at": "2026-09-29T00:00:00Z",
-  "chair": {"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "a1b2c3d4"},
+  "chair": {"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "a1b2c3d4", "last_tick_at": "09-28 19:59 EDT", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1", "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1}},
   "spend": {"five_hour_fraction": 0.16, "five_hour_source": "meter", "weekly_fraction": 0.35, "weekly_source": "meter", "hard_stop_fraction": 0.93, "five_hour_resets_at": "2026-09-29T02:00:00Z", "weekly_resets_at": "2026-10-04T04:00:00Z"},
   "machines": [{"name": "omarchy", "state": "active", "lanes_in_use": 2, "capacity": 3, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 12, "checkouts": {"coxswain-tools": {"behind_main": 0}}}],
   "runs": [{"run": "dash-feed-1", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running"}],
