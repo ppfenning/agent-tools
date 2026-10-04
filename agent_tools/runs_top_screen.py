@@ -207,9 +207,17 @@ def _lane_age(heartbeat_at: str, now: datetime.datetime) -> int | None:
 
 
 def _remote_rows(root: Path, lanes: list[run_store.Lane], now: datetime.datetime) -> list[runs_top.Row]:
-    """Edge. One row per live lane no local pidfile names. Reads no log, trace or lease of that run: its files are on the other machine."""
+    """Edge. One row per live lane no local pidfile names. Reads no log or trace of that run: its files are on the
+    other machine. Its calls and phases come from the shared store, which the lane host writes as it goes."""
     remote = run_store.remote_lanes(lanes, {p.stem for p in root.glob("*.pid")})
-    return [runs_top.remote_row(lane.run, lane.host, _lane_age(lane.heartbeat_at, now)) for lane in remote]
+    return [_remote_row(root, lane, now) for lane in remote]
+
+
+def _remote_row(root: Path, lane: run_store.Lane, now: datetime.datetime) -> runs_top.Row:
+    # `run_store.usage` reads a pidless run's store rows as ended, so it serves a run still going on another host.
+    calls = calls_from_usage((run_store.usage(root, lane.run) or {}).get("calls") or [])
+    phases = run_store.phase_names(root, lane.run)
+    return runs_top.remote_row(lane.run, lane.host, _lane_age(lane.heartbeat_at, now), calls, phases[-1] if phases else "")
 
 
 def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,

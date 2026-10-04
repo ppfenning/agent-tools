@@ -190,9 +190,16 @@ def test_remote_row_reads_running_at_89_seconds_and_stalled_at_90():
     assert remote_row("x-1", "h1", None).status == "running"
 
 
-def test_remote_row_is_alive_and_empty_of_local_facts():
+def test_remote_row_with_no_calls_says_starting():
     r = remote_row("x-1", "h1", 5)
-    assert (r.alive, r.remote, r.host, r.phase, r.node, r.turns, r.cost_usd, r.verdict) == (True, True, "h1", "", "", 0, 0.0, "")
+    assert (r.alive, r.remote, r.host, r.phase, r.node, r.attempt, r.turns, r.cost_usd, r.verdict) == (
+        True, True, "h1", "", "starting", 0, 0, 0.0, "")
+
+
+def test_remote_row_reports_the_last_call_and_the_summed_turns_and_cost():
+    calls = [{"node": "plan", "attempt": 1, "turns": 2, "cost_usd": 0.25}, {"node": "build", "attempt": 1, "turns": 5, "cost_usd": 0.5}]
+    r = remote_row("x-1", "h1", 5, calls, "p2")
+    assert (r.phase, r.node, r.attempt, r.turns, r.cost_usd) == ("p2", "build", 1, 7, 0.75)
 
 
 def test_the_machine_column_follows_run_and_the_run_cell_is_the_bare_run():

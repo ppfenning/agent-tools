@@ -49,6 +49,12 @@ def _task_path(root: Path, run_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _remote_phase(root: Path, run_id: str, calls: list[dict]) -> str | None:
+    """A live run with no local files: the store's newest phase for it, else `starting` while no call is recorded."""
+    phases = run_store.phase_names(root, run_id)
+    return phases[-1] if phases else (None if calls else "starting")
+
+
 def build(run_id: str, runs_dir: Path, now: str) -> dict:
     """The v1 `cox dash --detail run` snapshot, `build_run_detail`'s reshape of this
     edge's own six-key dict plus the run's identifying fields; `now` decides a pidless
@@ -62,11 +68,14 @@ def build(run_id: str, runs_dir: Path, now: str) -> dict:
     phase = task_path.parent.name if task_path is not None else None
     task_id = task_path.stem if task_path is not None else None
     fix_loop = record.get("fix_loop")
+    current_phase = record.get("phase", phase)
+    if current_phase is None and facts["alive"] and not (root / f"{run_id}.pid").exists():
+        current_phase = _remote_phase(root, run_id, facts["calls"])
     raw = {
         "run": run_id,
         "machine": record.get("machine"),
         "initiative": record.get("initiative"),
-        "phase": record.get("phase", phase),
+        "phase": current_phase,
         "alive": facts["alive"],
         "task": record.get("ticket", task_id),
         "timeline": timeline,

@@ -432,7 +432,30 @@ def test_a_remote_lane_appears_with_remote_true_and_its_host(tmp_path):
     rows = rows_now(tmp_path, now=_NOW)
 
     assert [(r.run, r.remote, r.host, r.alive, r.status, r.heartbeat_age) for r in rows] == [("x-3", True, "h", True, "running", 10)]
-    assert (rows[0].phase, rows[0].node, rows[0].turns, rows[0].cost_usd, rows[0].verdict) == ("", "", 0, 0.0, "")
+    assert (rows[0].phase, rows[0].node, rows[0].turns, rows[0].cost_usd, rows[0].verdict) == ("", "starting", 0, 0.0, "")
+
+
+def test_a_remote_lane_with_two_stored_calls_reports_the_second_and_the_summed_cost(tmp_path, monkeypatch):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    monkeypatch.setattr(run_store, "usage", lambda root, run: {"calls": [
+        {"role": "plan", "cost_usd": 0.25, "turns": 2, "ts": "2026-09-25T05:10:00Z"},
+        {"role": "build", "cost_usd": 0.5, "turns": 5, "ts": "2026-09-25T05:20:00Z"},
+    ]})
+    monkeypatch.setattr(run_store, "phase_names", lambda root, run: ["p1", "p2"])
+
+    row = rows_now(tmp_path, now=_NOW)[0]
+
+    assert (row.phase, row.node, row.attempt, row.turns, row.cost_usd) == ("p2", "build", 1, 7, 0.75)
+
+
+def test_a_remote_lane_with_no_stored_calls_reports_starting(tmp_path, monkeypatch):
+    _remote_store(tmp_path, "2026-09-25T05:59:50Z")
+    monkeypatch.setattr(run_store, "usage", lambda root, run: None)
+    monkeypatch.setattr(run_store, "phase_names", lambda root, run: [])
+
+    row = rows_now(tmp_path, now=_NOW)[0]
+
+    assert (row.phase, row.node, row.attempt, row.turns, row.cost_usd) == ("", "starting", 0, 0, 0.0)
 
 
 def test_a_stalled_remote_lane_at_90_seconds_reads_stalled(tmp_path):
