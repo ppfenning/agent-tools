@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from agent_tools.chair_types import HoldRecord, LandTrigger, SmokeCommandResult
+from agent_tools.land import pr_footer
 
 __all__ = [
     "clear_hold",
@@ -99,7 +100,7 @@ def clear_hold(runs_dir: str) -> None:
     hold_path(runs_dir).unlink(missing_ok=True)
 
 
-def revert_pr_argv(land: LandTrigger, failing_tail: str) -> dict:
+def revert_pr_argv(land: LandTrigger, failing_tail: str, run: str | None = None) -> dict:
     """Pure. The argv for the four commands the caller runs in order to open a revert PR."""
     repo = land["repo"]
     branch = f"revert/{land['pr']}"
@@ -110,7 +111,7 @@ def revert_pr_argv(land: LandTrigger, failing_tail: str) -> dict:
         "pr_create": [
             "gh", "pr", "create", "--repo", repo,
             "--title", f"Revert #{land['pr']}: post-land smoke failed",
-            "--body", failing_tail,
+            "--body", f"{failing_tail}\n\n{pr_footer(run)}",
             "--head", branch,
         ],
     }

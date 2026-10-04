@@ -719,14 +719,17 @@ def test_chair_perform_with_smoke_holds_and_reverts_on_a_traceback(monkeypatch, 
     )
     reverted = []
     monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", reverted.append)
-    results = [_land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")]
-    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
+    land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
+    land_result["action"] = {**land_result["action"], "run": "r-9"}
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: [land_result])
 
     wrapped([], object(), lambda: 1, False)
 
     held = cli.chair_smoke.read_hold(str(runs_dir))
     assert held["cause"] == "smoke_failed"
     assert len(reverted) == 1
+    pr_create = reverted[0]["pr_create"]
+    assert pr_create[pr_create.index("--body") + 1].endswith(" · run r-9")
 
 
 def test_chair_perform_with_smoke_clears_an_existing_hold_on_a_later_clean_pass(monkeypatch, tmp_path):
