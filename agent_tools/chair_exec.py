@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -35,6 +35,7 @@ from agent_tools import (
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
+from agent_tools.remote_argv import ssh_argv, sync_argv
 
 __all__ = [
     "LAUNCH_KINDS", "Deps", "Refusal", "Result", "argv_for", "branch_pattern", "decompose_id", "delete_branches_with", "edge_deps",
@@ -76,6 +77,7 @@ class Deps:
     record: Callable[[Action], None]
     run_id: Callable[[Action], str]  # the run whose task a land applies to; "" when unknown
     repo_for: Callable[[Action], str]  # the repository a clear_branches acts in; "" when unknown
+    ssh_for: Callable[[str], str] = lambda host: ""  # a lane host's name -> its ssh destination; "" when the hosts table has none
     intake_id: Callable[[str], str] = _no_intake_id  # an intake path -> the id in its frontmatter; "" when it has none
     runs_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's task records and remote record live here
     work_dir: Path = field(default_factory=lambda: Path("."))  # a fetch_exit's ticket files live under work_dir/work/<initiative>
@@ -270,32 +272,90 @@ def _swept_branches(deps: Deps, repo: str, pattern: str, carry: set[str]) -> tup
     return deleted, "".join(out for _, (c, out) in outcomes if c != 0)
 
 
+def _over_ssh(deps: Deps, ssh: str) -> Deps:
+    """`deps` with its git door, and the sweep built on it, running on the host at `ssh` instead of here."""
+    def run(argv: list[str]) -> tuple[int, str]:
+        return deps.run(ssh_argv(ssh, argv))
+
+    return replace(deps, run=run, delete_branches=partial(delete_branches_with, run))
+
+
+def _pruned(deps: Deps, repo: str, initiative: str, pattern: str, carry: set[str]) -> tuple[list[str], str]:
+    """The clear's worktree prune, then its branch sweep, through `deps.run`; (deleted branches, failure line or "")."""
+    code, listing = deps.run(["git", "-C", repo, "worktree", "list", "--porcelain"])
+    if code != 0:
+        return [], f"git worktree list in {repo}: {listing.strip()}"
+    entries = chair_plan_prune.worktrees_to_prune(listing, initiative)
+    for argv in chair_plan_prune.prune_argv(entries, carry):
+        code, output = deps.run(["git", "-C", repo, *argv[1:]])
+        if code != 0:
+            return [], f"{' '.join(argv)} in {repo}: {output.strip()}"
+    # The prune already deleted its entries' branches, so the sweep finding nothing after a prune is success, not a miss.
+    swept, error = _swept_branches(deps, repo, pattern, carry)
+    deleted = [e["branch"] for e in entries if e["branch"].rsplit("/", 1)[-1] not in carry] + swept
+    return deleted, f"deleted {deleted} in {repo}; git: {error.strip()}" if error else ""
+
+
+def _branch_on_host(deps: Deps, at_home: Run, ssh: str, repo: str, branch: str) -> tuple[bool, str]:
+    """(present on the host, failure line or ""). A branch only the chair holds is pushed to the host first, so
+    the relaunch there builds on it; a branch on neither machine is nothing to carry."""
+    verify = ["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]
+    if at_home(verify)[0] == 0:
+        return True, ""
+    if deps.run(verify)[0] != 0:
+        return False, ""
+    code, out = deps.run(["git", "-C", repo, "push", f"{ssh}:{repo}", f"refs/heads/{branch}:refs/heads/{branch}"])
+    return (True, "") if code == 0 else (False, f"git push of {branch} to {ssh}:{repo}: {out.strip()}")
+
+
 def _carry_forward(
-    action: Action, deps: Deps, repo: str, initiative: str, phases: list[str]
+    action: Action, deps: Deps, repo: str, initiative: str, phases: list[str], ssh: str = ""
 ) -> tuple[list[str], Action | None, Result | None]:
     """Merge main into each carried phase's branch, one throwaway worktree at a time; the repo the running loop
     imports from is never checked out or switched.
+
+    A non-empty `ssh` carries on the action's `host` instead, after syncing that host's main, because the
+    relaunch runs there and reads that host's copy of the branch. A branch on neither machine is skipped.
 
     Returns the phases actually merged, an extra needs_chair action for the first conflict (or None), and a
     failed Result that stops the clear immediately (or None). At most one of the last two is ever set: a
     conflict stops the loop without failing the clear, any other failed git step fails it.
     """
+    host = action.get("host", "")
+    at_home = _over_ssh(deps, ssh).run if ssh else deps.run
+    if ssh and phases:
+        # The relaunch's own launch_on_host runs this same sync before starting the lane, so a host checkout that
+        # is dirty or off main would fail that relaunch anyway; failing here says why one step earlier.
+        code, out = at_home(sync_argv(repo))
+        if code != 0:
+            return [], None, _result(action, "failed", f"updating {repo} on {host} before the carry: {out.strip()}")
     merged: list[str] = []
     for phase in phases:
         branch = f"epic/{initiative}/{phase}"
-        tmp = tempfile.mkdtemp(prefix="cox-carry-")
-        code, out = deps.run(["git", "-C", repo, "worktree", "add", tmp, branch])
+        present, error = _branch_on_host(deps, at_home, ssh, repo, branch) if ssh else (True, "")
+        if error:
+            return merged, None, _result(action, "failed", error)
+        if not present:
+            continue
+        if ssh:
+            code, out = at_home(["mktemp", "-d", "/tmp/cox-carry-XXXXXX"])
+            tmp = out.strip().splitlines()[-1] if code == 0 and out.strip() else ""
+            if not tmp:
+                return merged, None, _result(action, "failed", f"mktemp -d on {host}: {out.strip()}")
+        else:
+            tmp = tempfile.mkdtemp(prefix="cox-carry-")
+        code, out = at_home(["git", "-C", repo, "worktree", "add", tmp, branch])
         if code != 0:
             return merged, None, _result(action, "failed", f"git worktree add {tmp} {branch} in {repo}: {out.strip()}")
-        code, out = deps.run(["git", "-C", tmp, "merge", "--no-edit", "main"])
+        code, out = at_home(["git", "-C", tmp, "merge", "--no-edit", "main"])
         if code != 0:
-            _, diff_out = deps.run(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
+            _, diff_out = at_home(["git", "-C", tmp, "diff", "--name-only", "--diff-filter=U"])
             conflicted = [line for line in diff_out.splitlines() if line.strip()]
             if not conflicted:
-                deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+                at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
                 return merged, None, _result(action, "failed", f"git merge --no-edit main in {tmp} ({branch}): {out.strip()}")
-            deps.run(["git", "-C", tmp, "merge", "--abort"])
-            rcode, rout = deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+            at_home(["git", "-C", tmp, "merge", "--abort"])
+            rcode, rout = at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
             if rcode != 0:
                 return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
             needs_chair: Action = {
@@ -303,7 +363,7 @@ def _carry_forward(
                 "reason": f"phase {phase} conflicts with main: {conflicted}",
             }
             return merged, needs_chair, None
-        rcode, rout = deps.run(["git", "-C", repo, "worktree", "remove", "--force", tmp])
+        rcode, rout = at_home(["git", "-C", repo, "worktree", "remove", "--force", tmp])
         if rcode != 0:
             return merged, None, _result(action, "failed", f"git worktree remove --force {tmp} in {repo}: {rout.strip()}")
         merged.append(phase)
@@ -338,24 +398,32 @@ def _clear(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", f"no repository resolved for initiative {initiative}")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
-    code, listing = deps.run(["git", "-C", repo, "worktree", "list", "--porcelain"])
-    if code != 0:
-        return _result(action, "failed", f"git worktree list in {repo}: {listing.strip()}")
+    host = action.get("host", "")
+    ssh = deps.ssh_for(host) if host else ""
+    if host and not ssh:
+        return _result(action, "failed", f"no ssh destination for host {host}: its clear cannot run there")
     carry = set(action.get("carry", []))
-    entries = chair_plan_prune.worktrees_to_prune(listing, initiative)
-    for argv in chair_plan_prune.prune_argv(entries, carry):
-        code, output = deps.run(["git", "-C", repo, *argv[1:]])
-        if code != 0:
-            return _result(action, "failed", f"{' '.join(argv)} in {repo}: {output.strip()}")
-    # The prune already deleted its entries' branches, so the sweep finding nothing after a prune is success, not a miss.
-    swept, error = _swept_branches(deps, repo, pattern, carry)
-    deleted = [e["branch"] for e in entries if e["branch"].rsplit("/", 1)[-1] not in carry] + swept
+    deleted, error = _pruned(deps, repo, initiative, pattern, carry)
     if error:
-        return _result(action, "failed", f"deleted {deleted} in {repo}; git: {error.strip()}")
-    merged, needs_chair, failure = _carry_forward(action, deps, repo, initiative, sorted(carry))
+        return _result(action, "failed", error)
+    # A host-homed initiative's earlier runs left their worktrees and branches in the host's checkout, and git
+    # refuses to add a worktree on a branch another worktree holds, so the host gets the same prune first.
+    host_deleted, error = _pruned(_over_ssh(deps, ssh), repo, initiative, pattern, carry) if ssh else ([], "")
+    if error:
+        return _result(action, "failed", f"on {host}: {error}")
+    merged, needs_chair, failure = _carry_forward(action, deps, repo, initiative, sorted(carry), ssh)
     if failure is not None:
         return failure
-    parts = [p for p in (f"deleted {deleted} in {repo}" if deleted else "", f"carried {merged} past main" if merged else "") if p]
+    where = f" on {host}" if host else ""
+    parts = [
+        p
+        for p in (
+            f"deleted {deleted} in {repo}" if deleted else "",
+            f"deleted {host_deleted} in {repo}{where}" if host_deleted else "",
+            f"carried {merged} past main{where}" if merged else "",
+        )
+        if p
+    ]
     # Nothing stale or partial is the state a clear exists to reach: a relaunch that failed after an earlier clear
     # must not be skipped forever because that clear already deleted the branches and carried the phases forward.
     result = _result(action, "done", "; ".join(parts) if parts else f"nothing to clear: no branch matched {pattern} in {repo}")
@@ -758,6 +826,7 @@ def edge_deps(
         record=record,
         run_id=run_id,
         repo_for=repo_for,
+        ssh_for=lambda name: str(_host_row(runs_dir, name).get("ssh", "")),
         intake_id=partial(read_intake_id, workspace),
         runs_dir=runs_dir,
         work_dir=workspace,

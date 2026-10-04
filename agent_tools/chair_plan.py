@@ -122,7 +122,8 @@ def _cap_launches(
     capabilities, free count). rescue never gets a host and is dropped past the cap, or when its home is stuck,
     exactly as before. What no host can take (none eligible, or every host lane full) is dropped as before. A
     dropped relaunch takes its paired clear_branches with it; a hosted or relocated relaunch keeps its
-    clear_branches, which still runs locally.
+    clear_branches. A clear for a relaunch routed to its home host names that host, so its prune and carry
+    also run there; a relocated relaunch's clear names none and runs locally.
 
     Returns the resulting actions and a mapping of host name to the lanes this placement took, for the fill
     step that follows to subtract.
@@ -183,7 +184,7 @@ def _cap_launches(
         for n in kept_at
         for action in (
             *([fetch_before[n]] if n in fetch_before else []),
-            {**actions[n], "host": host_for_index[n]} if n in host_for_index else actions[n],
+            _hosted(actions[n], host_for_index.get(n), routed_home),
         )
     ]
     # A stuck home with no run to fetch from never moves blind: the chair hears why the relaunch was dropped.
@@ -193,6 +194,15 @@ def _cap_launches(
 
 def _needs_chair_only(actions: list[Action]) -> list[Action]:
     return [a for a in actions if a["kind"] == "needs_chair"]
+
+
+def _hosted(action: Action, placed: str | None, routed_home: Mapping[str, str]) -> Action:
+    """A launch gains the host it was placed on. A clear_branches gains its initiative's home host, so its carry
+    runs where the relaunch will; a local home or a relocated initiative leaves it without one."""
+    if placed is not None:
+        return {**action, "host": placed}
+    home = routed_home.get(action.get("initiative", ""), "")
+    return {**action, "host": home} if action["kind"] == "clear_branches" and home else action
 
 
 def _with_carry(action: Action, approved: list[dict]) -> Action:
