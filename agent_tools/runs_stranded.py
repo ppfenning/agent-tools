@@ -11,14 +11,17 @@ def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
     """The one item this record's task names. A task id repeats across
     initiatives and across phases of the same initiative, so a
     `candidates` list with more than one entry resolves only when the
-    record's own `initiative` and `phase` narrow it to one; otherwise this
-    comes back `None` rather than guessing which item is meant."""
+    record's own `initiative` and `phase` narrow it to one. A task moved to
+    another phase after the record was written matches no phase, and
+    resolves when its initiative alone leaves one item. Otherwise this comes
+    back `None` rather than guessing which item is meant."""
     initiative = record.get("initiative")
     phase = record.get("phase")
-    scoped = [c for c in candidates
-              if (initiative is None or c.get("initiative") == initiative)
-              and (phase is None or c.get("phase") == phase)]
-    return scoped[0] if len(scoped) == 1 else None
+    in_initiative = [c for c in candidates if initiative is None or c.get("initiative") == initiative]
+    scoped = [c for c in in_initiative if phase is None or c.get("phase") == phase]
+    if len(scoped) == 1:
+        return scoped[0]
+    return in_initiative[0] if not scoped and len(in_initiative) == 1 else None
 
 
 def _approved_and_unlanded(record: dict) -> bool:
