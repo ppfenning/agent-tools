@@ -59,3 +59,44 @@ def test_todays_counts_exclude_a_run_ended_before_local_midnight():
     ]
     calls = [{"run_id": "a-1", "cost_usd": 2.0}, {"run_id": "a-2", "cost_usd": 0.5}, {"run_id": "a-3", "cost_usd": 7.0}]
     assert history_today(runs, [], calls, now, tz) == {"lands": 1, "quarantines": 1, "cost_usd": 2.5, "runs": 2}
+
+
+_APPROVED = {"review": {"verdict": "approve"}, "adversary": {"verdict": "approve"}, "arbitration": "arbiter: skipped (both approved)"}
+_LANDED = {"at": "2026-10-04T10:00:00Z", "pr": "https://github.com/o/r/pull/12"}
+
+
+def _pg_task(run, task, **record):
+    """A Postgres row: jsonb `record_json` arrives as a dict, not text."""
+    return {**_task(run, task), "record_json": record}
+
+
+def _outcome(status, *tasks):
+    return build_history([_run("acme-3", "2026-10-04T10:00:00Z", status=status)], list(tasks), [])[0]["outcome"]
+
+
+def test_an_ok_run_reads_from_its_records_never_as_crashed():
+    assert _outcome("ok", _task("acme-3", "t1", **_APPROVED)) == "approved"
+    assert _outcome("ok", _pg_task("acme-3", "t1", **_APPROVED)) == "approved"
+    assert _outcome("ok", _task("acme-3", "t1", **_APPROVED), _task("acme-3", "t2", landed=True)) == "landed"
+    assert _outcome("ok", _pg_task("acme-3", "t1", **_APPROVED, landed=_LANDED)) == "landed"
+    assert _outcome("ok") == "idle"
+    assert _outcome("ok", _pg_task("acme-3", "t1", review={"verdict": "revise"})) == "idle"
+
+
+def test_a_mark_landed_record_carries_the_pr_from_its_landed_facts():
+    tasks = [_pg_task("acme-3", "t1", ticket="t1", landed=_LANDED)]
+    assert build_history([_run("acme-3", "2026-10-04T10:00:00Z", status="ok")], tasks, [])[0]["landed"] == [{"task": "t1", "pr": 12}]
+
+
+def test_an_unbuilt_run_is_crashed_quarantined_or_stopped_by_its_status_and_cause():
+    assert _outcome("error") == "crashed"
+    assert _outcome(None) == "crashed"
+    rows = build_history([_run("acme-3", "2026-10-04T10:00:00Z", status="failed")], [_pg_task("acme-3", "t1", cause="review")], [])
+    assert rows[0]["outcome"] == "quarantined" and rows[0]["cause"] == "review"
+    assert _outcome("failed", _task("acme-3", "t1", review={"verdict": "revise"}, cause="ticket")) == "quarantined"
+    assert _outcome("stopped") == "stopped"
+
+
+def test_a_run_with_no_records_takes_its_initiative_from_the_run_id():
+    runs = [_run("chair-carries-a-split-phase-12", "2026-10-04T10:00:00Z", status="ok")]
+    assert build_history(runs, [], [])[0]["initiative"] == "chair-carries-a-split-phase"
