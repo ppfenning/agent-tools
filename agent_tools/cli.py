@@ -5443,6 +5443,24 @@ DASH_GROUP = commands.Group(
     fn=_dash,
 )
 
+def _settings_get(a: argparse.Namespace) -> int:
+    from agent_tools import cox_settings
+    return cox_settings.run_get(_profile_path(a), a.json)
+
+
+SETTINGS_GROUP = commands.Group(
+    name="settings", help="the cartridge and profile settings, with where each lives and whether git tracks it",
+    description="The cartridge and profile settings, with where each lives and whether git tracks it.",
+    epilog="examples:\n  cox settings get\n  cox settings get --json",
+)
+SETTINGS_COMMANDS = [
+    commands.Command(
+        "get", "settings", "print every setting present, grouped by section",
+        (commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--profile",))),
+        _settings_get, False, (),
+    ),
+]
+
 INSTALL_GROUP = commands.Group(
     name="install", help="clone/update coxswain components against the manifest", description="", epilog="",
     args=(
@@ -6047,6 +6065,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("dash")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("settings")
     commands.build_parser(rows, [group], sub)
 
     dev = sub.add_parser("dev", help="moved: maintainer commands now run from the coxswain checkout",
@@ -7469,6 +7490,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (VERSIONS_GROUP, []),
     (CONSOLE_GROUP, []),
     (DASH_GROUP, []),
+    (SETTINGS_GROUP, SETTINGS_COMMANDS),
     (INSTALL_GROUP, []),
     (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
