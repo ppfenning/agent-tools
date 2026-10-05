@@ -85,7 +85,7 @@ def test_epics_take_lanes_first_and_decomposes_get_the_remainder_oldest_first():
     ]
 
 
-def test_a_lone_free_local_lane_launches_one_decompose_when_no_host_is_free():
+def test_a_lone_free_local_lane_left_after_an_epic_launches_one_decompose():
     facts = _facts(initiatives=[_init("a")], intake=["i1", "i2"])
     assert plan_fill(facts, 2) == [
         {"kind": "launch_epic", "initiative": "a"},
@@ -93,8 +93,18 @@ def test_a_lone_free_local_lane_launches_one_decompose_when_no_host_is_free():
     ]
 
 
-def test_two_free_lanes_and_one_intake_item_launch_none():
-    assert plan_fill(_facts(intake=["i1"]), 2) == []
+def test_two_free_lanes_and_one_intake_item_launch_one_decompose():
+    assert plan_fill(_facts(intake=["i1"]), 2) == [{"kind": "launch_decompose", "intake_ids": ["i1"]}]
+
+
+def test_one_free_local_lane_with_a_lane_host_free_launches_one_decompose():
+    facts = _hosted(2, intake=["i1", "i2"])
+    assert plan_fill(facts, 1) == [{"kind": "launch_decompose", "intake_ids": ["i1"]}]
+
+
+def test_three_free_local_lanes_launch_three_decomposes_oldest_first():
+    facts = _hosted(2, intake=["i1", "i2", "i3", "i4"])
+    assert plan_fill(facts, 3) == [{"kind": "launch_decompose", "intake_ids": [i]} for i in ("i1", "i2", "i3")]
 
 
 def test_pull_is_planned_when_the_store_is_empty_and_sources_exist():
@@ -111,9 +121,9 @@ def test_no_pull_when_ready_work_is_placed():
     assert plan_fill(facts, 2) == [{"kind": "launch_epic", "initiative": "a"}]
 
 
-def test_no_pull_when_intake_exists_even_if_it_launches_nothing():
+def test_no_pull_when_intake_exists():
     facts = _facts(intake=["i1"], sources_configured=True)
-    assert plan_fill(facts, 2) == []
+    assert plan_fill(facts, 2) == [{"kind": "launch_decompose", "intake_ids": ["i1"]}]
 
 
 def _hosted(free: int, **over) -> Facts:
@@ -225,9 +235,20 @@ def test_reserved_single_local_lane_takes_one_decompose_even_with_a_host_free():
     ]
 
 
-def test_reserved_local_lanes_take_decomposes_unpaired():
+def test_reserved_local_lanes_take_one_decompose_each():
     facts = _reserved(0, intake=["i1", "i2", "i3"])
     assert plan_fill(facts, 3) == [{"kind": "launch_decompose", "intake_ids": [i]} for i in ("i1", "i2", "i3")]
+
+
+def test_reserved_mode_with_a_host_free_still_sends_epics_to_the_host_and_decomposes_to_local_lanes():
+    facts = _reserved(2, initiatives=[_init("a"), _init("b")], intake=["i1", "i2", "i3"])
+    assert plan_fill(facts, 3) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"},
+        {"kind": "launch_epic", "initiative": "b", "host": "jarvis"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+        {"kind": "launch_decompose", "intake_ids": ["i2"]},
+        {"kind": "launch_decompose", "intake_ids": ["i3"]},
+    ]
 
 
 def test_reserved_local_lane_stays_empty_with_no_intake():
