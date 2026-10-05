@@ -110,7 +110,7 @@ def test_a_fake_forge_reporting_merged_gives_that_entry_with_state_merged(tmp_pa
     rows = forge_review_prs(_review_runs_dir(tmp_path), "fake", lambda name: fake)
     assert rows == [{
         "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
-        "url": REVIEW_PR["url"], "state": "merged", "merged_at": "2026-10-04T00:00:00Z",
+        "url": REVIEW_PR["url"], "state": "merged", "merged_at": "2026-10-04T00:00:00Z", "run": "i-1",
     }]
 
 
