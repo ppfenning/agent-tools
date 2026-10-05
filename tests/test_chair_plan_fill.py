@@ -204,3 +204,42 @@ def test_an_unblocked_host_with_free_capacity_still_receives_a_launch():
 def test_consumed_host_lanes_keeps_fill_off_a_lane_a_relaunch_just_took():
     facts = _hosted(1, initiatives=[_init("a")])
     assert plan_fill(facts, 0, consumed_host_lanes={"jarvis": 1}) == []
+
+
+def _reserved(free: int, **over) -> Facts:
+    """One lane host with `free` lanes, and the local lanes reserved for decomposes."""
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "jarvis", "live_runs": 4 - free}], "local_lanes": "decompose"}
+    return _facts(dispatch=dispatch, **over)
+
+
+def test_reserved_local_lanes_place_every_epic_on_a_host():
+    facts = _reserved(1, initiatives=[_init("a"), _init("b")])
+    assert plan_fill(facts, 2) == [{"kind": "launch_epic", "initiative": "a", "host": "jarvis"}]
+
+
+def test_reserved_single_local_lane_takes_one_decompose_even_with_a_host_free():
+    facts = _reserved(2, initiatives=[_init("a")], intake=["i1", "i2"])
+    assert plan_fill(facts, 1) == [
+        {"kind": "launch_epic", "initiative": "a", "host": "jarvis"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+    ]
+
+
+def test_reserved_local_lanes_take_decomposes_unpaired():
+    facts = _reserved(0, intake=["i1", "i2", "i3"])
+    assert plan_fill(facts, 3) == [{"kind": "launch_decompose", "intake_ids": [i]} for i in ("i1", "i2", "i3")]
+
+
+def test_reserved_local_lane_stays_empty_with_no_intake():
+    assert plan_fill(_reserved(0, initiatives=[_init("a")]), 2) == []
+
+
+def test_local_lanes_any_plans_exactly_what_an_absent_key_plans():
+    over = {"initiatives": [_init("a")], "intake": ["i1", "i2", "i3"]}
+    absent = _hosted(1, **over)
+    any_ = _facts(dispatch={**absent["dispatch"], "local_lanes": "any"}, **over)
+    assert plan_fill(any_, 3) == plan_fill(absent, 3) == [
+        {"kind": "launch_epic", "initiative": "a"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+        {"kind": "launch_decompose", "intake_ids": ["i2"]},
+    ]

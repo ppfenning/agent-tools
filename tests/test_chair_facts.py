@@ -331,6 +331,11 @@ def test_dispatch_facts_never_places_the_local_host_among_the_hosts():
     assert facts["hosts"] == [{"name": "jarvis", "live_runs": 0, "weight": 1, "capabilities": []}]
 
 
+def test_dispatch_facts_carry_local_lanes_only_when_it_is_not_any():
+    carried = [dispatch_facts({"max_in_flight": 4}, [], {}, local_lanes=v).get("local_lanes") for v in ("decompose", "any")]
+    assert [*carried, "local_lanes" in dispatch_facts({"max_in_flight": 4}, [], {})] == ["decompose", None, False]
+
+
 def test_a_ready_tasks_requires_frontmatter_reaches_the_facts():
     def row(task: str, frontmatter: str) -> dict:
         parsed = queue_rows.parse_item("task", ("i", "p1", f"{task}.md"), f"---\n{frontmatter}---\n")

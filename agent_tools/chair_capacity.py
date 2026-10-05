@@ -7,6 +7,7 @@ team cartridge's `policy.dispatch.max_in_flight` wins over it, and the pacing fi
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from agent_tools import chair_cap
@@ -22,8 +23,8 @@ def _read_text_or_none(path: Path) -> str | None:
         return None
 
 
-def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
-    """The first `policy.dispatch.max_in_flight` along the team cartridge and its `extends` chain, all read from `cartridges_dir`."""
+def _first_along_extends[T](cartridges_dir: Path, team: str, read: Callable[[str | None], T | None]) -> T | None:
+    """The first non-None `read` along the team cartridge and its `extends` chain, all read from `cartridges_dir`."""
     pending, seen = [team], set()
     while pending:
         name = pending.pop(0)
@@ -31,11 +32,25 @@ def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
             continue
         seen.add(name)
         text = _read_text_or_none(cartridges_dir / name / "cartridge.yaml")
-        cap = chair_cap.cap_from_cartridge(text)
-        if cap is not None:
-            return cap
+        value = read(text)
+        if value is not None:
+            return value
         pending.extend(chair_cap.extends_of(text))
     return None
+
+
+def _cartridge_cap(cartridges_dir: Path, team: str) -> int | None:
+    """The first `policy.dispatch.max_in_flight` along the team cartridge and its `extends` chain."""
+    return _first_along_extends(cartridges_dir, team, chair_cap.cap_from_cartridge)
+
+
+def chair_local_lanes(profile: dict) -> str:
+    """`policy.dispatch.local_lanes` along the team cartridge and its `extends` chain, else "any"."""
+    cartridges_dir, team = profile.get("cartridges_dir"), profile.get("team")
+    if not (cartridges_dir and isinstance(team, str) and team):
+        return "any"
+    found = _first_along_extends(Path(cartridges_dir).expanduser(), team, chair_cap.local_lanes_from_cartridge)
+    return found if found is not None else "any"
 
 
 def chair_max_in_flight(runs_dir: Path, profile: dict) -> int:
