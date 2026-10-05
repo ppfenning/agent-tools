@@ -35,8 +35,10 @@ __all__ = [
     "approved_state",
     "arbitration_verdict",
     "await_checks",
+    "check_exit",
     "check_poll_result",
     "checks_argv",
+    "checks_detail",
     "close_to_done",
     "gate_steps",
     "gate_stop",
@@ -54,6 +56,7 @@ __all__ = [
     "recover_record",
     "rest_checks_argvs",
     "set_state_stop",
+    "skip_line",
     "unreadable_poll",
     "wait_decision",
 ]
@@ -111,6 +114,33 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
     else:
         argv = ["pytest", "-q"]
     return [("tests", argv)]
+
+
+PYTEST_NO_TESTS = 5  # pytest's exit code when it collected no tests
+
+
+def _is_pytest(argv: Sequence[str]) -> bool:
+    """Only `pytest ...`, `python* -m pytest ...` or `uv run pytest ...`; `coverage run pytest` is not pytest."""
+    head = PurePath(argv[0]).name if argv else ""
+    return (head == "pytest" or (head.startswith("python") and list(argv[1:3]) == ["-m", "pytest"])
+            or list(argv[:3]) == ["uv", "run", "pytest"])
+
+
+def check_exit(argv: Sequence[str], returncode: int) -> str:
+    """`pass`, `skip` or `fail`. Only a pytest check exiting 5 (no tests collected) is a skip."""
+    if returncode == 0:
+        return "pass"
+    return "skip" if returncode == PYTEST_NO_TESTS and _is_pytest(argv) else "fail"
+
+
+def skip_line(name: str) -> str:
+    return f"checks: {name} skipped (pytest exit 5, no tests ran)"
+
+
+def checks_detail(head: str, skipped: Sequence[str]) -> str:
+    """`head` first, then one skip line each. The land prints the detail as `checks: <detail>`, so `head` gets that prefix
+    and each skip line carries its own; a skip line placed first would print as `checks: checks: ...`."""
+    return "\n".join([head, *(skip_line(name) for name in skipped)])
 
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
