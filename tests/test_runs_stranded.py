@@ -98,6 +98,17 @@ def test_an_id_shared_across_phases_of_the_same_initiative_scopes_to_the_records
     assert rows[0]["remedy"] == "cox runs land r1 --task t1 --repo /repo/right"
 
 
+def test_a_record_whose_task_moved_to_a_blocked_item_in_another_phase_is_not_stranded():
+    record = _record(initiative="acme", phase="adapters")
+    assert runs_stranded.stranded([record], [_item("blocked", phase="adapters-openai")]) == []
+
+
+def test_a_record_whose_task_moved_to_a_ready_item_in_another_phase_takes_that_items_remedy():
+    record = _record(initiative="acme", phase="adapters")
+    rows = runs_stranded.stranded([record], [_item("ready", phase="adapters-openai")])
+    assert rows[0]["remedy"] == "cox runs land r1 --task t1 --repo /repo/acme"
+
+
 def test_a_dropped_item_with_an_approved_record_is_not_stranded():
     assert runs_stranded.stranded([_record()], [_item("dropped")]) == []
 
