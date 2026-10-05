@@ -2,10 +2,13 @@
 
 Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 """
+from collections.abc import Mapping
+from functools import reduce
 from typing import Literal
 
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
-from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask
+from agent_tools.chair_steer import steer_check
+from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask, RunningInitiative
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
 Recovery = Literal["rescue", "retry", "needs_chair", "none"]
@@ -112,8 +115,72 @@ def _without_schema_dead_launches(actions: list[Action], deaths: dict[str, list[
     return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and a["initiative"] in deaths)]
 
 
+_LAUNCHES = {"relaunch", "retry", "rescue"}
+
+
+def _entry(i: InitiativeFacts) -> RunningInitiative | None:
+    """The initiative as a running entry; None when its repo is unknown, so there is nothing to compare."""
+    repo = i.get("repo")
+    return None if repo is None else {"id": i["id"], "repo": repo, "surfaces": i.get("ready_surfaces", [])}
+
+
+def _steer(
+    a: Action, by_id: dict[str, InitiativeFacts], running: list[RunningInitiative], streaks: Mapping[str, int]
+) -> tuple[Action, RunningInitiative | None]:
+    """The action to return for a launch, and the running entry it claims; a deferral claims nothing."""
+    i = by_id.get(a["initiative"])
+    entry = None if i is None else _entry(i)
+    if entry is None:
+        return a, None
+    deferred = steer_check(entry["id"], entry["repo"], entry["surfaces"], running, streaks)
+    return (a, entry) if deferred is None else (deferred, None)
+
+
+def _without_deferred_clears(before: list[Action], after: list[Action]) -> list[Action]:
+    """A deferred relaunch takes its paired clear_branches with it: the clear prunes epic/<initiative>/* branches."""
+    deferred = {a["initiative"] for a in before if a["kind"] == "relaunch"} - {
+        a["initiative"] for a in after if a["kind"] == "relaunch"
+    }
+    return [a for a in after if not (a["kind"] == "clear_branches" and a["initiative"] in deferred)]
+
+
+def _steered(actions: list[Action], facts: Facts) -> list[Action]:
+    """Replace each launch overlapping a running or earlier-kept initiative with its steer_check action."""
+    # A retry or rescue is checked on the initiative's ready_surfaces, as the ticket specifies; the quarantined
+    # task's own surfaces are not in facts. plan_lost_runs relaunches are not checked here: a follow-up item.
+    by_id = {i["id"]: i for i in facts["initiatives"]}
+    base = facts.get("running", [])
+    streaks = facts.get("steer_streaks", {})
+
+    def fold(
+        state: tuple[list[Action], list[RunningInitiative]], a: Action
+    ) -> tuple[list[Action], list[RunningInitiative]]:
+        out, kept = state
+        if a["kind"] not in _LAUNCHES:
+            return [*out, a], kept
+        action, entry = _steer(a, by_id, [*base, *kept], streaks)
+        return [*out, action], kept if entry is None else [*kept, entry]
+
+    return _without_deferred_clears(actions, reduce(fold, actions, ([], []))[0])
+
+
+def claimed_by(actions: list[Action], facts: Facts) -> list[RunningInitiative]:
+    """The entry of each initiative with a launch in plan_recover's `actions`, in order, one per initiative.
+
+    It claims before the launch cap and placement run, so a launch they later drop still holds its claim this tick.
+    """
+    by_id = {i["id"]: i for i in facts["initiatives"]}
+    entries = (
+        e for a in actions if a["kind"] in _LAUNCHES and (i := by_id.get(a["initiative"])) is not None and (e := _entry(i))
+    )
+    return list({e["id"]: e for e in entries}.values())
+
+
 def plan_recover(facts: Facts) -> list[Action]:
     """Schema-death reports, then quarantine actions in input order, then relaunch pairs, then waiting-on reports.
+
+    A relaunch, retry or rescue that shares a surface with a running or already-kept initiative in the same repo
+    is replaced by the steer_check action: a steer_clear, or needs_chair once the pair's streak reaches 3.
 
     An initiative in `schema_deaths` gets one schema-version needs_chair carrying the two run ids, and no
     relaunch, retry or rescue. Its quarantines still report their own needs_chair.
@@ -131,11 +198,12 @@ def plan_recover(facts: Facts) -> list[Action]:
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     deaths = facts.get("schema_deaths", {})
     blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"} | set(deaths)
-    return (
+    return _steered(
         _schema_death_actions(deaths)
         + _without_schema_dead_launches(_quarantine_actions(quarantines, approved), deaths)
         + _relaunch_actions(facts["initiatives"], blocked)
-        + _waiting_actions(facts["initiatives"], blocked)
+        + _waiting_actions(facts["initiatives"], blocked),
+        facts,
     )
 
 
