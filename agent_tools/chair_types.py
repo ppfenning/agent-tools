@@ -199,6 +199,7 @@ class Facts(TypedDict):
     last_housekeeping_at: str | None  # ISO UTC of the newest recorded housekeeping action; None when the store has none
     housekeeping_hours: float  # period in hours; the edge fills it from profile chair.housekeeping_hours, default 24
     run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
+    schema_deaths: dict[str, list[str]]  # initiative to its newest two run ids, present only when both exited and died on the schema-version cause
     # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
     lost_runs: dict[str, str]
     # An entry only for a remote run whose host has a fresh beat and whose pid was probed; a stale host or a failed or timed-out probe has none.
