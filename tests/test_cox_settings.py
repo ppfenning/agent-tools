@@ -55,6 +55,38 @@ def test_text_rendering_marks_pat_only_rows():
     )
 
 
+def test_sections_fill_the_four_sections_and_keep_the_registry_rows():
+    cartridge = {
+        "policy": {
+            "dispatch": {"max_in_flight": 2},
+            "plan_competition": {"min_tier": "sonnet"},
+            "build_budget_usd_max": 5,
+        },
+        "models": {"build": {"model": "opus", "tier": "high"}},
+    }
+    profile = {"chair": {"stale_days": 3}}
+    tracked = {"cartridge.yaml": True, "profile.yaml": False}
+    grouped = cox_settings.sections(cartridge, profile, {"box": 2}, tracked)
+    by_section = {s["name"]: s["rows"] for s in cox_settings.to_json(grouped)["sections"]}
+    keys = {name: [(r["scope"], r["key"]) for r in rows] for name, rows in by_section.items()}
+    assert keys["lanes and machines"] == [
+        ("cartridge", "policy.dispatch.max_in_flight"), ("host", "box.capacity"),
+    ]
+    assert keys["builds and budgets"] == [("cartridge", "policy.build_budget_usd_max")]
+    assert keys["housekeeping"] == [("profile", "chair.stale_days")]
+    assert keys["models and tiers"] == [
+        ("cartridge", "policy.plan_competition.min_tier"), ("cartridge", "models.build.model"),
+        ("cartridge", "models.build.tier"),
+    ]
+    assert all(len(set(k)) == len(k) for k in keys.values())
+    assert by_section["models and tiers"][1]["pat_only"] is True
+    assert by_section["lanes and machines"][1]["value"] == 2
+
+
+def test_host_capacities_names_each_host():
+    assert cox_settings.host_capacities([{"name": "a", "capacity": 3}, {"capacity": 1}]) == {"a": 3}
+
+
 def _git(cwd: Path, *args: str) -> str:
     done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return done.stdout.strip()
