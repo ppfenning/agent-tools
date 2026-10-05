@@ -133,7 +133,7 @@ class Deps:
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
-_UNFENCED = ("standby", "take_lease")  # not writes, so a stale or missing epoch does not stop them
+_UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
 _REASON_CAP = 600
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 # Every `cox runs land` refusal starts "land: refusing, ": a dirty repo, a branch conflict, a forge mismatch.
@@ -252,6 +252,8 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
         ] if initiative else None
     if kind == "pull":
         return ["cox", "route", "pull"]
+    if kind == "steer_clear":  # a deferral is only recorded; no command runs
+        return None
     return None
 
 
@@ -697,6 +699,11 @@ def _review_landed(action: Action, deps: Deps) -> Result:
     return {**_result(action, "refused", outcome.reason), "needs_chair": raised}
 
 
+def _steer_reason(action: Action) -> str:
+    """`steer clear of <other>: <paths joined by comma>`, cut to 200 characters."""
+    return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if (
@@ -718,6 +725,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _check_login(action, deps)
     if kind in ("standby", "needs_chair", "mark_lost"):
         return _result(action, "recorded")
+    if kind == "steer_clear":
+        return _result(action, "recorded", _steer_reason(action))
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):

@@ -16,7 +16,8 @@ from agent_tools.notify import Notification
 
 __all__ = [
     "EASTERN", "Deps", "echo_line", "failed_items", "fetched_items", "format_status", "housekeeping_fragment",
-    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "would_items", "write_status",
+    "landing_items", "lands_this_tick", "launched_items", "mode_of", "needs_chair_items", "steered_items", "would_items",
+    "write_status",
 ]
 
 
@@ -86,6 +87,15 @@ def failed_items(results: Sequence[Result]) -> list[str]:
         f"{r['action'].get('kind')}:{_target(r['action'])}"
         for r in results
         if r["status"] in ("refused", "failed", "not_landed")
+    ]
+
+
+def steered_items(results: Sequence[Result]) -> list[str]:
+    """`<initiative>~<other>` for every steer_clear result; the paths stay in the record."""
+    return [
+        f"{r['action'].get('initiative', '?')}~{r['action'].get('other', '?')}"
+        for r in results
+        if r["action"].get("kind") == "steer_clear"
     ]
 
 
@@ -163,6 +173,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         launched_items(results), fetched_items(results), failed_items(results), would_items(results),
         landing_items(results),
     )
+    steered = steered_items(results)
     drafts = facts.get("drafts", 0)
     review = review_fragment(facts.get("review_prs", []))
     parts = [
@@ -177,6 +188,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"launched: {', '.join(launched)}"] if launched else []),
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
+        *([f"steered: {', '.join(steered)}"] if steered else []),
         *([review] if review else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",

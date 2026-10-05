@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
-from agent_tools.chair_plan_recover import _initiative_first_unmet_need, plan_lost_runs, plan_recover
+from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_types import (
@@ -275,6 +275,11 @@ def _unmet_needs_ids(initiatives: list[InitiativeFacts]) -> frozenset[str]:
     return frozenset(i["id"] for i in initiatives if _initiative_first_unmet_need(i) is not None)
 
 
+def _steer_deferred(action: Action) -> bool:
+    """A needs_chair raised once a steer pair's streak reached the ceiling."""
+    return action["kind"] == "needs_chair" and action.get("cause") == "steer_deferred"
+
+
 def _unstarted_waiting_chair(initiatives: list[InitiativeFacts]) -> list[Action]:
     """waiting-on reports for unstarted initiatives only; plan_recover's own waiting-on reports cover the
     started ones, so this never double-reports."""
@@ -395,7 +400,8 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
-    ordinary = _withhold_lost_runs(plan_recover(facts), lost)
+    recover_actions = plan_recover(facts)
+    ordinary = _withhold_lost_runs(recover_actions, lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
@@ -422,15 +428,18 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
     kept = sum(a["kind"] in _LAUNCHES and "host" not in a for a in capped)
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
+    # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
     withheld = (
-        frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch"} | {q["initiative"] for q in facts["quarantines"]})
+        frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)})
+        | frozenset(q["initiative"] for q in facts["quarantines"])
         | remote_unfetched
         | not_exited
         | lost
         | frozenset(facts.get("schema_deaths", {}))
         | _unmet_needs_ids(facts["initiatives"])
     )
-    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed)
+    claimed = claimed_by(recover_actions, facts)
+    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed)
     return [
         *lands,
         *fetch_exits,
