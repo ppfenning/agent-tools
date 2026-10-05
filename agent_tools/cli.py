@@ -6671,6 +6671,7 @@ def _chair_run_deps(
         return chair_facts.dispatch_facts(
             row, host_names, _dispatch_counts(lanes, host, host_names, pidfile_live), host_cmd.row_capacities(host_rows),
             weight=host_cmd.row_weights(host_rows), capabilities=host_cmd.row_capabilities(host_rows), local=host,
+            local_lanes=chair_capacity.chair_local_lanes(profile),
         )
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
