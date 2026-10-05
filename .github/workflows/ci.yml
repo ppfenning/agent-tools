@@ -2,7 +2,7 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,7 +16,7 @@ jobs:
   py315:
     # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset, which
     # requires `test` by name, so a red run here is a finding, not a merge block.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,7 +26,7 @@ jobs:
   extras:
     # The lake, Parquet and Postgres tests import-skip in `test`, which installs only `dev`.
     # This job installs the extras and a Postgres 16, so those tests run.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     env:
       COX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
@@ -54,7 +54,7 @@ jobs:
     # README.md's Commands block is rendered from this repo's command table by the umbrella's
     # devtools, and the umbrella's CI checks it against this repo's main. Check it here too,
     # so a new command cannot merge with a stale block.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
