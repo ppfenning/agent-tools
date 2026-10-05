@@ -83,6 +83,15 @@ def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
 
 
+def test_a_schema_deaths_callables_mapping_appears_under_schema_deaths():
+    deps = replace(_deps(), schema_deaths=lambda: {"x": ["x-2", "x-1"]})
+    assert gather_facts(deps, NOW)["schema_deaths"] == {"x": ["x-2", "x-1"]}
+
+
+def test_an_absent_schema_deaths_callable_gives_an_empty_mapping():
+    assert gather_facts(_deps(), NOW)["schema_deaths"] == {}
+
+
 REVIEW_PR = {
     "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
     "url": "https://example.test/pr/1", "state": "open", "merged_at": None,

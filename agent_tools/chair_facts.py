@@ -63,6 +63,8 @@ class FactsDeps:
         A missing repository is reported once, in the status line, and never becomes a needs_chair fact.
     remote_unfetched: initiative id to run id, for each initiative whose newest run carries a remote
         record and no local run directory or log. Optional, and absent means no initiative counts.
+    schema_deaths: initiative id to its newest two run ids, for each initiative whose newest two runs both
+        exited on the schema-version refusal. Defaults to a callable returning {}.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
         threshold) with no exit record in the store. Optional, and absent means no initiative counts.
     pid_probe: initiative id to `{alive, last_beat_at}`, for a remote run whose host has a fresh beat and
@@ -135,6 +137,7 @@ class FactsDeps:
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
     newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
+    schema_deaths: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to its newest two run ids when both died on the schema refusal; absent means {}
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
@@ -456,6 +459,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
+        "schema_deaths": {i: list(r) for i, r in deps.schema_deaths().items()},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
         "pid_probe": dict(deps.pid_probe()),
         "empty_decompose": empty_decompose_facts(
