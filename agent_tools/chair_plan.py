@@ -427,6 +427,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
         | remote_unfetched
         | not_exited
         | lost
+        | frozenset(facts.get("schema_deaths", {}))
         | _unmet_needs_ids(facts["initiatives"])
     )
     filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed)

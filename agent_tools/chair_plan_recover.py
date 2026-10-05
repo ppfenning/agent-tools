@@ -6,6 +6,7 @@ from typing import Literal
 
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask
+from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
 Recovery = Literal["rescue", "retry", "needs_chair", "none"]
 
@@ -93,8 +94,29 @@ def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> l
     ]
 
 
+def _schema_death_actions(deaths: dict[str, list[str]]) -> list[Action]:
+    """One needs_chair per initiative whose newest two runs both died on the schema-version refusal."""
+    return [
+        {
+            "kind": "needs_chair",
+            "initiative": i,
+            "cause": SCHEMA_VERSION_CAUSE,
+            "reason": f"the lane host's graphs is older than the shared store; runs {' and '.join(runs)} both died on a schema-version refusal",
+        }
+        for i, runs in deaths.items()
+    ]
+
+
+def _without_schema_dead_launches(actions: list[Action], deaths: dict[str, list[str]]) -> list[Action]:
+    """Drop a retry or rescue for a schema-dead initiative: both start a run on the stale graphs."""
+    return [a for a in actions if not (a["kind"] in {"retry", "rescue"} and a["initiative"] in deaths)]
+
+
 def plan_recover(facts: Facts) -> list[Action]:
-    """Quarantine actions in input order, then relaunch pairs, then waiting-on reports.
+    """Schema-death reports, then quarantine actions in input order, then relaunch pairs, then waiting-on reports.
+
+    An initiative in `schema_deaths` gets one schema-version needs_chair carrying the two run ids, and no
+    relaunch, retry or rescue. Its quarantines still report their own needs_chair.
 
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
@@ -107,9 +129,11 @@ def plan_recover(facts: Facts) -> list[Action]:
     """
     quarantines = facts["quarantines"]
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
-    blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"}
+    deaths = facts.get("schema_deaths", {})
+    blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"} | set(deaths)
     return (
-        _quarantine_actions(quarantines, approved)
+        _schema_death_actions(deaths)
+        + _without_schema_dead_launches(_quarantine_actions(quarantines, approved), deaths)
         + _relaunch_actions(facts["initiatives"], blocked)
         + _waiting_actions(facts["initiatives"], blocked)
     )
@@ -120,9 +144,14 @@ def plan_lost_runs(facts: Facts) -> list[Action]:
 
     Does not check readiness, needs or run_exited: a host unreachable for ten minutes with no exit record is
     itself the evidence the previous process is gone.
+    An initiative in `schema_deaths` keeps its mark_lost but gets no relaunch pair; `plan_recover` reports it.
     """
+    deaths = facts.get("schema_deaths", {})
     return [
         action
         for initiative, run in facts.get("lost_runs", {}).items()
-        for action in ({"kind": "mark_lost", "initiative": initiative, "run": run}, *relaunch_pair(initiative))
+        for action in (
+            {"kind": "mark_lost", "initiative": initiative, "run": run},
+            *([] if initiative in deaths else relaunch_pair(initiative)),
+        )
     ]

@@ -24,6 +24,7 @@ def _facts(**overrides) -> Facts:
         "sources_configured": True,
         "remote_unfetched": {},
         "run_exited": {},
+        "schema_deaths": {},
         "lost_runs": {},
         "last_housekeeping_at": None,
         "housekeeping_hours": 24.0,
@@ -732,6 +733,50 @@ def test_a_lost_run_initiative_with_an_unrelated_quarantine_still_gets_needs_cha
         {"kind": "mark_lost", "initiative": "i", "run": "i-run-1", "epoch": 7},
         {"kind": "clear_branches", "initiative": "i", "epoch": 7},
         {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+_SCHEMA_REASON = "the lane host's graphs is older than the shared store; runs i-2 and i-1 both died on a schema-version refusal"
+
+
+def test_two_schema_version_deaths_plan_needs_chair_and_no_relaunch():
+    """The unstarted neighbour still launches, so only the schema-dead initiative is withheld from fill."""
+    facts = _facts(
+        initiatives=[_initiative("i"), _unstarted("b")],
+        run_exited={"i": True},
+        schema_deaths={"i": ["i-2", "i-1"]},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "schema_version", "reason": _SCHEMA_REASON, "epoch": 7},
+        {"kind": "launch_epic", "initiative": "b", "epoch": 7},
+    ]
+
+
+def test_a_schema_death_initiative_with_a_harness_quarantine_plans_no_retry():
+    retry = {"task_id": "q", "initiative": "i", "cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False}
+    facts = _facts(initiatives=[_initiative("i")], quarantines=[retry], schema_deaths={"i": ["i-2", "i-1"]})
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "schema_version", "reason": _SCHEMA_REASON, "epoch": 7},
+    ]
+
+
+def test_an_initiative_absent_from_schema_deaths_still_relaunches():
+    facts = _facts(initiatives=[_initiative("i")], run_exited={"i": True}, schema_deaths={})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+def test_a_schema_death_initiative_that_is_also_lost_plans_needs_chair_and_no_relaunch():
+    facts = _facts(
+        initiatives=[_initiative("i")],
+        lost_runs={"i": "i-2"},
+        schema_deaths={"i": ["i-2", "i-1"]},
+    )
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "i", "cause": "schema_version", "reason": _SCHEMA_REASON, "epoch": 7},
+        {"kind": "mark_lost", "initiative": "i", "run": "i-2", "epoch": 7},
     ]
 
 
