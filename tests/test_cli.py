@@ -390,7 +390,7 @@ def _tagged_window(tag: float) -> cli.pacing.Window:
     )
 
 
-def _fresh_meter() -> "cli.usage_meter.Meter":
+def _fresh_meter() -> cli.usage_meter.Meter:
     return cli.usage_meter.Meter(
         five_hour=cli.usage_meter.MeterEntry(used_percentage=40.0, resets_at=_METER_NOW + timedelta(hours=2)),
         seven_day=cli.usage_meter.MeterEntry(used_percentage=60.0, resets_at=_METER_NOW + timedelta(days=3)),
@@ -671,7 +671,7 @@ def _store_meter_row(age: timedelta, five: float = 12.0, week: float = 13.0) -> 
     }
 
 
-def _local_meter(age: timedelta) -> "cli.usage_meter.Meter":
+def _local_meter(age: timedelta) -> cli.usage_meter.Meter:
     now = datetime.now(UTC)
     return cli.usage_meter.Meter(
         five_hour=cli.usage_meter.MeterEntry(used_percentage=40.0, resets_at=now + timedelta(hours=2)),
