@@ -120,8 +120,8 @@ def test_the_edge_dials_a_fresh_host_over_ssh_and_never_a_stale_one(monkeypatch)
 
     assert read_pid_probe(Path("runs"), NOW, fake_ssh) == {"alpha": {"alive": True, "last_beat_at": LANE_BEAT}}
     assert len(dialled) == 1
-    assert dialled[0][:2] == ["ssh", "me@h"]
-    assert "/ws/runs/alpha-2.pid" in dialled[0][2]
+    assert dialled[0][-2] == "me@h"
+    assert "/ws/runs/alpha-2.pid" in dialled[0][-1]
 
 
 def test_the_edge_skips_a_run_a_local_pidfile_names(monkeypatch):
@@ -153,7 +153,7 @@ def test_the_edge_takes_the_workspace_from_the_profile_when_the_host_never_recor
     assert read_pid_probe(Path("runs"), NOW, fake_ssh, (LaneHost("h", "me@h", "/prof"),)) == {
         "alpha": {"alive": False, "last_beat_at": LANE_BEAT}
     }
-    assert "/prof/runs/alpha-2.pid" in dialled[0][2]
+    assert "/prof/runs/alpha-2.pid" in dialled[0][-1]
     assert read_pid_probe(Path("runs"), NOW, fake_ssh) == {}
 
 

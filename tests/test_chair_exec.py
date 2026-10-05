@@ -362,6 +362,7 @@ def test_delete_branches_runs_git_in_the_named_repo_and_reports_what_it_deleted(
     assert argvs[1] == ["git", "-C", "/w/app", "branch", "-D", "epic/alpha/t1"]
 
 
+SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
 _MAIN_WORKTREE = "worktree /w/app\nHEAD aaa\nbranch refs/heads/main"
 _ALPHA_WORKTREE = "worktree /w/app/.worktrees/alpha-build\nHEAD bbb\nbranch refs/heads/epic/alpha/build"
 
@@ -601,7 +602,7 @@ def _host_carry_run(
 
     def run(argv):
         argvs.append(argv)
-        return host(shlex.split(argv[2])) if argv[0] == "ssh" else chair(argv)
+        return host(shlex.split(argv[-1])) if argv[0] == "ssh" else chair(argv)
 
     return run
 
@@ -618,8 +619,8 @@ def test_a_host_homed_carry_runs_its_git_steps_on_that_host() -> None:
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p"}))
     assert results[0]["status"] == "done"
     assert ssh_argv("me@jarvis", sync_argv("/w/app")) in argvs
-    assert ["ssh", "me@jarvis", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
-    assert ["ssh", "me@jarvis", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
+    assert [*SSH_BOUND, "me@jarvis", "git -C /tmp/cox-carry-abc merge --no-edit main"] in argvs
+    assert [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree remove --force /tmp/cox-carry-abc"] in argvs
     assert not any(a[0] == "git" and ("merge" in a or "add" in a) for a in argvs)
 
 
@@ -634,10 +635,10 @@ def test_a_host_worktree_holding_the_carried_branch_is_removed_on_the_host_befor
     results = _host_clear(_host_carry_run(argvs, {"epic/i/p", "epic/i/p--t"}, host_listing=f"{_MAIN_WORKTREE}\n\n{_P_WORKTREE}\n"))
     assert results[0]["status"] == "done"
     assert results[0]["reason"] == "deleted ['epic/i/p--t'] in /w/app on jarvis; carried ['p'] past main on jarvis"
-    remove = ["ssh", "me@jarvis", "git -C /w/app worktree remove --force /w/app/.worktrees/i-p"]
-    add = ["ssh", "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"]
+    remove = [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree remove --force /w/app/.worktrees/i-p"]
+    add = [*SSH_BOUND, "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"]
     assert argvs.index(remove) < argvs.index(add)
-    assert ["ssh", "me@jarvis", "git -C /w/app branch -D epic/i/p"] not in argvs
+    assert [*SSH_BOUND, "me@jarvis", "git -C /w/app branch -D epic/i/p"] not in argvs
 
 
 def test_a_phase_branch_only_the_chair_holds_is_pushed_to_the_host_then_carried_there() -> None:
@@ -645,7 +646,7 @@ def test_a_phase_branch_only_the_chair_holds_is_pushed_to_the_host_then_carried_
     results = _host_clear(_host_carry_run(argvs, set(), chair_branches=frozenset({"epic/i/p"})))
     assert results[0]["reason"] == "carried ['p'] past main on jarvis"
     push = ["git", "-C", "/w/app", "push", "me@jarvis:/w/app", "refs/heads/epic/i/p:refs/heads/epic/i/p"]
-    assert argvs.index(push) < argvs.index(["ssh", "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"])
+    assert argvs.index(push) < argvs.index([*SSH_BOUND, "me@jarvis", "git -C /w/app worktree add /tmp/cox-carry-abc epic/i/p"])
 
 
 def test_a_conflict_on_the_host_raises_carry_conflict() -> None:
@@ -654,7 +655,7 @@ def test_a_conflict_on_the_host_raises_carry_conflict() -> None:
     assert [r["status"] for r in results] == ["done", "recorded"]
     assert results[1]["action"]["cause"] == "carry_conflict"
     assert "src/app.py" in results[1]["reason"]
-    assert ["ssh", "me@jarvis", "git -C /tmp/cox-carry-abc merge --abort"] in argvs
+    assert [*SSH_BOUND, "me@jarvis", "git -C /tmp/cox-carry-abc merge --abort"] in argvs
 
 
 def test_a_phase_branch_missing_on_both_machines_is_nothing_to_carry() -> None:
@@ -662,7 +663,7 @@ def test_a_phase_branch_missing_on_both_machines_is_nothing_to_carry() -> None:
     results = _host_clear(_host_carry_run(argvs, set()))
     assert results[0]["status"] == "done"
     assert results[0]["reason"] == "nothing to clear: no branch matched epic/i/* in /w/app"
-    assert not any(a[0] == "ssh" and "worktree add" in a[2] for a in argvs)
+    assert not any(a[0] == "ssh" and "worktree add" in a[-1] for a in argvs)
     assert not any("push" in a for a in argvs)
 
 
@@ -714,7 +715,7 @@ def test_a_host_carry_runs_through_a_real_shell_against_real_git(tmp_path) -> No
     chair = _carry_run([], f"{_MAIN_WORKTREE}\n", set())
 
     def run(argv):
-        return run_argv(["bash", "-c", argv[2]]) if argv[0] == "ssh" else chair(argv)
+        return run_argv(["bash", "-c", argv[-1]]) if argv[0] == "ssh" else chair(argv)
 
     results = _host_clear(run, repo=app)
     assert results[0]["status"] == "done", results[0]["reason"]

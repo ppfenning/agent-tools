@@ -7,7 +7,7 @@ _NOT_LOGGED_IN = "claude auth: not logged in on the host (run claude auth login 
 
 def _fake_run(auth_output, doctor_code=0):
     def run(argv):
-        if argv[2] == "claude auth status":
+        if argv[-1] == "claude auth status":
             return 0, auth_output
         return doctor_code, "ok rows"
 
@@ -50,7 +50,7 @@ def test_doctor_on_host_keeps_the_claude_auth_row_when_runner_is_named_explicitl
 
 def _fake_run_env(env_output, doctor_code=0):
     def run(argv):
-        if argv[2] == "printenv MY_API_KEY":
+        if argv[-1] == "printenv MY_API_KEY":
             return 0, env_output
         return doctor_code, "ok rows"
 
