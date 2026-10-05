@@ -33,7 +33,8 @@ from agent_tools import (
 from agent_tools.chair_read_exits import exit_rows
 from agent_tools.chair_read_housekeeping import latest_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
-from agent_tools.chair_types import EASTERN
+from agent_tools.chair_read_review_prs import read_review_prs
+from agent_tools.chair_types import EASTERN, ReviewPr
 from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
@@ -489,6 +490,17 @@ def _inbox_v1(entry: dict) -> dict:
     return {"kind": kind, "target": target, "reason": str(entry.get("note") or "")}
 
 
+def _review_inbox_v1(review_prs: Sequence[ReviewPr]) -> list[dict]:
+    """One `review_pr` inbox row per awaiting review PR, whatever its state; `target` is the task id."""
+    return [
+        {
+            "kind": "review_pr", "initiative": pr["initiative"], "target": pr["task_id"], "url": pr["url"],
+            "reason": "awaiting review",
+        }
+        for pr in review_prs
+    ]
+
+
 def _lease(runs_dir: Path) -> dict:
     try:
         raw = json.loads((runs_dir / "chair.lease.json").read_text(encoding="utf-8"))
@@ -562,6 +574,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
     inbox, inbox_total = _inbox(entries)
+    # A state callable that answers nothing: the feed lists each awaiting PR with its url and never asks the forge.
+    review_prs = read_review_prs(runs_dir, lambda url: {})
     lane_ids = {lane.run for lane in sections["lanes"]}
     records = _finished_records(runs_dir, lane_ids)
     calls_by_run = {
@@ -583,8 +597,8 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         _runs_v1(sections["lanes"], local_name, records, at, calls_by_run),
         [_queue_v1(row) for row in queue],
         queue_total,
-        [_inbox_v1(entry) for entry in inbox],
-        inbox_total,
+        [*(_inbox_v1(entry) for entry in inbox), *_review_inbox_v1(review_prs)],
+        inbox_total + len(review_prs),
         [],
         _open_decisions(entries, blob),
         _spend_series(_spend_points(calls_by_run), at),

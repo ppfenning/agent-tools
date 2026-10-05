@@ -7,9 +7,10 @@ import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from agent_tools import chair_smoke, pacing
+from agent_tools import chair_smoke, forge, pacing
 from agent_tools.chair import lease_holder
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -27,6 +28,7 @@ from agent_tools.chair_types import (
     LeaseFacts,
     LimitsFacts,
     QuarantineFacts,
+    ReviewPr,
 )
 
 HARNESS_CAUSE = "harness"
@@ -96,6 +98,8 @@ class FactsDeps:
     weekly_source: the same reading as `window_source`, for `weekly`. Optional, and absent means "est".
     runs_dir: the runs directory `limits_facts` reads `chair.hold.json` from, via `chair_smoke.read_hold`.
         Optional, and absent means "", so no hold is ever read and `limits.smoke_hold` stays None.
+    review_prs: the approved tasks awaiting a review PR, each with its forge state, as `forge_review_prs` builds
+        them in production. Optional, and absent means an empty list.
     """
 
     lease: Callable[[], Row]
@@ -136,6 +140,16 @@ class FactsDeps:
     window_source: Callable[[], str] = lambda: "est"  # "meter" when `window` built from a fresh meter entry this tick
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
     runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
+    review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
+
+
+def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
+    """Edge. The one place a PR's state is read, through the forge registry. A missing forge gives state unknown."""
+    # Imported here because the reader imports `run_initiative` from this module.
+    from agent_tools.chair_read_review_prs import read_review_prs
+
+    module = resolve(forge_name)  # None for a missing forge, and `forge.pr_state` answers unknown for None
+    return read_review_prs(Path(runs_dir), lambda url: forge.pr_state(module, url))
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -452,4 +466,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stale_candidates": list(deps.stale_candidates(now)) if deps.stale_candidates is not None else [],
         "stall_candidates": list(deps.stall_candidates(now)) if deps.stall_candidates is not None else [],
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
+        "review_prs": list(deps.review_prs()),
     }

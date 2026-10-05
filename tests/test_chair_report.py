@@ -18,8 +18,9 @@ NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 
 
 def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None, window_start_day=None,
-           five_hour_source="meter", weekly_source="meter"):
+           five_hour_source="meter", weekly_source="meter", review_prs=None):
     return {
+        **({} if review_prs is None else {"review_prs": review_prs}),
         "limits": {"hard_stop": hard_stop, "weekly_fraction": weekly, "hard_stop_fraction": 0.9,
                    "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five,
                    "window_start_day": window_start_day, "window_source": five_hour_source,
@@ -237,3 +238,18 @@ def test_housekeeping_naive_timestamp_renders_never():
 def test_status_line_with_a_housekeeping_timestamp_carries_the_fragment():
     line = format_status(_facts(last_housekeeping_at="2026-09-26T15:05:00+00:00"), [], [], NOW)
     assert "housekeeping 3h" in line
+
+
+def _review_pr(task_id, url):
+    return {"initiative": "epic-a", "phase": "p1", "task_id": task_id, "repo": "r", "url": url,
+            "state": "unknown", "merged_at": None}
+
+
+def test_two_awaiting_review_prs_name_both_urls_in_the_status_line():
+    prs = [_review_pr("t-1", "https://x/pull/1"), _review_pr("t-2", "https://x/pull/2")]
+    line = format_status(_facts(review_prs=prs), [], [], NOW)
+    assert "review: 2 awaiting (t-1 https://x/pull/1, t-2 https://x/pull/2)" in line
+
+
+def test_no_awaiting_review_prs_omits_the_review_part():
+    assert "review:" not in format_status(_facts(review_prs=[]), [], [], NOW)
