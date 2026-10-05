@@ -23,16 +23,19 @@ from agent_tools.chair_read_stranded import stranded_from_rows
 from agent_tools.chair_types import (
     EASTERN,
     ApprovedTask,
+    CarryTask,
     DispatchFacts,
     EmptyDecomposeFacts,
     Facts,
     InitiativeFacts,
     LeaseFacts,
     LimitsFacts,
+    PhaseBranch,
     PidProbeFact,
     QuarantineFacts,
     ReviewPr,
     RunningInitiative,
+    StrandedPhase,
 )
 
 HARNESS_CAUSE = "harness"
@@ -120,6 +123,12 @@ class FactsDeps:
         means no initiative has a known repo.
     actions: the `chair_actions` rows, keys kind, ts, and action_json or the action's own keys
         (`chair_read_stale.read_chair_actions`). `steer_streaks` derives from them. Optional, and absent means {}.
+    run_commits: one row per approved commit a run holds, oldest first, keys task, initiative, phase, run, host,
+        branch (the run's agents branch), commit, run_seq. Optional, and absent means no stranded phase is built.
+    phase_state: one row per phase with approved work, keys initiative, phase, tasks (every task id of the phase),
+        adds (whether landing the phase would add commits over main). Optional, and absent means no stranded phase.
+    branch_counts: one row per initiative with a phase branch, keys initiative, phase, branch, ahead, behind, tip,
+        counted against main by the git reader. Optional, and absent means no phase branch.
     """
 
     lease: Callable[[], Row]
@@ -167,6 +176,9 @@ class FactsDeps:
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # chair_actions rows; absent means no steer streaks
+    run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
+    phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
+    branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -476,6 +488,65 @@ def approved_facts(rows: Sequence[Row]) -> list[ApprovedTask]:
     ]
 
 
+def phase_branch_facts(rows: Sequence[Row]) -> list[PhaseBranch]:
+    """One PhaseBranch per row, in row order; ahead and behind are counts against main."""
+    return [
+        {
+            "initiative": r["initiative"],
+            "phase": str(r["phase"]),
+            "branch": r["branch"],
+            "ahead": int(r["ahead"]),
+            "behind": int(r["behind"]),
+            "tip": r["tip"],
+        }
+        for r in rows
+    ]
+
+
+def stranded_facts(
+    approved: Sequence[ApprovedTask], commits: Sequence[Row], phases: Sequence[Row]
+) -> list[StrandedPhase]:
+    """A phase with approved work that adds nothing over main or whose approvals span several runs.
+
+    `commits` is oldest first, so the last row for a task in a run is its newest commit. Carry rows sort by task
+    then run_seq; `pending` is the phase's task ids with no approved row, in the phase's order."""
+    out: list[StrandedPhase] = []
+    for ph in sorted(phases, key=lambda p: (p["initiative"], str(p["phase"]))):
+        init, phase = ph["initiative"], str(ph["phase"])
+        mine = {a["id"]: a for a in approved if a["initiative"] == init and a["phase"] == phase}
+        newest = {
+            (c["task"], c["run"]): c
+            for c in commits
+            if c["initiative"] == init and str(c["phase"]) == phase and c["task"] in mine
+        }
+        rows: list[CarryTask] = sorted(
+            (
+                {
+                    "task": c["task"],
+                    "run": c["run"],
+                    "host": c["host"],
+                    "branch": c["branch"],
+                    "commit": c["commit"],
+                    "needs": list(mine[c["task"]]["needs"]),
+                    "run_seq": int(c["run_seq"]),
+                }
+                for c in newest.values()
+            ),
+            key=lambda r: (r["task"], r["run_seq"]),
+        )
+        if rows and (not ph["adds"] or len({r["run"] for r in rows}) > 1):
+            out.append(
+                {
+                    "initiative": init,
+                    "phase": phase,
+                    "phase_branch": f"epic/{init}/{phase}",
+                    "approved": rows,
+                    "pending": [t for t in ph["tasks"] if t not in mine],
+                }
+            )
+    return out
+
+
 def new_missing_repos(missing: Collection[str], reported: Collection[str]) -> list[str]:
     """The paths in `missing` not in `reported`, de-duplicated and sorted."""
     return sorted({p for p in missing if p not in reported})
@@ -578,8 +649,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stall_candidates": list(deps.stall_candidates(now)) if deps.stall_candidates is not None else [],
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
         "review_prs": list(deps.review_prs()),
-        "stranded": [],  # empty until the facts task gathers stranded phases
-        "phase_branches": [],  # empty until the facts task gathers phase branches
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(list(deps.actions())) if deps.actions is not None else {},
+        "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
+        "phase_branches": phase_branch_facts(list(deps.branch_counts())),
     }
