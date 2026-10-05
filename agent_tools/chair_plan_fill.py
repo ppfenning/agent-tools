@@ -1,4 +1,4 @@
-"""Plan the free lanes: started epics, then unstarted ones, then intake decomposes in pairs, then a pull.
+"""Plan the free lanes: started epics, then unstarted ones, then intake decomposes, then a pull.
 
 Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
 """
@@ -57,16 +57,11 @@ def _epic_launches(
     return [*local, *_place_on_hosts(hosted, host_free)]
 
 
-def _decompose_launches(facts: Facts, lanes: int, any_host_free: bool, reserved: bool = False) -> list[Action]:
-    """One lane per intake item, oldest first, and only an even count, unless lanes itself is the single free
-    local lane and no lane host has room either: then that one lane launches one, since nothing will pick up
-    a partner from a host this tick. Two or more free local lanes still pair off, whatever the host state.
-    reserved (local lanes kept for decomposes) drops the pairing: every free lane takes an intake item."""
-    n = min(lanes, len(facts["intake"]))
-    count = n if reserved or (lanes == 1 and not any_host_free) else n - n % 2
+def _decompose_launches(facts: Facts, lanes: int) -> list[Action]:
+    """One intake item per free local lane, oldest first."""
     return [
         {"kind": "launch_decompose", "intake_ids": [intake_id]}
-        for intake_id in facts["intake"][:count]
+        for intake_id in facts["intake"][: max(0, lanes)]
     ]
 
 
@@ -114,7 +109,7 @@ def plan_fill(
     tick, so fill never places a fresh launch_epic on a lane that action just filled.
 
     dispatch local_lanes "decompose" keeps the free local lanes for intake decomposes: every epic goes to a
-    lane host, and the decomposes take the local lanes unpaired."""
+    lane host, and the decomposes take the local lanes."""
     host_free = host_free_slots(facts)
     if consumed_host_lanes:
         host_free = _less_consumed(host_free, consumed_host_lanes)
@@ -124,12 +119,7 @@ def plan_fill(
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
     epics = _epic_launches(facts, 0 if reserved else free_lanes, withheld, host_free)
     local_epics = [a for a in epics if "host" not in a]
-    hosted_by_epics: dict[str, int] = {}
-    for a in epics:
-        if "host" in a:
-            hosted_by_epics[a["host"]] = hosted_by_epics.get(a["host"], 0) + 1
-    any_host_free = any(free - hosted_by_epics.get(name, 0) > 0 for name, _, _, free, _ in host_free)
-    decomposes = _decompose_launches(facts, local_lanes - len(local_epics), any_host_free, reserved)
+    decomposes = _decompose_launches(facts, local_lanes - len(local_epics))
     lanes_left = local_lanes - len(local_epics) - len(decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
     return [*epics, *decomposes, *pulls]
