@@ -153,12 +153,30 @@ def test_snapshot_matches_committed_fixture():
 
     spend_series = [["2026-09-28T23:40:00Z", 0.42], ["2026-09-28T23:50:00Z", 0.84]]
 
-    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 2, watch, decisions, spend_series)
+    history = [
+        {
+            "run": "dash-feed-0", "machine": "omarchy", "initiative": "dash-feed",
+            "ended_at": "2026-09-28T23:50:00Z", "outcome": "landed", "cost_usd": 2.15,
+            "landed": [{"task": "p1-foundations-task", "pr": 41}],
+        },
+        {
+            "run": "dash-feed-9", "machine": "omarchy", "initiative": "dash-feed",
+            "ended_at": "2026-09-28T23:40:00Z", "outcome": "quarantined", "cost_usd": 0.42,
+            "landed": [], "cause": "review rejected twice",
+        },
+    ]
+    history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
+
+    result = snapshot(
+        at, chair, spend, machines, runs, queue, 1, inbox, 2, watch, decisions, spend_series,
+        history=history, history_today=history_today,
+    )
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)
 
     assert result == expected
+    assert result["history"] == history and result["history_today"] == history_today
 
 
 def _meter(five_pct: float, seven_pct: float, observed_at: datetime) -> usage_meter.Meter:
@@ -579,3 +597,48 @@ def test_the_feeds_local_capacity_follows_the_cartridge_not_the_pacing_default(t
 
     assert dash_feed._local_identity(runs_dir, profile)[1] == 1
     assert dash_feed._local_identity(runs_dir, {})[1] == 5
+
+
+_NO_HISTORY_TODAY = {"lands": 0, "quarantines": 0, "cost_usd": 0.0, "runs": 0}
+
+
+def test_a_failing_store_reader_leaves_the_feed_with_no_history_and_zero_counts(monkeypatch, tmp_path):
+    def broken(store, since):
+        raise OSError("store unreachable")
+
+    monkeypatch.setattr(dash_feed, "read_history_rows", broken)
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert (feed["history"], feed["history_today"]) == ([], _NO_HISTORY_TODAY)
+
+
+def test_an_absent_store_leaves_the_feed_with_no_history_and_zero_counts(monkeypatch, tmp_path):
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert (feed["history"], feed["history_today"]) == ([], _NO_HISTORY_TODAY)
+
+
+def test_the_feed_reads_history_since_eastern_midnight_and_builds_it_from_the_rows(monkeypatch, tmp_path):
+    seen = []
+    rows = {
+        "runs": [
+            {"run_id": "r-1", "host": "omarchy", "status": "landed", "ended_at": "2026-09-29T15:00:00Z"},
+            {"run_id": "r-2", "host": "omarchy", "status": "quarantined", "ended_at": "2026-09-29T14:00:00Z"},
+        ],
+        "task_records": [
+            {"run_id": "r-1", "phase_id": "p1", "task_id": "t1", "record_json": '{"landed": true, "ticket": "t-1", "pr": 7}'},
+            {"run_id": "r-2", "phase_id": "p1", "task_id": "t2", "record_json": '{"attempts": [{"cause": "budget"}]}'},
+        ],
+        "node_calls": [{"run_id": "r-1", "cost_usd": 1.5}, {"run_id": "r-2", "cost_usd": 0.5}],
+    }
+    monkeypatch.setattr(dash_feed, "read_history_rows", lambda store, since: seen.append(since) or rows)
+
+    feed = _built_feed(monkeypatch, tmp_path)
+
+    assert seen == ["2026-09-29T04:00:00+00:00"]
+    assert [(r["run"], r["outcome"], r.get("cause")) for r in feed["history"]] == [
+        ("r-1", "landed", None), ("r-2", "quarantined", "budget"),
+    ]
+    assert feed["history"][0]["landed"] == [{"task": "t-1", "pr": 7}]
+    assert feed["history_today"] == {"lands": 1, "quarantines": 1, "cost_usd": 2.0, "runs": 2}

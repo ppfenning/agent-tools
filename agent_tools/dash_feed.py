@@ -12,7 +12,7 @@ import re
 import socket
 import subprocess
 from collections.abc import Collection, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from agent_tools import (
@@ -42,6 +42,9 @@ from agent_tools.dash_chair_counters import chair_counters
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
+from agent_tools.dash_history import build_history
+from agent_tools.dash_history import history_today as _history_today
+from agent_tools.dash_history_store import read_history_rows
 from agent_tools.dash_spend_series import spend_series as _spend_series
 from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
@@ -59,14 +62,17 @@ _ASK_KEYS = ("options", "context", "asked_at", "note")
 _GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
 # Every seat that is neither the chair nor a person: each node in the graph roster, and each graph.
 _SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
+_ZERO_HISTORY_TODAY = {"lands": 0, "quarantines": 0, "cost_usd": 0.0, "runs": 0}
 
 
 def snapshot(
     at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
+    history=(), history_today=None,
 ) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
-    decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs."""
+    decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs.
+    `history` is the ended-run rows and `history_today` the counts since local midnight; zeroed when not given."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     return {
         "schema": 1,
@@ -82,6 +88,8 @@ def snapshot(
         "inbox_total": inbox_total,
         "decisions": list(decisions),
         "watch": watch,
+        "history": list(history),
+        "history_today": dict(_ZERO_HISTORY_TODAY) if history_today is None else history_today,
     }
 
 
@@ -556,6 +564,23 @@ def _chair_edge(runs_dir: Path) -> dict:
     }
 
 
+def _history_v1(rows: Mapping, at: datetime) -> tuple[list[dict], dict]:
+    """`history` and `history_today` from store rows, counting a day in the chair's zone."""
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    args = (rows["runs"], rows["task_records"], rows["node_calls"])
+    return build_history(*args), _history_today(*args, at, timezone(offset))
+
+
+def _history_edge(runs_dir: Path, at: datetime) -> tuple[list[dict], dict]:
+    """Edge: the feed's history from the store alone. An unreadable store gives no history and zero counts."""
+    offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
+    since = local_midnight(at, offset).astimezone(UTC).isoformat()
+    try:
+        return _history_v1(read_history_rows(runs_dir, since), at)
+    except Exception:  # the history is garnish: a store failure must not take the feed down
+        return [], dict(_ZERO_HISTORY_TODAY)
+
+
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
@@ -582,6 +607,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         **{run: _run_calls(runs_dir, run) for run in lane_ids},
         **{record["run"]: record["calls"] for record in records},
     }
+    history, today = _history_edge(runs_dir, at)
     return snapshot(
         now,
         _chair_v1(
@@ -602,4 +628,6 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         [],
         _open_decisions(entries, blob),
         _spend_series(_spend_points(calls_by_run), at),
+        history=history,
+        history_today=today,
     )

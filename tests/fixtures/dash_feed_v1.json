@@ -11,5 +11,7 @@
   "inbox": [{"kind": "needs_chair", "target": "some-task", "reason": "budget stop after 2 attempts"}, {"kind": "review_pr", "initiative": "dash-feed", "target": "p2-feed-task", "url": "https://github.com/pat/coxswain-tools/pull/42", "reason": "awaiting review"}],
   "inbox_total": 2,
   "decisions": [{"id": "d-1", "question": "Ship 0.27 with the dash decisions pane?", "options": ["ship", "hold"], "context": "The pane is behind a flag and the fixture is already in coxswain-dash.", "asked_at": "2026-09-29T00:00:00Z"}],
-  "watch": []
+  "watch": [],
+  "history": [{"run": "dash-feed-0", "machine": "omarchy", "initiative": "dash-feed", "ended_at": "2026-09-28T23:50:00Z", "outcome": "landed", "cost_usd": 2.15, "landed": [{"task": "p1-foundations-task", "pr": 41}]}, {"run": "dash-feed-9", "machine": "omarchy", "initiative": "dash-feed", "ended_at": "2026-09-28T23:40:00Z", "outcome": "quarantined", "cost_usd": 0.42, "landed": [], "cause": "review rejected twice"}],
+  "history_today": {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
 }
