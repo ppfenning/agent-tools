@@ -1952,3 +1952,43 @@ def test_a_bare_pull_with_no_sources_says_so(tmp_path, capsys):
     profile, _ws = _write_file_profile(tmp_path)
     assert main(["route", "pull", "--profile", str(profile)]) == 2
     assert capsys.readouterr().out == "routing: no sources in the profile\n"
+
+
+def _edit_remove_workspace(tmp_path, monkeypatch, rows, lanes=()):
+    """A workspace under tmp_path with `runs/` beside it; the queue reads `rows`, the lease store holds `lanes`,
+    and the returned list collects every row upserted."""
+    (tmp_path / "runs").mkdir()
+    upserts = []
+    monkeypatch.setattr("agent_tools.cli._runs_dir_for_land", lambda a: (tmp_path / "runs", None))
+    monkeypatch.setattr(run_store, "read_queue", lambda runs_dir, initiative=None, kind=None: rows)
+    monkeypatch.setattr(run_store, "upsert_row", lambda runs_dir, row: upserts.append(row) or True)
+    monkeypatch.setattr(run_store, "live_lanes", lambda runs_dir, now: list(lanes))
+    return upserts
+
+
+def test_route_edit_on_an_intake_exits_0_and_prints_the_diff(tmp_path, monkeypatch, capsys):
+    row = {"kind": "intake", "initiative": "intake", "task_id": "fix-it", "state": "queued", "extra": {}}
+    _edit_remove_workspace(tmp_path, monkeypatch, [row])
+    (tmp_path / "intake").mkdir()
+    (tmp_path / "intake" / "fix-it.md").write_text("---\nid: fix-it\ntitle: Old\nrepo: r\n---\n\nBody\n", encoding="utf-8")
+    assert main(["route", "edit", "fix-it", "--title", "New"]) == 0
+    assert "-title: Old\n+title: New\n" in capsys.readouterr().out
+
+
+def test_route_remove_on_a_remote_live_run_exits_2_and_names_the_stop(tmp_path, monkeypatch, capsys):
+    lane = run_store.Lane("demo-1", "omarchy", "2026-10-05T11:00:00Z", "2026-10-05T11:59:00Z")
+    rows = [{"kind": "task", "initiative": "demo", "task_id": "a", "state": "ready"}]
+    _edit_remove_workspace(tmp_path, monkeypatch, rows, lanes=[lane])
+    assert not list((tmp_path / "runs").glob("*.pid"))
+    assert main(["route", "remove", "demo", "--reason", "stale"]) == 2
+    assert "cox runs stop demo-1" in capsys.readouterr().out
+
+
+def test_route_remove_of_an_intake_moves_it_and_marks_its_row_done(tmp_path, monkeypatch):
+    row = {"kind": "intake", "initiative": "intake", "task_id": "idea", "state": "queued", "extra": {}}
+    upserts = _edit_remove_workspace(tmp_path, monkeypatch, [row])
+    (tmp_path / "intake").mkdir()
+    (tmp_path / "intake" / "idea.md").write_text("---\ntitle: Idea\n---\nBody\n", encoding="utf-8")
+    assert main(["route", "remove", "idea", "--reason", "stale", "--by", "pat"]) == 0
+    assert (tmp_path / "intake" / "done" / "idea.md").is_file()
+    assert [(r["initiative"], r["task_id"], r["state"]) for r in upserts] == [("intake", "idea", "done")]

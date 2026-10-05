@@ -1,0 +1,15 @@
+usage: cox route edit [-h] [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO]
+                      [--dry-run] [--profile PROFILE]
+                      id
+
+positional arguments:
+  id                    a queued intake or an initiative
+
+options:
+  -h, --help            show this help message and exit
+  --title TITLE
+  --body BODY
+  --body-file BODY_FILE
+  --repo REPO
+  --dry-run             print the diff and write nothing
+  --profile PROFILE
