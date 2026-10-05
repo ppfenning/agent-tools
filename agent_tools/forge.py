@@ -1,7 +1,7 @@
 """The forge registry: where a land's push, pull request, checks and merge go.
 
 A forge is a module that defines these five functions. Each returns
-`(ok: bool, detail: str)` except the first.
+`(ok: bool, detail: str)` except the first. A sixth, `pr_state`, is optional.
 
     find_open_prs(repo: Path, branch: str) -> list[int] | str
         Numbers of the open PRs whose head is `branch`, or the reason they
@@ -19,6 +19,12 @@ A forge is a module that defines these five functions. Each returns
         plan step. Updates the local default branch. A repo on any branch but
         `step["branch"]` keeps its checkout; a repo on `step["branch"]` ends on
         the default branch, since git cannot delete a checked-out branch.
+
+    pr_state(url: str) -> dict
+        `{"state": "open" | "merged" | "closed" | "unknown", "merged_at": UTC
+        ISO string or None}` for the PR at `url`. Never raises. Callers reach it
+        through this module's `pr_state(module, url)`, which answers `unknown`
+        for a forge without a pull-request host or without this function.
 
 `open_pr` and `wait_checks` must accept the keywords above; `missing_refs`
 names a forge that predates them, so a land can refuse before its first step.
@@ -54,6 +60,12 @@ def missing_refs(module) -> list[str]:
         return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
     return [f"{fn}({name})" for fn, names in REF_KEYWORDS.items() for name in names
             if not accepts(getattr(module, fn), name)]
+
+
+def pr_state(module, url: str) -> dict:
+    """`module.pr_state(url)`, or `unknown` for a forge that has no such function."""
+    fn = getattr(module, "pr_state", None)
+    return fn(url) if fn else {"state": "unknown", "merged_at": None}
 
 
 def forge_for(name: str):
