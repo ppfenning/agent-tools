@@ -776,26 +776,37 @@ def _ack_done_land_notices(deps: Deps) -> list[str]:
     return acked
 
 
+def _note_uncounted(action: Action, blocked: dict[str, str], blocked_initiatives: dict[str, str]) -> None:
+    """A land_phase that names an initiative blocks only that initiative; any other land blocks its whole repo."""
+    initiative = action.get("initiative", "")
+    if action.get("kind") == "land_phase" and initiative:
+        blocked_initiatives[initiative] = _land_subject(action)
+    else:
+        blocked[action.get("repo", "")] = _land_subject(action)
+
+
 def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool) -> list[Result]:
     """Edge. One result per action, in order; each is recorded after it runs.
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
     A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
     A land or land_phase whose command exits nonzero is refused, escalated with the cause `land_refusal` read
-    from its output, and blocks its repo's later lands and land_phases this tick. A land refused before its
-    command runs blocks nothing.
+    from its output, and blocks its repo's later lands and land_phases this tick, except that a land_phase naming
+    an initiative blocks only that initiative's later lands, clear_branches and relaunches. A land refused before
+    its command runs blocks nothing.
     With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
     that finished since the last tick are collected first, so their results lead this tick's.
     """
     results: list[Result] = []
     blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
+    blocked_initiatives: dict[str, str] = {}  # initiative -> phase of its uncounted land_phase that skips its later lands
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
     if not dry_run:
         _ack_done_land_notices(deps)
     for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
         land = finished["action"]
         if finished["status"] == "not_landed" or "needs_chair" in finished:
-            blocked[land.get("repo", "")] = _land_subject(land)
+            _note_uncounted(land, blocked, blocked_initiatives)
         deps.record(_recorded(finished))
         results.append(finished)
         if finished["status"] not in ("landed", "fenced", "busy"):
@@ -811,10 +822,12 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
+        elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch"):
+            result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
         else:
             result = _execute(action, deps, blocked)
         if action.get("kind") in ("land", "land_phase") and (result["status"] == "not_landed" or "needs_chair" in result):
-            blocked[action.get("repo", "")] = _land_subject(action)
+            _note_uncounted(action, blocked, blocked_initiatives)
         if action.get("kind") == "clear_branches" and result["status"] != "done":
             uncleared[initiative] = result["status"]
         if result["status"] != "in_progress":  # the land's own result is recorded when it is collected

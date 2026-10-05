@@ -114,10 +114,8 @@ def checks_argv(repo_facts: dict[str, Any]) -> list[tuple[str, list[str]]]:
 
 
 def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any]]) -> str | None:
-    """None when every item in the phase is landable, else the first reason it
-    is not: every item must be `approved`, `done` or `dropped`, and every
-    `approved` or `done` item's task record must be approved (`_approved`
-    returns None)."""
+    """None when every item is landable, else the first reason it is not. A `done` or `dropped` item is
+    satisfied without a record; an `approved` item needs one, and any record present must be approved."""
     for item in items:
         status = item.get("status")
         if status not in ("approved", "done", "dropped"):
@@ -126,6 +124,8 @@ def phase_landable(items: list[dict[str, Any]], records: dict[str, dict[str, Any
             continue
         record = records.get(item.get("id"))
         if record is None:
+            if status == "done":
+                continue
             return f"{item.get('id')} has no task record"
         refusal = _approved(record)
         if refusal is not None:
@@ -205,6 +205,9 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     phase_branch = f"epic/{initiative}/{phase}"
     pr_branch = f"pr/{initiative}--{phase}"
     landed_tasks = [r.get("task") for r in task_records if r.get("status") != "dropped"]
+    # A `note`, not a phase-level `mark_done`: cli `_land_enrich` reads `step["task"]` on every mark_done.
+    if not landed_tasks and all(item.get("status") in ("done", "dropped") for item in items):
+        return [{"kind": "note", "reason": f"phase {phase} done: every item is done or dropped, nothing to land"}]
     squash_step = {"kind": "squash_phase", "branch": phase_branch, "onto": pr_branch, "from": default_branch,
                    "subject": f"epic {initiative}: {phase}"}
     approved_files = _phase_approved_files(items, records)

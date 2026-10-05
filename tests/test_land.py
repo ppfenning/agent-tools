@@ -585,10 +585,25 @@ def test_phase_landable_one_done_but_unapproved():
     assert land.phase_landable(items, records) == "a: arbitration verdict is 'revise', not 'approve'"
 
 
-def test_phase_landable_a_done_item_with_no_filed_task_record():
+def test_phase_landable_a_done_item_with_no_filed_task_record_is_satisfied():
     items = [_item("a", "done"), _item("b", "done")]
     records = {"b": _record(task="b")}
-    assert land.phase_landable(items, records) == "a has no task record"
+    assert land.phase_landable(items, records) is None
+
+
+def test_phase_landable_a_done_item_without_a_record_beside_an_approved_one_with_a_record():
+    items = [_item("a", "done"), _item("b", "approved")]
+    records = {"b": _record(task="b")}
+    assert land.phase_landable(items, records) is None
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    task_records = [{**_record(task="b"), "status": "approved"}]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
+    assert [s for s in steps if s["kind"] == "mark_done"] == [{"kind": "mark_done", "task": "b"}]
+    assert next(s for s in steps if s["kind"] == "clean_phase")["tasks"] == ["b"]
+
+
+def test_phase_landable_an_approved_item_with_no_task_record_still_refuses():
+    assert land.phase_landable([_item("a", "approved")], {}) == "a has no task record"
 
 
 # --- land_plan: phase mode (§1, §7) ---
@@ -652,6 +667,13 @@ def test_phase_plan_pr_create_title_carries_the_initiative_title_from_the_record
     steps = land.land_plan(phase_record, {}, "main", items=items, task_records=task_records)
     pr = next(s for s in steps if s["kind"] == "pr_create")
     assert pr["title"] == "epic I412: t1 - Widget"
+
+
+def test_phase_plan_of_only_done_and_dropped_items_is_a_no_op_that_records_done():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    items = [_item("a", "done"), _item("b", "dropped")]
+    steps = land.land_plan(phase_record, {}, "main", items=items, task_records=[])
+    assert steps == [{"kind": "note", "reason": "phase seams done: every item is done or dropped, nothing to land"}]
 
 
 def test_phase_plan_refuses_on_an_unlandable_item():
@@ -975,11 +997,12 @@ def test_cli_dry_run_plan_carries_the_item_path(repo, tmp_path, capsys, monkeypa
 
 # --- cli end to end: phase land resolves the initiative from the work store ---
 
-def _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, work_dirs):
+def _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, work_dirs, with_record=True):
     (tmp_path / "runs").mkdir()
     (tmp_path / "runs/epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
-    (task_dir / "seams-task.json").write_text(json.dumps(_record(status="done")), encoding="utf-8")
+    if with_record:
+        (task_dir / "seams-task.json").write_text(json.dumps(_record(status="done")), encoding="utf-8")
     for d in work_dirs:
         (tmp_path / "work" / d).mkdir(parents=True)
         (tmp_path / "work" / d / "seams-task.md").write_text("---\nid: seams-task\nstate: done\n---\n\nBody.\n", encoding="utf-8")
@@ -993,6 +1016,12 @@ def test_phase_land_finds_the_initiative_in_the_work_store_when_the_record_names
     rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams",))
     assert rc == 0
     assert next(s for s in json.loads(out) if s["kind"] == "pick_branch")["branch"] == "epic/x/seams"
+
+
+def test_phase_land_of_an_all_done_phase_runs_the_cli_edge_as_a_no_op(repo, tmp_path, capsys, monkeypatch):
+    rc, out = _phase_land_dry_run(repo, tmp_path, capsys, monkeypatch, ("x/seams",), with_record=False)
+    assert rc == 0
+    assert json.loads(out) == [{"kind": "note", "reason": "phase seams done: every item is done or dropped, nothing to land"}]
 
 
 def test_phase_land_refuses_when_two_initiatives_hold_the_phase(repo, tmp_path, capsys, monkeypatch):

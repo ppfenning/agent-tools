@@ -268,6 +268,37 @@ def test_an_uncounted_land_phase_skips_a_later_land_phase_in_its_repo() -> None:
     assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
 
 
+def test_a_refused_land_phase_for_one_initiative_still_runs_another_initiative_s_relaunch_and_land_phase(tmp_path: Path) -> None:
+    calls: list = []
+    refused = {**_land_phase("p1", "r"), "initiative": "A"}
+    actions = [
+        refused,
+        {"kind": "relaunch", "initiative": "B", "repo": "r", "epoch": 1},
+        {**_land_phase("p2", "r"), "initiative": "B"},
+    ]
+    results = perform(actions, replace(_deps(calls, "failing checks: lint", code=1), work_dir=tmp_path), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "escalated", "failed", "refused", "escalated"]
+    assert [c[1][:3] for c in calls if c[0] == "run"] == [["cox", "runs", "land"], ["cox", "route", "launch"], ["cox", "runs", "land"]]
+    assert [c[1][5] for c in calls if c[0] == "run" and c[1][2] == "land"] == ["p1", "p2"]
+
+
+def test_a_refused_land_phase_skips_a_later_action_for_the_same_initiative_in_another_repo() -> None:
+    calls: list = []
+    refused = {**_land_phase("p1", "r"), "initiative": "A"}
+    actions = [refused, {**_land("t2", "r2"), "initiative": "A"}]
+    results = perform(actions, _deps(calls, "failing checks: lint", code=1), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "escalated", "skipped", "escalated"]
+    assert results[2]["reason"] == "an earlier land in r2 (phase p1) was not counted"
+    assert [c[1][5] for c in calls if c[0] == "run"] == ["p1"]
+
+
+def test_a_refused_land_phase_still_records_a_later_needs_chair_for_its_initiative() -> None:
+    refused = {**_land_phase("p1", "r"), "initiative": "A"}
+    actions = [refused, {"kind": "needs_chair", "initiative": "A", "epoch": 1}]
+    results = perform(actions, _deps([], "failing checks: lint", code=1), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "escalated", "recorded"]
+
+
 def test_a_refused_land_phase_escalates_naming_its_phase() -> None:
     facts = {
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "five_hour_fraction": None},
