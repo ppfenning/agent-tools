@@ -5527,16 +5527,32 @@ def _settings_get(a: argparse.Namespace) -> int:
     return cox_settings.run_get(_profile_path(a), a.json)
 
 
+def _settings_set(a: argparse.Namespace) -> int:
+    from agent_tools import cox_settings
+    return cox_settings.run_set(_profile_path(a), a.scope, a.key, a.value, a.dry_run)
+
+
 SETTINGS_GROUP = commands.Group(
     name="settings", help="the cartridge and profile settings, with where each lives and whether git tracks it",
     description="The cartridge and profile settings, with where each lives and whether git tracks it.",
-    epilog="examples:\n  cox settings get\n  cox settings get --json",
+    epilog="examples:\n  cox settings get\n  cox settings get --json\n  cox settings set cartridge policy.dispatch.max_in_flight 4 --dry-run",
 )
 SETTINGS_COMMANDS = [
     commands.Command(
         "get", "settings", "print every setting present, grouped by section",
         (commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--profile",))),
         _settings_get, False, (),
+    ),
+    commands.Command(
+        "set", "settings", "change one setting: print the diff, write the file, commit it when git tracks it",
+        (
+            commands.Arg(("scope",), {"choices": ("cartridge", "profile")}),
+            commands.Arg(("key",)),
+            commands.Arg(("value",)),
+            commands.Arg(("--dry-run",), {"action": "store_true"}),
+            commands.Arg(("--profile",)),
+        ),
+        _settings_set, False, (),
     ),
 ]
 

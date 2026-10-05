@@ -1,7 +1,7 @@
-"""`cox settings get`: the settings rows of the cartridge and the profile, as text or JSON.
+"""`cox settings get` and `cox settings set`: the settings rows of the cartridge and the profile.
 
-Parsing, grouping and formatting are pure functions of data. The edge, `git_tracked` and `run_get`,
-only reads files, asks git and prints. The cartridge is `<cartridges_dir>/<team>/cartridge.yaml`,
+Parsing, grouping and formatting are pure functions of data. The edge, `git_tracked`, `run_get`,
+`git_user_name`, `git_commit` and `run_set`, only reads files, asks git, writes and prints. The cartridge is `<cartridges_dir>/<team>/cartridge.yaml`,
 both named by the profile, and its text is parsed by `chair_cap._load` (yaml.safe_load, `{}` on a
 broken or non-mapping document).
 """
@@ -12,7 +12,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from agent_tools import route, settings_model
+from agent_tools import route, settings_model, settings_plan
 from agent_tools.chair_cap import _load as _load_cartridge
 from agent_tools.settings_model import SettingRow
 
@@ -104,4 +104,90 @@ def run_get(profile_path: Path, as_json: bool) -> int:
     }
     grouped = settings_model.rows(cartridge, profile, tracked)
     print(json.dumps(to_json(grouped), default=str, indent=2) if as_json else render_text(grouped))
+    return 0
+
+
+def commit_message(scope: str, key: str, value: str, author: str) -> str:
+    """One line naming the setting, the raw value given, and the caller."""
+    return f"settings: set {scope}:{key} = {value} (by {author})"
+
+
+def target_path(scope: str, profile_path: Path, profile: dict) -> Path | None:
+    """The file a `scope` edit rewrites; None for an unknown scope or a profile naming no cartridge."""
+    if scope == "profile":
+        return profile_path
+    if scope == "cartridge":
+        return cartridge_path_for(profile)
+    return None
+
+
+def _no_schema(_text: str) -> list[str]:
+    # `core.cartridge.overlay_errors` is importable only inside the harness venv, so the cartridge is not schema-checked here.
+    return []
+
+
+def git_user_name(cwd: Path) -> str | None:
+    """Edge. `git config user.name` run from `cwd`; None when unset, empty, or git cannot run."""
+    try:
+        done = subprocess.run(
+            ["git", "config", "user.name"], cwd=cwd, capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if done.returncode != 0:
+        return None
+    return done.stdout.strip() or None
+
+
+def git_commit(path: Path, message: str) -> str | None:
+    """Edge. Commit only `path` from its own directory; None on success, git's complaint on failure."""
+    try:
+        done = subprocess.run(
+            ["git", "commit", "-m", message, "--", path.name],
+            cwd=path.parent, capture_output=True, text=True, check=False,
+        )
+    except OSError as exc:
+        return str(exc)
+    return None if done.returncode == 0 else (done.stderr.strip() or done.stdout.strip() or "git commit failed")
+
+
+def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool) -> int:
+    """Edge. Plan the change against the target file's text and print the diff. Unless `dry_run`, write
+    it, and commit it as the caller when git tracks the file; a machine-local file is written only."""
+    profile_text = _read_text_or_none(profile_path)
+    _, profile = parse_documents(None, profile_text)
+    path = target_path(scope, profile_path, profile)
+    if path is None:
+        print(f"error: no file to edit for {scope}:{key}; the profile names no cartridge or the scope is unknown")
+        return 1
+    plan = settings_plan.plan_set(scope, key, value, _read_text_or_none(path) or "", _no_schema)
+    if isinstance(plan, settings_plan.PlanError):
+        print(f"error: {plan.reason}")
+        return 1
+    if plan.pat_only:
+        print(f"Pat-only: {scope}:{key} is a Pat-only setting. Proceeding.")
+    if not plan.diff:
+        print(f"no change: {scope}:{key} already has this value in {path.name}")
+        return 0
+    print(plan.diff, end="")
+    if dry_run:
+        return 0
+    tracked = git_tracked(path)
+    author = git_user_name(path.parent) if tracked else None
+    if tracked and author is None:
+        print("error: git config user.name is not set; nothing was written")
+        return 1
+    try:
+        path.write_text(plan.new_text, encoding="utf-8")
+    except OSError as exc:
+        print(f"error: cannot write {path}: {exc}")
+        return 1
+    if author is None:
+        print(f"wrote {path}; no commit was made (machine-local file)")
+        return 0
+    failure = git_commit(path, commit_message(scope, key, value, author))
+    if failure is not None:
+        print(f"error: wrote {path} but the commit failed: {failure}")
+        return 1
+    print(f"wrote {path} and committed it as {author}")
     return 0
