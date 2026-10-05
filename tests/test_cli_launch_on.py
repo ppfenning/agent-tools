@@ -57,7 +57,8 @@ def _run_files(ws):
 def _fake_edge(monkeypatch, calls, codes=None, real_rsync=False):
     """Records every argv and returns `codes[step]`, default 0; ssh never runs, rsync runs only with `real_rsync`.
 
-    The sync and launch steps are both an ssh argv, so `step` is "sync" or "ssh" (launch) by content, not argv[0]."""
+    The harness sync, repo sync and launch steps are all an ssh argv, so `step` is "harness", "sync" or "ssh" (launch)
+    by content, not argv[0]: the harness sync is the one whose command ends in `/harness`."""
     codes = codes or {}
 
     def edge(cwd):
@@ -68,7 +69,7 @@ def _fake_edge(monkeypatch, calls, codes=None, real_rsync=False):
                     return subprocess.run(argv, cwd=cwd).returncode
                 return codes.get("rsync", 0)
             if argv[0] == "ssh" and "route launch epic" not in argv[2]:
-                return codes.get("sync", 0)
+                return codes.get("harness" if argv[2].endswith("/harness") else "sync", 0)
             return codes.get("ssh", 0)
 
         return run, lambda path: path
@@ -98,7 +99,7 @@ def test_on_copies_the_initiative_starts_the_lane_and_writes_only_the_remote_rec
     assert rc == 0
     assert "run demo-1" in out and "host box" in out
     assert (remote / "work" / "demo" / "p1" / "t.md").exists()
-    assert calls[2][0] == "ssh" and "--run-id demo-1" in calls[2][2] and "--label lbl" in calls[2][2]
+    assert calls[3][0] == "ssh" and "--run-id demo-1" in calls[3][2] and "--label lbl" in calls[3][2]
     record = json.loads((ws / "runs" / "demo-1.remote.json").read_text())
     assert set(record) == {"host", "launched_at", "repo"} and record["host"] == "box"
     assert record["repo"] == argv[argv.index("--repo") + 1]
@@ -161,6 +162,21 @@ def test_on_a_failed_launch_step_exits_non_zero_and_writes_no_remote_record(tmp_
     assert _run_files(ws) == []
 
 
+def test_on_a_failed_harness_sync_exits_non_zero_before_the_repo_sync_and_writes_no_remote_record(
+    tmp_path, monkeypatch, capsys
+):
+    ws, _, argv = _setup(tmp_path)
+    calls = []
+    _fake_edge(monkeypatch, calls, {"harness": 1})
+    _no_local_process(monkeypatch)
+    rc = main([*argv, "--on", "box"])
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert f"routing: launch on box failed at harness: updating the harness at {tmp_path / 'harness'} on box exited 1" in out
+    assert [c[0] for c in calls] == ["rsync", "ssh"]
+    assert _run_files(ws) == []
+
+
 @pytest.mark.parametrize("planted", [["demo-7.remote.json"], ["demo-7.log", "demo-7.pid"], ["demo-7:t.json"]])
 @pytest.mark.parametrize("extra", [[], ["--on", "box"]])
 def test_run_id_whose_files_are_in_runs_is_refused_and_nothing_is_overwritten(tmp_path, monkeypatch, capsys, extra, planted):
@@ -188,7 +204,7 @@ def test_a_second_on_launch_with_the_first_runs_id_is_refused_and_keeps_its_reco
     rc = main([*argv, "--on", "box", "--run-id", "demo-1"])
     assert rc == 2
     assert "run id demo-1 is already taken" in capsys.readouterr().out
-    assert len(calls) == 3  # rsync, sync, launch on the first --on; the refused second run makes none
+    assert len(calls) == 4  # rsync, harness sync, repo sync, launch on the first --on; the refused second run makes none
     assert (ws / "runs" / "demo-1.remote.json").read_text() == first
 
 
@@ -246,7 +262,7 @@ def test_the_production_edge_pushes_to_the_ssh_location_from_the_workspace(tmp_p
     assert rc == 0, capsys.readouterr().out
     remote_calls = [(cmd, cwd) for cmd, cwd in seen if cmd[0] in ("rsync", "ssh")]
     assert remote_calls[0] == (["rsync", "-a", "--delete", "work/demo/", f"me@box:{remote}/work/demo/"], ws)
-    ssh, cwd = remote_calls[2]  # remote_calls[1] is the sync step that brings the lane host's repo up to date
+    ssh, cwd = remote_calls[3]  # [1] and [2] are the syncs that bring the lane host's harness and repo up to date
     assert ssh[:2] == ["ssh", "me@box"] and f"--initiative {remote}/work/demo" in ssh[2] and cwd == ws
     assert (ws / "runs" / "demo-1.remote.json").exists()
 
@@ -317,7 +333,7 @@ def test_on_a_non_claude_runner_checks_the_auth_env_var_and_never_asks_claude_au
     rc = main([*argv, "--on", "box"])
     assert rc == 0
     assert asked == [["ssh", "me@box", "printenv MY_API_KEY"]]
-    assert [c[0] for c in calls] == ["rsync", "ssh", "ssh"]  # push, sync the repo, start the lane
+    assert [c[0] for c in calls] == ["rsync", "ssh", "ssh", "ssh"]  # push, sync the harness, sync the repo, start the lane
     assert (ws / "runs" / "demo-1.remote.json").exists()
 
 
