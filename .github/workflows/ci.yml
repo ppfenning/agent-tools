@@ -59,7 +59,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       # the umbrella's dev group installs coxswain-tools from ../coxswain-tools, which is this checkout
-      - run: git clone --depth 1 https://github.com/ppfenning/coxswain ../coxswain
+      # a self-hosted runner keeps its work dir between runs, so the last run's clone goes first
+      - run: rm -rf ../coxswain && git clone --depth 1 https://github.com/ppfenning/coxswain ../coxswain
       - run: uv sync --group dev
         working-directory: ../coxswain
       - run: uv run pytest -q tests/devtools/test_commands_render.py
