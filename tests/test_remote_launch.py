@@ -9,6 +9,8 @@ from agent_tools.remote_lane import remote_record
 from agent_tools.remote_launch import LaunchError, env_preflight, launch_on_host, launch_plan
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
+SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
+RSYNC_BOUND = ["rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30"]
 
 
 def _fake_run(calls, codes=None):
@@ -76,7 +78,7 @@ def test_a_failing_sync_stops_before_the_launch_argv_runs():
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", run, repo="/r")
     assert result == LaunchError("sync", "updating /r on box2 exited 1: the lane would build on a stale main")
     assert calls == [
-        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/r")),
     ]
 
@@ -90,9 +92,9 @@ def test_the_default_location_is_the_ssh_destination_and_path(tmp_path, monkeypa
 def test_launch_plan_is_the_rsync_argv_then_the_ssh_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l") == [
-        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         [
-            "ssh",
+            *SSH_BOUND,
             "me@box2",
             "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
         ],
@@ -108,10 +110,10 @@ def test_launch_plan_without_a_repo_returns_todays_two_argv():
 def test_launch_plan_with_a_repo_returns_three_argv():
     host = LaneHost("box2", "me@box2", "/ws")
     assert launch_plan(host, "init-x", "init-x-1", "l", repo="/r") == [
-        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/r")),
         [
-            "ssh",
+            *SSH_BOUND,
             "me@box2",
             "cox route launch epic --initiative /ws/work/init-x --run-id init-x-1 --label l --no-claim",
         ],
@@ -147,7 +149,7 @@ def test_a_failing_harness_sync_stops_before_the_repo_sync_and_the_launch():
         "updating the harness at /h on box2 exited 1: the lane would run an older harness than the store",
     )
     assert calls == [
-        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        [*RSYNC_BOUND, "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
         ssh_argv("me@box2", sync_argv("/h")),
     ]
 
@@ -156,7 +158,7 @@ def test_a_passing_harness_sync_reaches_the_launch_argv():
     host, calls = LaneHost("box2", "me@box2", "/ws"), []
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, harness_dir="/h")
     assert calls == launch_plan(host, "init-x", "init-x-1", "l", harness_dir="/h")
-    assert calls[1] == ssh_argv("me@box2", sync_argv("/h")) and "route launch epic" in calls[-1][2]
+    assert calls[1] == ssh_argv("me@box2", sync_argv("/h")) and "route launch epic" in calls[-1][-1]
     assert result == remote_record("box2", "t")
 
 

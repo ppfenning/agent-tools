@@ -19,9 +19,20 @@ from agent_tools.remote_argv import (
 def test_ssh_argv_joins_the_remote_command_into_one_quoted_word():
     assert ssh_argv("me@box", ["echo", "a b", "it's"]) == [
         "ssh",
+        "-o", "ConnectTimeout=30",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
         "me@box",
         "echo 'a b' 'it'\"'\"'s'",
     ]
+
+
+def test_ssh_argv_bounds_the_connect_and_a_silent_connection_without_batch_mode():
+    argv = ssh_argv("me@box", ["true"])
+    assert argv[1:3] == ["-o", "ConnectTimeout=30"]
+    assert "ServerAliveInterval=10" in argv
+    assert "ServerAliveCountMax=3" in argv
+    assert not any("BatchMode" in word for word in argv)
 
 
 def test_doctor_argv_is_the_cox_setup_doctor_command():
@@ -44,20 +55,26 @@ def test_launch_argv_places_each_value_after_its_flag():
 
 def test_rsync_push_argv_has_one_trailing_slash_each_and_no_delete():
     assert rsync_push_argv("/tmp/src/", "me@box:/srv/dest") == [
-        "rsync", "-a", "/tmp/src/", "me@box:/srv/dest/",
+        "rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30", "/tmp/src/", "me@box:/srv/dest/",
     ]
 
 
 def test_rsync_push_argv_deletes_at_the_destination_only_when_mirroring():
     assert rsync_push_argv("/tmp/src", "me@box:/srv/dest", mirror=True) == [
-        "rsync", "-a", "--delete", "/tmp/src/", "me@box:/srv/dest/",
+        "rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30", "--delete", "/tmp/src/", "me@box:/srv/dest/",
     ]
 
 
 def test_rsync_pull_argv_passes_the_locations_through():
     assert rsync_pull_argv("me@box:/srv/run/out.json", "/tmp/here") == [
-        "rsync", "-a", "me@box:/srv/run/out.json", "/tmp/here",
+        "rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30", "me@box:/srv/run/out.json", "/tmp/here",
     ]
+
+
+def test_rsync_argvs_carry_the_io_timeout_and_a_bounded_ssh_transport():
+    for argv in (rsync_push_argv("/s", "me@box:/d"), rsync_pull_argv("me@box:/d", "/s")):
+        assert "--timeout=30" in argv
+        assert argv[argv.index("-e") + 1] == "ssh -o ConnectTimeout=30"
 
 
 def test_git_fetch_argv_maps_the_run_branches_onto_themselves():
@@ -124,7 +141,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _sync(repo: Path, cwd: Path) -> subprocess.CompletedProcess:
     """Runs the command string ssh would hand the remote login shell."""
-    remote = ssh_argv("host", sync_argv(str(repo)))[2]
+    remote = ssh_argv("host", sync_argv(str(repo)))[-1]
     return subprocess.run(["sh", "-c", remote], cwd=cwd, capture_output=True, text=True)
 
 

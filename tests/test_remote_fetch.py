@@ -16,6 +16,7 @@ from agent_tools.remote_fetch import (
     task_repos,
 )
 
+RSYNC_BOUND = ["rsync", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30"]
 needs_tools = pytest.mark.skipif(
     shutil.which("rsync") is None or shutil.which("git") is None, reason="rsync and git are required"
 )
@@ -71,14 +72,14 @@ def test_chair_repo_path_swaps_the_host_prefix_and_keeps_chair_and_outside_paths
 
 def test_pull_argvs_copy_the_run_directory_and_its_log_into_the_runs_dir():
     assert pull_argvs("u@h:/w/runs/r1", "u@h:/w/runs/r1.log", "/c/runs", "r1") == [
-        ["rsync", "-a", "u@h:/w/runs/r1/", "/c/runs/r1/"],
-        ["rsync", "-a", "u@h:/w/runs/r1.log", "/c/runs/"],
+        [*RSYNC_BOUND, "u@h:/w/runs/r1/", "/c/runs/r1/"],
+        [*RSYNC_BOUND, "u@h:/w/runs/r1.log", "/c/runs/"],
     ]
 
 
 def test_fetch_plan_pulls_only_the_log_when_the_run_directory_never_existed():
     plan = fetch_plan("u@h:/w/runs/r1", "u@h:/w/runs/r1.log", "/c/runs", "r1", False, True)
-    assert plan.pull_argvs == [["rsync", "-a", "u@h:/w/runs/r1.log", "/c/runs/"]]
+    assert plan.pull_argvs == [[*RSYNC_BOUND, "u@h:/w/runs/r1.log", "/c/runs/"]]
     assert plan.do_git_fetch is False
     assert plan.outcome == ("fetched: no tasks ran",)
 

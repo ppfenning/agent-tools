@@ -3,6 +3,7 @@ import pytest
 from agent_tools import cli
 from agent_tools.cli import main
 
+SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
 _HOSTS = """team: t
 lane_hosts:
   - name: box
@@ -25,7 +26,7 @@ def _fake_run(monkeypatch, code=0, output="ok  profile\nok  git\n"):
 
     def run(argv):
         calls.append(argv)
-        if argv[2] == "claude auth status":
+        if argv[-1] == "claude auth status":
             return 0, '{"loggedIn": true}'
         return code, output
 
@@ -39,8 +40,8 @@ def test_a_known_host_prints_its_rows_under_a_header_and_exits_zero(tmp_path, mo
     assert rc == 0
     assert capsys.readouterr().out == "doctor on box (me@box.example)\nok  profile\nok  git\nclaude auth      ok\n"
     assert calls == [
-        ["ssh", "me@box.example", "cox setup doctor"],
-        ["ssh", "me@box.example", "claude auth status"],
+        [*SSH_BOUND, "me@box.example", "cox setup doctor"],
+        [*SSH_BOUND, "me@box.example", "claude auth status"],
     ]
 
 
@@ -98,5 +99,5 @@ def test_doctor_on_host_returns_the_code_and_the_split_rows(output, rows):
 
     host = LaneHost("box", "me@box", "/srv")
     auth = '{"loggedIn": true}'
-    run = lambda argv: (0, auth) if argv[2] == "claude auth status" else (3, output)  # noqa: E731
+    run = lambda argv: (0, auth) if argv[-1] == "claude auth status" else (3, output)  # noqa: E731
     assert doctor_on_host(host, run) == (3, [*rows, "claude auth      ok"])
