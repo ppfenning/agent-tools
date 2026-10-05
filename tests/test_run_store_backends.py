@@ -108,8 +108,8 @@ def runs_dir(request, tmp_path, monkeypatch):
 R1_FIRST_CALL = {
     "role": "scope", "task_id": None, "tier": "cheap", "cost_usd": 0.25, "ceiling_usd": None, "ceiling_source": None,
     "turns": 2, "duration_ms": 100, "input_tokens": 10, "cache_read_tokens": 0, "cache_creation_tokens": 0,
-    "input_total": 20, "output_tokens": 5, "ts": T1, "id": "c1", "model": "haiku", "ok": True, "decision": None,
-    "summary": "did it",
+    "input_total": 20, "output_tokens": 5, "ts": T1, "id": "c1", "model": "haiku", "model_id": None, "ok": True,
+    "decision": None, "summary": "did it",
 }
 R1_SUMMARY = {
     "calls": 2, "cost_usd": 0.75, "turns": 3, "input_total": 48, "input_tokens": 24, "cache_read_tokens": 0,

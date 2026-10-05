@@ -117,6 +117,7 @@ def call_rows(run_id: str, usage: Mapping[str, Any] | None) -> list[dict[str, An
             "attempt": attempt,
             "tier": call.get("tier"),
             "model": call.get("model"),
+            "model_id": call.get("model_id"),
             "cost_usd": call.get("cost_usd"),
             "turns": call.get("turns"),
             "duration_ms": call.get("duration_ms"),
@@ -147,7 +148,7 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
     already uses — is the only place `total_cost_usd` and `num_turns` are read from.
     Every row here carries `recovered_from_trace=1`, so a query can exclude or flag it
     the way `join_confidence` already flags a heuristic task join. Token counts,
-    `duration_ms`, `tier` and `model` are unrecoverable from the result line and stay
+    `duration_ms`, `tier`, `model` and `model_id` are unrecoverable from the result line and stay
     unset."""
     roles = [Path(path).stem.rsplit("-", 1)[0] for path, _ in traces]
     attempts = attempt_numbers([{"role": role} for role in roles])
@@ -159,6 +160,7 @@ def recovered_call_rows(run_id: str, traces: Sequence[tuple[str, Sequence[Mappin
             "attempt": attempt,
             "tier": None,
             "model": None,
+            "model_id": None,
             "cost_usd": _final_result(events).get("total_cost_usd"),
             "turns": _final_result(events).get("num_turns"),
             "duration_ms": None,

@@ -109,6 +109,7 @@ def call_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         **{k: row[k] for k in _SAME},
         "id": row["call_id"],
         "model": row["model_alias"],
+        "model_id": row["model_id"] if "model_id" in row.keys() else None,  # noqa: SIM118 -- a store from before the column has none; sqlite3.Row's `in` tests values
         "ok": bool(row["ok"]),
         "decision": _json_cell(row["decision_json"]),
         **{k: detail[k] for k in ("summary", "commands_run") if k in detail},

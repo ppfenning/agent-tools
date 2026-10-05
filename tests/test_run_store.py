@@ -250,7 +250,7 @@ def test_a_store_without_node_calls_gives_none(tmp_path):
 
 def test_a_row_becomes_the_usage_file_call():
     assert run_store.call_from_row(ROW | {"decision_json": None}) == {
-        "role": "scope_epic", "task_id": None, "tier": "cheap", "model": "haiku", "cost_usd": 0.05987000000000001,
+        "role": "scope_epic", "task_id": None, "tier": "cheap", "model": "haiku", "model_id": "claude-haiku-4-5-20251001", "cost_usd": 0.05987000000000001,
         "ceiling_usd": 0.15, "ceiling_source": "profile", "turns": 2, "duration_ms": 79013, "input_tokens": 10,
         "cache_read_tokens": 0, "cache_creation_tokens": 11595, "input_total": 11605, "output_tokens": 7334,
         "id": "c3a75b39", "ts": "2026-09-25T04:34:43.390253+00:00", "ok": True, "decision": None,
