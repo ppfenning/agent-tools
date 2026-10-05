@@ -133,6 +133,7 @@ class LaneRow:
     cost_usd: float
     phases_landed: int
     phases_total: int
+    short_id: str = ""
 
 
 def _lane_rows(lanes: list, run_rows: dict, items: Sequence[dict]) -> list[LaneRow]:
@@ -154,6 +155,7 @@ def _lane_rows(lanes: list, run_rows: dict, items: Sequence[dict]) -> list[LaneR
             cost_usd=run_row.cost_usd if run_row is not None else 0.0,
             phases_landed=landed,
             phases_total=total,
+            short_id=run_row.short_id if run_row is not None else "",
         ))
     return rows
 
@@ -230,7 +232,7 @@ def _lane_line(row, now: datetime, tz: tzinfo) -> str:
     beat = f"beat={_clock_and_age(row.heartbeat_at, now, tz)}"
     run_cols = f"{row.phase}  {row.node}  att {row.attempt}  turns {row.turns}  ${row.cost_usd:.2f}"
     progress = f"{row.phases_landed}/{row.phases_total} phases"
-    return f"{row.run}  {row.host or '-'}  {beat}  {run_cols}  {progress}"
+    return f"{row.short_id or row.run}  {row.host or '-'}  {beat}  {run_cols}  {progress}"
 
 
 def _chair_line(row: dict, now: datetime, tz: tzinfo) -> str:

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from agent_tools.events import Event
 
-__all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "order", "render", "row", "tail_lines"]
+__all__ = ["UNSET", "Row", "chair_highlight", "column_widths", "highlight", "label", "order", "render", "row", "tail_lines"]
 
 _COLUMNS = ("MACHINE", "PHASE", "NODE", "ATT", "TURNS", "COST", "VERDICT", "STATUS", "CEIL", "BY")
 _HEADERS = ("RUN", *_COLUMNS)
@@ -41,6 +41,12 @@ class Row:
     node_call_stalled: bool = False
     host: str | None = None
     remote: bool = False
+    short_id: str = ""
+
+
+def label(r: Row) -> str:
+    """The RUN column's text: the short id when the row has one, else the run key. `r.run` stays the key."""
+    return r.short_id or r.run
 
 
 def _status(events: list[Event], alive: bool, orphaned: bool = False, heartbeat_age: int | None = None,
@@ -77,7 +83,7 @@ def _orphaned(alive: bool, launched_by: str, chair: dict | None) -> bool:
 
 def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: list[dict], ceiling: dict | None = None,
         launched_by: str = "", chair: dict | None = None, heartbeat_age: int | None = None, host: str | None = None,
-        node_call_stalled: bool = False) -> Row:
+        node_call_stalled: bool = False, short_id: str = "") -> Row:
     """Pure: the one row a run's events and finished calls make; `host` is the machine it runs on."""
     starts = [e for e in events if e.kind == "node_started"]
     verdicts = [e for e in events if e.kind == "verdict"]
@@ -99,10 +105,12 @@ def row(run: str, alive: bool, phases: list[str], events: list[Event], calls: li
         heartbeat_age=heartbeat_age,
         node_call_stalled=node_call_stalled,
         host=host,
+        short_id=short_id,
     )
 
 
-def remote_row(run: str, host: str | None, heartbeat_age: int | None, calls: list[dict] = (), phase: str = "") -> Row:
+def remote_row(run: str, host: str | None, heartbeat_age: int | None, calls: list[dict] = (), phase: str = "",
+               short_id: str = "") -> Row:
     """Pure: the row for a live lane no local pidfile names. Its events and verdicts are on the other machine, so the
     lease gives the status and the store's `calls` (the `_call` shape) give node, attempt, turns and cost.
     A run with no call recorded yet reads node `starting`, never a blank."""
@@ -110,7 +118,8 @@ def remote_row(run: str, host: str | None, heartbeat_age: int | None, calls: lis
     return Row(run=run, alive=True, phase=phase,
                node=last["node"] if last else "starting", attempt=last["attempt"] if last else 0,
                turns=sum(c["turns"] for c in calls), cost_usd=round(sum(c["cost_usd"] for c in calls), 4), verdict="",
-               status=_status([], True, False, heartbeat_age), heartbeat_age=heartbeat_age, host=host, remote=True)
+               status=_status([], True, False, heartbeat_age), heartbeat_age=heartbeat_age, host=host, remote=True,
+               short_id=short_id)
 
 
 def _cut(line: str, width: int) -> str:
@@ -134,7 +143,7 @@ def _chair_line(chair: dict | None) -> str:
 
 
 def _cells(r: Row) -> tuple[str, ...]:
-    return (r.run, r.host or "?", r.phase, r.node, str(r.attempt), str(r.turns), f"${r.cost_usd:.2f}", r.verdict, r.status, r.ceiling, r.launched_by)
+    return (label(r), r.host or "?", r.phase, r.node, str(r.attempt), str(r.turns), f"${r.cost_usd:.2f}", r.verdict, r.status, r.ceiling, r.launched_by)
 
 
 def column_widths(rows: Sequence[Row], headers: Sequence[str]) -> tuple[int, ...]:
