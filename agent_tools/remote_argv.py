@@ -3,10 +3,23 @@
 import re
 import shlex
 
+# Every lane-host call must give up within this many seconds.
+LANE_HOST_TIMEOUT_S = 30
+_ALIVE_INTERVAL_S = 10
+_ALIVE_COUNT_MAX = LANE_HOST_TIMEOUT_S // _ALIVE_INTERVAL_S
+_CONNECT_OPTION = f"ConnectTimeout={LANE_HOST_TIMEOUT_S}"
+# No BatchMode: Tailscale SSH check mode must still print its login URL.
+_SSH_BOUND_OPTIONS = [
+    "-o", _CONNECT_OPTION,
+    "-o", f"ServerAliveInterval={_ALIVE_INTERVAL_S}",
+    "-o", f"ServerAliveCountMax={_ALIVE_COUNT_MAX}",
+]
+_RSYNC_BOUND_OPTIONS = ["-a", f"--timeout={LANE_HOST_TIMEOUT_S}", "-e", f"ssh -o {_CONNECT_OPTION}"]
+
 
 def ssh_argv(ssh: str, remote_argv: list[str]) -> list[str]:
     """`ssh` is a destination such as user@host; the remote shell sees one quoted command."""
-    return ["ssh", ssh, shlex.join(remote_argv)]
+    return ["ssh", *_SSH_BOUND_OPTIONS, ssh, shlex.join(remote_argv)]
 
 
 def doctor_argv() -> list[str]:
@@ -33,12 +46,12 @@ def launch_argv(initiative: str, run_id: str, label: str) -> list[str]:
 
 def rsync_push_argv(src_dir: str, dest_location: str, *, mirror: bool = False) -> list[str]:
     """Trailing slashes on both ends copy directory contents; deletes at the destination only when `mirror`."""
-    return ["rsync", "-a", *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
+    return ["rsync", *_RSYNC_BOUND_OPTIONS, *(["--delete"] if mirror else []), src_dir.rstrip("/") + "/", dest_location.rstrip("/") + "/"]
 
 
 def rsync_pull_argv(src_location: str, dest: str) -> list[str]:
     """One directory or one file, exactly as the caller formed it."""
-    return ["rsync", "-a", src_location, dest]
+    return ["rsync", *_RSYNC_BOUND_OPTIONS, src_location, dest]
 
 
 def git_fetch_argv(repo_location: str, run: str) -> list[str]:
