@@ -1684,8 +1684,9 @@ TERMINAL = frozenset({"done", "dropped"})
 
 
 def initiative_states(ids: list, items: list) -> dict:
-    """`id -> True` when every item naming it has state `"done"` or `"dropped"` (vacuously true for an id with none)."""
-    return {i: all(item["state"] in TERMINAL for item in items if item["initiative"] == i) for i in ids}
+    """`id -> True` when it has at least one item and every item naming it is `"done"` or `"dropped"`; an id with no items is not done."""
+    own = {i: [item for item in items if item["initiative"] == i] for i in ids}
+    return {i: bool(own[i]) and all(item["state"] in TERMINAL for item in own[i]) for i in ids}
 
 
 def intake_groups(intake: list, initiatives: list) -> dict:

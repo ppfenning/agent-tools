@@ -1416,14 +1416,22 @@ def test_link_intake_updates_an_existing_field_in_place_instead_of_duplicating_i
     assert route.parse_frontmatter(new_initiative)[0]["intake"] == "intake/new.md"
 
 
-def test_initiative_states_is_true_for_an_id_with_no_items_and_false_for_one_not_all_done():
+def test_initiative_states_is_false_for_an_id_with_no_items_and_for_one_not_all_done():
     items = [
         {"initiative": "alpha", "state": "done"},
         {"initiative": "beta", "state": "ready"},
     ]
     assert route.initiative_states(["alpha", "beta", "gamma"], items) == {
-        "alpha": True, "beta": False, "gamma": True,
+        "alpha": True, "beta": False, "gamma": False,
     }
+
+
+def test_initiative_states_an_initiative_with_zero_items_is_not_done():
+    assert route.initiative_states(["z"], []) == {"z": False}
+
+
+def test_initiative_states_an_initiative_with_all_items_done_is_done():
+    assert route.initiative_states(["a"], [{"initiative": "a", "state": "done"}]) == {"a": True}
 
 
 def test_initiative_states_reads_done_plus_dropped_as_complete():
@@ -1458,6 +1466,15 @@ def test_intake_groups_classifies_a_done_plus_dropped_initiative_as_landed():
     entry = {"id": "g1", "title": "G", "initiative": "gamma", "done": False, "path": "intake/g1.md"}
     groups = route.intake_groups([entry], initiatives)
     assert groups["landed"] == [entry]
+
+
+def test_intake_groups_calls_an_intake_whose_initiative_has_zero_items_decomposed_not_landed():
+    done = route.initiative_states(["x"], [])["x"]
+    initiatives = [{"id": "x", "done": done, "text": ""}]
+    entry = {"id": "x1", "title": "X", "initiative": "x", "done": False, "path": "intake/x1.md"}
+    groups = route.intake_groups([entry], initiatives)
+    assert groups["decomposed"] == [entry]
+    assert groups["landed"] == []
 
 
 def test_intake_groups_splits_queued_decomposed_landed_and_the_legacy_case():
