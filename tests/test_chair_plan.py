@@ -945,3 +945,57 @@ def test_a_dead_pid_at_the_hard_stop_reaches_the_chair_as_a_lost_run_does():
 
 def test_a_dead_pid_is_not_lost_when_the_tick_has_no_clock():
     assert plan_tick(_remote(pid_probe=_probe(False, 11))) == plan_tick(_remote())
+
+
+def _fetching(id: str, run: str) -> dict:
+    return {**_approved(id), "id": f"{id}-t", "initiative": id, "run": run, "needs_fetch": True}
+
+
+def _blocked_host_facts(b_ok: bool | None = False) -> Facts:
+    checked = _NOW.isoformat()
+    return _facts(
+        approved=[_fetching("x", "x-1"), _fetching("y", "y-1")],
+        initiatives=[_initiative("i"), _initiative("j")],
+        run_exited={"i": True, "j": True},
+        run_hosts={"x-1": "b", "y-1": "c"},
+        initiative_homes={"i": "b", "j": "c"},
+        login_hosts=[_login_host("b", login_ok=b_ok, checked_at=checked), _login_host("c", login_ok=True, checked_at=checked)],
+    )
+
+
+def _subjects(actions: list[dict], kind: str) -> list[str]:
+    return [a.get("run") or a["initiative"] for a in actions if a["kind"] == kind]
+
+
+def test_a_blocked_hosts_fetch_is_dropped_while_another_hosts_fetch_is_kept():
+    assert _subjects(plan_tick(_blocked_host_facts()), "fetch") == ["y-1"]
+
+
+def test_a_blocked_hosts_clear_branches_is_dropped_while_another_hosts_clear_is_kept():
+    assert _subjects(plan_tick(_blocked_host_facts()), "clear_branches") == ["j"]
+
+
+def test_a_blocked_hosts_land_is_dropped_while_another_hosts_land_is_kept():
+    assert _subjects(plan_tick(_blocked_host_facts()), "land_phase") == ["y-1"]
+
+
+def test_a_blocked_hosts_needs_chair_line_appears_exactly_once():
+    needs = [a for a in plan_tick(_blocked_host_facts()) if a["kind"] == "needs_chair"]
+    assert needs == [{"kind": "needs_chair", "host": "b", "cause": "login_lapsed", "epoch": 7}]
+
+
+def test_a_host_whose_login_is_ok_plans_its_fetch_clear_and_land_again():
+    actions = plan_tick(_blocked_host_facts(b_ok=True))
+    assert _subjects(actions, "fetch") == ["x-1", "y-1"]
+    assert _subjects(actions, "clear_branches") == ["i", "j"]
+    assert _subjects(actions, "land_phase") == ["x-1", "y-1"]
+
+
+def test_facts_without_host_keys_plan_as_before():
+    facts = _facts(approved=[_fetching("x", "x-1")], initiatives=[_initiative("i")], run_exited={"i": True})
+    assert plan_tick(facts) == [
+        {"kind": "fetch", "run": "x-1", "repo": "r", "initiative": "x", "epoch": 7},
+        {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
