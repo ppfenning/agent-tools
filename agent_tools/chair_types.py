@@ -117,12 +117,22 @@ class ReadyTask(TypedDict):
     requires: list[str]  # capabilities the ticket's own `requires:` frontmatter field names; empty when it names none
 
 
+class RunningInitiative(TypedDict):
+    """An initiative with a live lane on any machine; surfaces is the union of its ready or approved tasks' surfaces."""
+
+    id: str
+    repo: str
+    surfaces: list[str]
+
+
 class InitiativeFacts(TypedDict):
     id: str
     started: bool
     ready_tasks: list[ReadyTask]
     waiting_tasks: NotRequired[list[ReadyTask]]  # state ready, held back by a need not in `landed`
     landed: set[str]
+    repo: NotRequired[str]  # the repository the initiative launches into; absent means unknown
+    ready_surfaces: NotRequired[list[str]]  # the union of the surfaces of its ready tasks; absent means none
 
 
 class QuarantineFacts(TypedDict):
@@ -211,6 +221,9 @@ class Facts(TypedDict):
     # landed) maps to that run's host, "" meaning this machine; nothing consumes this yet.
     home: dict[str, str]
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
+    # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
+    steer_streaks: NotRequired[dict[str, int]]
 
 
 ActionKind = Literal[
@@ -235,6 +248,7 @@ ActionKind = Literal[
     "stalled_usr1",
     "stalled_stop",
     "review_landed",
+    "steer_clear",
 ]
 
 
@@ -245,7 +259,8 @@ class Action(TypedDict, total=False):
     write, and like mark_lost never touches the attempts table. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" and there is no initiative key.
-    review_landed carries initiative, phase, task_id, repo, url and merged_at."""
+    review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
+    initiative, other and paths: the launch of initiative is deferred because it shares paths with other."""
 
     kind: ActionKind
     epoch: int
@@ -265,6 +280,8 @@ class Action(TypedDict, total=False):
     carry: list[str]  # the phases a clear_branches keeps and merges main into
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged
+    other: str  # a steer_clear names the running initiative it steers clear of
+    paths: list[str]  # a steer_clear names the shared paths
 
 
 class PlanLands(Protocol):
