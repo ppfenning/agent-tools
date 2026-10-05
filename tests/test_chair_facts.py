@@ -449,6 +449,18 @@ def test_no_lost_runs_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["lost_runs"] == {}
 
 
+def test_a_fake_pid_probe_callable_appears_under_pid_probe():
+    probe = {
+        "up": {"alive": True, "last_beat_at": "2026-10-05T12:00:00+00:00"},
+        "down": {"alive": False, "last_beat_at": "2026-10-05T12:01:00+00:00"},
+    }
+    assert gather_facts(replace(_deps(), pid_probe=lambda: probe), NOW)["pid_probe"] == probe
+
+
+def test_an_absent_pid_probe_callable_gives_an_empty_mapping():
+    assert gather_facts(_deps(), NOW)["pid_probe"] == {}
+
+
 def test_a_fake_hosts_callables_return_value_appears_verbatim_under_login_hosts():
     rows = [{"name": "h1", "state": "needs_login", "versions_json": "{}"}]
     assert gather_facts(replace(_deps(), hosts=lambda: rows), NOW)["login_hosts"] == rows

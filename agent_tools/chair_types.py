@@ -141,6 +141,13 @@ class EmptyDecomposeFacts(TypedDict):
     run: str  # the initiative's most recent decompose run id
 
 
+class PidProbeFact(TypedDict):
+    """One remote run's pid probe against a host with a fresh beat."""
+
+    alive: bool
+    last_beat_at: str  # ISO-8601 of the host's newest beat
+
+
 class StaleCandidate(TypedDict):
     """One task the edge has gathered evidence for; matches chair_stale.stale_reason's parameters exactly."""
 
@@ -194,6 +201,8 @@ class Facts(TypedDict):
     run_exited: dict[str, bool]  # initiative to whether its newest run is exited or quarantined in the run store; absent is False
     # An entry means that run's host has been unreachable for at least ten minutes and the run has no exit record in the store.
     lost_runs: dict[str, str]
+    # An entry only for a remote run whose host has a fresh beat and whose pid was probed; a stale host or a failed or timed-out probe has none.
+    pid_probe: dict[str, PidProbeFact]
     empty_decompose: list[EmptyDecomposeFacts]  # decomposed intakes whose ended decompose run left zero stored task items
     # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
     newest_run_host: dict[str, str]

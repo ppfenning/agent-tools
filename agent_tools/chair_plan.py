@@ -25,6 +25,7 @@ from agent_tools.chair_types import (
 )
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
+_DEAD_PID_SILENCE = timedelta(minutes=10)
 
 
 def _launch_cap(limits: LimitsFacts) -> int:
@@ -339,7 +340,50 @@ def plan_stall(candidates: list[StallCandidate], now: datetime) -> list[Action]:
     return actions
 
 
-def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
+def _silent_dead_pid(entry: object, now: datetime) -> bool:
+    """alive is False and an aware last_beat_at at least _DEAD_PID_SILENCE before now."""
+    if not isinstance(entry, Mapping) or entry.get("alive") is not False:
+        return False
+    beat_at = entry.get("last_beat_at")
+    beat = _parse_utc(beat_at) if isinstance(beat_at, str) else None
+    return beat is not None and now - beat >= _DEAD_PID_SILENCE
+
+
+def _dead_pid_lost(facts: Facts, now: datetime) -> dict[str, str]:
+    """Initiative to its live remote run id, for a known initiative whose probe is silently dead.
+
+    An unfetched initiative is skipped: a cleanly finished remote run also has a dead pid, and only the fetch_exit
+    planned for it this tick can show whether it exited. The next tick judges it with run_exited fetched.
+    """
+    raw_probes = facts.get("pid_probe", {})
+    probes = raw_probes if isinstance(raw_probes, Mapping) else {}
+    known = {i["id"] for i in facts["initiatives"]}
+    unfetched = facts.get("remote_unfetched", {})
+    exited = facts.get("run_exited", {})
+    remote_runs: dict[str, set[str]] = {}
+    for c in facts.get("stall_candidates", []):
+        if not c["local"] and c["run"]:
+            remote_runs.setdefault(c["initiative"], set()).add(c["run"])
+    return {
+        initiative: newest_run(remote_runs[initiative])
+        for initiative, entry in probes.items()
+        if initiative in known
+        and initiative in remote_runs
+        and initiative not in unfetched
+        and exited.get(initiative) is not True
+        and _silent_dead_pid(entry, now)
+    }
+
+
+def _with_dead_pid_lost(facts: Facts, now: datetime | None) -> Facts:
+    """facts with silent dead-pid initiatives merged into lost_runs; a lost_runs entry keeps its own run id."""
+    if now is None:
+        return facts
+    return {**facts, "lost_runs": {**_dead_pid_lost(facts, now), **facts.get("lost_runs", {})}}  # type: ignore[return-value]
+
+
+def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
+    facts = _with_dead_pid_lost(raw_facts, now)
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)

@@ -1,5 +1,5 @@
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from agent_tools.chair_facts import initiative_facts
 from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_stall, plan_tick
@@ -820,3 +820,83 @@ def test_an_initiative_with_no_unfinished_work_has_no_home_entry():
 
 def test_an_empty_newest_run_host_maps_to_the_local_machine():
     assert initiative_homes({"demo": ""}, {"demo"}) == {"demo": ""}
+
+
+def _remote(**overrides) -> Facts:
+    """Initiative a with one live remote run a-3, fetched and not yet exited."""
+    live = _stall_candidate(run="a-3", initiative="a", local=False, last_call=None)
+    return _facts(**{"initiatives": [_initiative("a")], "stall_candidates": [live], **overrides})
+
+
+def _probe(alive: bool, minutes: int) -> dict:
+    return {"a": {"alive": alive, "last_beat_at": (_NOW - timedelta(minutes=minutes)).isoformat()}}
+
+
+def test_a_dead_pid_silent_eleven_minutes_plans_exactly_what_a_lost_runs_entry_plans():
+    actions = plan_tick(_remote(pid_probe=_probe(False, 11)), _NOW)
+    assert (actions, {"kind": "mark_lost", "initiative": "a", "run": "a-3", "epoch": 7} in actions) == (
+        plan_tick(_remote(lost_runs={"a": "a-3"}), _NOW),
+        True,
+    )
+
+
+def test_a_dead_pid_silent_nine_minutes_plans_as_if_unprobed():
+    assert plan_tick(_remote(pid_probe=_probe(False, 9)), _NOW) == plan_tick(_remote(), _NOW)
+
+
+def test_a_live_pid_silent_for_hours_plans_as_if_unprobed():
+    assert plan_tick(_remote(pid_probe=_probe(True, 600)), _NOW) == plan_tick(_remote(), _NOW)
+
+
+def test_a_dead_pid_already_in_lost_runs_is_planned_once():
+    lost = {"a": "a-3"}
+    assert plan_tick(_remote(pid_probe=_probe(False, 11), lost_runs=lost), _NOW) == plan_tick(_remote(lost_runs=lost), _NOW)
+
+
+def test_a_dead_pid_whose_run_has_exited_is_not_lost():
+    exited = {"a": True}
+    assert plan_tick(_remote(pid_probe=_probe(False, 11), run_exited=exited), _NOW) == plan_tick(_remote(run_exited=exited), _NOW)
+
+
+def test_a_dead_pid_whose_exit_is_not_yet_fetched_is_not_lost_this_tick():
+    unfetched = {"a": "a-3"}
+    actions = plan_tick(_remote(pid_probe=_probe(False, 11), remote_unfetched=unfetched), _NOW)
+    assert (actions, "fetch_exit" in _kinds(actions), "mark_lost" in _kinds(actions)) == (
+        plan_tick(_remote(remote_unfetched=unfetched), _NOW),
+        True,
+        False,
+    )
+
+
+def test_a_dead_pid_with_no_live_remote_run_is_not_lost():
+    local = _facts(initiatives=[_initiative("a")], stall_candidates=[_stall_candidate(run="a-3", initiative="a", last_call=None)])
+    assert plan_tick({**local, "pid_probe": _probe(False, 11)}, _NOW) == plan_tick(local, _NOW)  # type: ignore[arg-type]
+
+
+def test_a_dead_pid_for_an_initiative_absent_from_the_facts_is_not_lost():
+    stray = {"b": _probe(False, 11)["a"]}
+    live_b = _stall_candidate(run="b-1", initiative="b", local=False, last_call=None)
+    base = _remote(stall_candidates=[live_b])
+    assert plan_tick({**base, "pid_probe": stray}, _NOW) == plan_tick(base, _NOW)  # type: ignore[arg-type]
+
+
+def test_a_malformed_probe_entry_or_probe_fact_plans_as_if_unprobed():
+    entries = [{"alive": False}, {"alive": False, "last_beat_at": "yesterday"}, {"alive": False, "last_beat_at": 5}, "dead"]
+    probes = [*({"a": e} for e in entries), None, "dead", ["a"]]
+    assert [plan_tick(_remote(pid_probe=p), _NOW) for p in probes] == [plan_tick(_remote(), _NOW)] * len(probes)
+
+
+def test_a_naive_last_beat_is_not_lost():
+    naive = {"a": {"alive": False, "last_beat_at": "2026-09-27T11:00:00"}}
+    assert plan_tick(_remote(pid_probe=naive), _NOW) == plan_tick(_remote(), _NOW)
+
+
+def test_a_dead_pid_at_the_hard_stop_reaches_the_chair_as_a_lost_run_does():
+    stop = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 5, "go_degraded": False}
+    assert plan_tick(_remote(pid_probe=_probe(False, 11), limits=stop), _NOW) == plan_tick(
+        _remote(lost_runs={"a": "a-3"}, limits=stop), _NOW
+    )
+
+
+def test_a_dead_pid_is_not_lost_when_the_tick_has_no_clock():
+    assert plan_tick(_remote(pid_probe=_probe(False, 11))) == plan_tick(_remote())

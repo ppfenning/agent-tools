@@ -27,6 +27,7 @@ from agent_tools.chair_types import (
     InitiativeFacts,
     LeaseFacts,
     LimitsFacts,
+    PidProbeFact,
     QuarantineFacts,
     ReviewPr,
 )
@@ -64,6 +65,9 @@ class FactsDeps:
         record and no local run directory or log. Optional, and absent means no initiative counts.
     lost_runs: initiative id to run id, for each lane whose host has gone stale (no heartbeat for the
         threshold) with no exit record in the store. Optional, and absent means no initiative counts.
+    pid_probe: initiative id to `{alive, last_beat_at}`, for a remote run whose host has a fresh beat and
+        whose pid was probed. A stale host, or a probe that failed or timed out, has no entry. Defaults to
+        a callable returning {}.
     decomposed_intake: initiative id to its most recent decompose run id, for every initiative whose intake
         status is decomposed. Optional, and absent means no initiative counts.
     item_counts: initiative id to the count of task items the work store holds for it. Optional, and absent
@@ -141,6 +145,7 @@ class FactsDeps:
     weekly_source: Callable[[], str] = lambda: "est"  # "meter" when `weekly` built from a fresh meter entry this tick
     runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
+    pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -452,6 +457,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "run_exited": dict(deps.run_exited()) if deps.run_exited is not None else {},
         "remote_unfetched": dict(deps.remote_unfetched()) if deps.remote_unfetched is not None else {},
         "lost_runs": dict(deps.lost_runs()) if deps.lost_runs is not None else {},
+        "pid_probe": dict(deps.pid_probe()),
         "empty_decompose": empty_decompose_facts(
             dict(deps.decomposed_intake()) if deps.decomposed_intake is not None else {},
             live,
