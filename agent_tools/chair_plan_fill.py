@@ -2,10 +2,11 @@
 
 Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
 """
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from agent_tools import chair_login_watch
-from agent_tools.chair_types import Action, Facts, InitiativeFacts
+from agent_tools.chair_steer import steer_check
+from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
 
 # name, weight (a host's share of new placements), capabilities, free lane count, assigned-so-far
 HostSlot = tuple[str, int, frozenset[str], int, int]
@@ -26,35 +27,78 @@ def _rank(pair: tuple[int, HostSlot]) -> tuple[float, int, int]:
     return ((assigned + 1) / weight, -weight, idx)
 
 
+def _best_host(required: frozenset[str], hosts: Sequence[HostSlot]) -> tuple[str, list[HostSlot]] | None:
+    """The best-ranked host whose capabilities cover required, and the hosts after one placement on it."""
+    candidates = [(idx, host) for idx, host in enumerate(hosts) if _eligible(host, required)]
+    if not candidates:
+        return None
+    idx, (name, weight, capabilities, free, assigned) = min(candidates, key=_rank)
+    updated: HostSlot = (name, weight, capabilities, free - 1, assigned + 1)
+    return name, [updated if i == idx else host for i, host in enumerate(hosts)]
+
+
 def _place_on_hosts(rest: list[tuple[str, frozenset[str]]], hosts: Sequence[HostSlot]) -> list[Action]:
     """Each initiative goes to the best-ranked host whose capabilities cover its requires; none eligible, none placed."""
     if not rest:
         return []
     initiative_id, required = rest[0]
-    candidates = [(idx, host) for idx, host in enumerate(hosts) if _eligible(host, required)]
-    if not candidates:
+    placed = _best_host(required, hosts)
+    if placed is None:
         return _place_on_hosts(rest[1:], hosts)
-    idx, (name, weight, capabilities, free, assigned) = min(candidates, key=_rank)
-    updated: HostSlot = (name, weight, capabilities, free - 1, assigned + 1)
-    new_hosts = [updated if i == idx else host for i, host in enumerate(hosts)]
+    name, new_hosts = placed
     action: Action = {"kind": "launch_epic", "initiative": initiative_id, "host": name}
     return [action, *_place_on_hosts(rest[1:], new_hosts)]
 
 
+def _walk_candidates(
+    candidates: Sequence[InitiativeFacts],
+    running: Sequence[RunningInitiative],
+    streaks: Mapping[str, int],
+    local_left: int,
+    hosts: Sequence[HostSlot],
+) -> tuple[list[Action], list[Action]]:
+    """Launches and steer actions in walk order; only a launch that takes a lane uses it and claims its surfaces."""
+    if not candidates or (local_left <= 0 and not any(free for *_, free, _ in hosts)):
+        return [], []
+    head, *tail = candidates
+    placed = None if local_left > 0 else _best_host(_required_capabilities(head), hosts)
+    if local_left <= 0 and placed is None:
+        return _walk_candidates(tail, running, streaks, local_left, hosts)
+    repo = head.get("repo", "")
+    surfaces = head.get("ready_surfaces", [])
+    steer = steer_check(head["id"], repo, surfaces, running, streaks) if repo and surfaces else None
+    if steer is not None:
+        launches, steers = _walk_candidates(tail, running, streaks, local_left, hosts)
+        return launches, [steer, *steers]
+    claim: list[RunningInitiative] = [{"id": head["id"], "repo": repo, "surfaces": surfaces}] if repo and surfaces else []
+    if placed is None:
+        local: Action = {"kind": "launch_epic", "initiative": head["id"]}
+        launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left - 1, hosts)
+        return [local, *launches], steers
+    name, next_hosts = placed
+    hosted: Action = {"kind": "launch_epic", "initiative": head["id"], "host": name}
+    launches, steers = _walk_candidates(tail, [*running, *claim], streaks, local_left, next_hosts)
+    return [hosted, *launches], steers
+
+
 def _epic_launches(
-    facts: Facts, free_lanes: int, withheld: frozenset[str], host_free: Sequence[HostSlot]
+    facts: Facts,
+    free_lanes: int,
+    withheld: frozenset[str],
+    host_free: Sequence[HostSlot],
+    claimed: Sequence[RunningInitiative] = (),
 ) -> list[Action]:
     """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
     host's free count, and only onto a host whose capabilities cover the initiative's ready-task requires.
+    One that overlaps a running, claimed or launched initiative in its repo yields its lane; steer actions follow.
     """
     open_ = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld]
     ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]
-    local_count = max(0, free_lanes)
-    local: list[Action] = [{"kind": "launch_epic", "initiative": i["id"]} for i in ordered[:local_count]]
-    hosted = [(i["id"], _required_capabilities(i)) for i in ordered[local_count:]]
-    return [*local, *_place_on_hosts(hosted, host_free)]
+    running = [*facts.get("running", []), *claimed]
+    launches, steers = _walk_candidates(ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free)
+    return [*launches, *steers]
 
 
 def _decompose_launches(facts: Facts, lanes: int) -> list[Action]:
@@ -104,8 +148,11 @@ def plan_fill(
     free_lanes: int,
     withheld: frozenset[str] = frozenset(),
     consumed_host_lanes: dict[str, int] | None = None,
+    claimed: Sequence[RunningInitiative] = (),
 ) -> list[Action]:
-    """consumed_host_lanes names lane-host slots a recovery step already placed a relaunch or retry on this
+    """claimed names initiatives launched earlier this tick; they count as running for the overlap check.
+
+    consumed_host_lanes names lane-host slots a recovery step already placed a relaunch or retry on this
     tick, so fill never places a fresh launch_epic on a lane that action just filled.
 
     dispatch local_lanes "decompose" keeps the free local lanes for intake decomposes: every epic goes to a
@@ -117,8 +164,8 @@ def plan_fill(
         return []
     local_lanes = max(0, free_lanes)
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
-    epics = _epic_launches(facts, 0 if reserved else free_lanes, withheld, host_free)
-    local_epics = [a for a in epics if "host" not in a]
+    epics = _epic_launches(facts, 0 if reserved else free_lanes, withheld, host_free, claimed)
+    local_epics = [a for a in epics if a["kind"] == "launch_epic" and "host" not in a]
     decomposes = _decompose_launches(facts, local_lanes - len(local_epics))
     lanes_left = local_lanes - len(local_epics) - len(decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
