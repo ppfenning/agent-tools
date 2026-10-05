@@ -1,5 +1,5 @@
 from agent_tools import queue_rows, route
-from agent_tools.chair_read_docket import docket_from_builder, docket_from_rows, work_store_ready
+from agent_tools.chair_read_docket import _held_needs, docket_from_builder, docket_from_rows, work_store_ready
 
 
 def _item(id: str, state: str, needs: tuple[str, ...] = (), initiative: str = "alpha", phase: str = "p1") -> dict:
@@ -45,6 +45,7 @@ def test_builder_output_maps_to_the_documented_keys():
                 "started": True,
                 "ready_tasks": [{"id": "t1", "needs": ["t0"], "requires": []}],
                 "waiting_tasks": [{"id": "t2", "needs": ["t9"], "requires": []}],
+                "held_tasks": [],
                 "landed": {"t0"},
             }
         ],
@@ -71,7 +72,7 @@ NOW = "2026-09-27T00:00:00Z"
 def _alpha(
     ready: list[dict], started: bool = False, landed: frozenset = frozenset(), waiting: list[dict] | None = None
 ) -> list[dict]:
-    return [{"id": "alpha", "started": started, "ready_tasks": ready, "waiting_tasks": waiting or [], "landed": set(landed)}]
+    return [{"id": "alpha", "started": started, "ready_tasks": ready, "waiting_tasks": waiting or [], "held_tasks": [], "landed": set(landed)}]
 
 
 def test_a_ready_row_with_all_needs_done_is_offered():
@@ -136,6 +137,35 @@ def test_a_work_item_files_requires_frontmatter_reaches_its_ready_task():
     assert docket_from_builder(route.initiative_summaries(items), items, 0, 4)["initiatives"][0]["ready_tasks"] == [
         {"id": "t1", "needs": [], "requires": ["go"]}, {"id": "t2", "needs": [], "requires": []},
     ]
+
+
+def _alpha_row(items: list[dict]) -> dict:
+    return docket_from_builder(route.initiative_summaries(items), items, 0, 4)["initiatives"][0]
+
+
+def test_a_task_whose_same_phase_need_is_approved_is_held_not_ready():
+    row = _alpha_row([_item("t0", "approved"), _item("t1", "ready", ("t0",))])
+    assert row["ready_tasks"] == []
+    assert row["held_tasks"] == [{"id": "t1", "phase": "p1", "needs": ["t0"]}]
+
+
+def test_a_task_whose_same_phase_need_is_done_stays_ready_with_nothing_held():
+    row = _alpha_row([_item("t0", "done"), _item("t1", "ready", ("t0",))])
+    assert row["ready_tasks"] == [{"id": "t1", "needs": ["t0"], "requires": []}]
+    assert row["held_tasks"] == []
+
+
+def test_a_task_whose_approved_need_is_in_an_earlier_phase_is_not_held():
+    own = [_item("t0", "approved", phase="p1"), _item("t1", "ready", ("t0",), phase="p2")]
+    assert _held_needs(own[1], own) == []
+
+
+def test_held_needs_lists_only_the_same_phase_approved_ids_in_needs_order():
+    own = [
+        _item("a", "approved"), _item("b", "done"), _item("c", "approved"), _item("d", "approved", phase="p0"),
+        _item("t", "ready", ("c", "b", "d", "a", "gone")),
+    ]
+    assert _held_needs(own[-1], own) == ["c", "a"]
 
 
 def test_parity_the_same_board_as_rows_and_as_files_gives_the_same_initiatives():

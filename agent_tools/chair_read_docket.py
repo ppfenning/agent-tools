@@ -24,20 +24,35 @@ def _task(i: Row) -> dict[str, Any]:
     return {"id": i["id"], "needs": list(i["needs"]), "requires": queue_rows.requires_of(i)}
 
 
+def _held_needs(task: Row, own: Sequence[Row]) -> list[str]:
+    """Ids in `task`'s needs that sit in the task's own phase and are approved but not done, in needs order."""
+    held = {i["id"] for i in own if i["phase"] == task["phase"] and i["state"] == "approved"}
+    return [n for n in task["needs"] if n in held]
+
+
+def _held_task(i: Row, own: Sequence[Row]) -> dict[str, Any]:
+    return {"id": i["id"], "phase": i["phase"], "needs": _held_needs(i, own)}
+
+
 def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
     own = [i for i in items if i["initiative"] == summary["id"]]
     landed = {i["id"] for i in own if i["state"] in route.TERMINAL}
+    held = [i for i in own if i["state"] == "ready" and _held_needs(i, own)]
+    held_ids = {i["id"] for i in held}
     ready = [
         i for i in own
         if summary["ready"] and i["phase"] == summary["phase"] and i["state"] == "ready" and set(i["needs"]) <= landed
+        and i["id"] not in held_ids
     ]
     # A ready task behind a need that has not landed is carried, not dropped, so the planner can report it.
+    # A held task stays here too: it waits on an unlanded need, so `waiting_tasks` keeps its meaning.
     waiting = [i for i in own if i["state"] == "ready" and not set(i["needs"]) <= landed]
     return {
         "id": summary["id"],
         "started": any(i["state"] in _BEGUN for i in own),
         "ready_tasks": [_task(i) for i in ready],
         "waiting_tasks": [_task(i) for i in waiting],
+        "held_tasks": [_held_task(i, own) for i in held],
         "landed": landed,
     }
 
