@@ -1536,14 +1536,18 @@ _LAUNCH_ERROR = land.LAUNCH_ERROR
 def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
     """Each `(name, argv)` pair in order, stopping at the first launch error
     or failure and naming it by `name`, never by its argv or shell command."""
+    skipped: list[str] = []
     for name, argv in checks:
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
         except OSError as exc:
-            return False, f"{_LAUNCH_ERROR}{name}: {exc}"
-        if r.returncode != 0:
-            return False, f"{name}: {(r.stderr or r.stdout).strip()}"
-    return True, f"{len(checks)} checks passed"
+            return False, land.checks_detail(f"{_LAUNCH_ERROR}{name}: {exc}", skipped)
+        verdict = land.check_exit(argv, r.returncode)
+        if verdict == "fail":
+            return False, land.checks_detail(f"{name}: {(r.stderr or r.stdout).strip()}", skipped)
+        if verdict == "skip":
+            skipped.append(name)
+    return True, land.checks_detail(f"{len(checks)} checks passed", skipped)
 
 
 def _land_worktree(repo: Path, branch: str) -> Path:
