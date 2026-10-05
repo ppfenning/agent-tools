@@ -1,11 +1,14 @@
 """Run history for the dash feed, derived from store rows. Pure: rows in, plain data out; the caller injects `now` and `tz`.
 
 Names come from the store and the harness, none are new. `runs` rows carry run_id, ended_at, host and status (`dash_feed._finished_status`
-reads approved, landed, quarantined). `task_records` rows carry run_id, phase_id, task_id and record_json. A record names `landed`,
-`ticket`, `initiative`, `reason` and an `attempts` list whose entries carry `cause` (`stats_ingest`, `chair_read_attempts`).
-`node_calls` rows carry run_id and cost_usd. A stopped run is one whose status is in STOPPED_STATUSES; `budget` is `runs_top._status`.
-unknown: the store's own status for a stopped run, and the record key that holds the PR; the PR is read from `pr`, the key
-`cli._mark_done_facts` hands `store_cli.mark_landed`, and a number is taken from the end of its URL.
+reads approved, landed, quarantined; the store writes `ok` for a run that finished, `error` or `failed` for one that did not).
+`task_records` rows carry run_id, phase_id, task_id and record_json. A record names `landed` (True, or the `{at, pr}` that
+`store_cli.mark_landed` writes), `ticket`, `initiative`, `cause`, `reason`, the review sections `land._approved` reads, and an
+`attempts` list whose entries carry `cause` (`stats_ingest`, `chair_read_attempts`). `node_calls` rows carry run_id and cost_usd.
+A stopped run is one whose status is in STOPPED_STATUSES; `budget` is `runs_top._status`. Outcomes: landed, approved, quarantined,
+stopped, crashed, and idle for a run that finished with nothing landed, approved or quarantined.
+unknown: the store's own status for a stopped run. The PR is read from the record's `pr`, else its `landed.pr`; a number is
+taken from the end of its URL.
 """
 
 from __future__ import annotations
@@ -17,10 +20,13 @@ from datetime import UTC, datetime, tzinfo
 from itertools import groupby
 from typing import Any
 
+from agent_tools.land import _approved as land_approved
+
 Row = Mapping[str, Any]
 
 LIMIT = 30
 STOPPED_STATUSES = ("stopped", "budget")
+CRASHED_STATUSES = ("error", "failed", "never_recorded")
 
 
 def _record(raw: Any) -> Mapping[str, Any]:
@@ -53,27 +59,41 @@ def _in_task_order(run_tasks: Iterable[Row]) -> list[Row]:
 
 
 def _is_landed(row: Row) -> bool:
-    return _record(row.get("record_json")).get("landed") is True
+    """`landed` read the way `runs_stranded` reads it: True and mark-landed's `{at, pr}` both count."""
+    return bool(_record(row.get("record_json")).get("landed"))
+
+
+def _is_approved(row: Row) -> bool:
+    """The land's own approval rule, `land._approved`, so a unanimous approval with the arbiter skipped counts too."""
+    return land_approved(dict(_record(row.get("record_json")))) is None
 
 
 def first_cause(run_tasks: Iterable[Row]) -> str:
-    """The first quarantine cause in task order: an attempt's `cause`, else a record's `reason`; empty when none is recorded."""
+    """The first quarantine cause in task order: an attempt's `cause`, else a record's `cause`, else its `reason`; empty when none."""
     records = [_record(row.get("record_json")) for row in _in_task_order(run_tasks)]
     attempts = [a for record in records for a in (record.get("attempts") or []) if isinstance(a, Mapping)]
-    causes = [str(a["cause"]) for a in attempts if a.get("cause")] + [str(r["reason"]) for r in records if r.get("reason")]
+    own = [str(r[key]) for key in ("cause", "reason") for r in records if r.get(key)]
+    causes = [str(a["cause"]) for a in attempts if a.get("cause")] + own
     return causes[0] if causes else ""
 
 
 def run_outcome(run: Row, run_tasks: Sequence[Row]) -> str:
-    """The one outcome rule: landed, approved, quarantined, stopped or crashed. A store status of landed, approved or quarantined wins."""
+    """The one outcome rule. A store status of landed, approved or quarantined wins; then what the records built: landed, approved,
+    a quarantine cause; then stopped; crashed for an error status, or a missing/unknown one with no records; else idle."""
     status = run.get("status")
     if status in ("landed", "approved", "quarantined"):
         return str(status)
     if any(_is_landed(row) for row in run_tasks):
         return "landed"
+    if any(_is_approved(row) for row in run_tasks):
+        return "approved"
     if first_cause(run_tasks):
         return "quarantined"
-    return "stopped" if status in STOPPED_STATUSES else "crashed"
+    if status in STOPPED_STATUSES:
+        return "stopped"
+    if status in CRASHED_STATUSES or (status != "ok" and not run_tasks):
+        return "crashed"
+    return "idle"
 
 
 def _pr_number(raw: Any) -> int | None:
@@ -86,10 +106,14 @@ def _pr_number(raw: Any) -> int | None:
     return int(found.group(1)) if found else None
 
 
+def _landed_pr(landed: Any) -> Any:
+    return landed.get("pr") if isinstance(landed, Mapping) else None
+
+
 def landed_tasks(run_tasks: Iterable[Row]) -> list[dict[str, Any]]:
     """`{task, pr}` for each landed task in task order; `pr` is None when the record names no PR number."""
     return [
-        {"task": record.get("ticket") or row.get("task_id"), "pr": _pr_number(record.get("pr"))}
+        {"task": record.get("ticket") or row.get("task_id"), "pr": _pr_number(record.get("pr") or _landed_pr(record.get("landed")))}
         for row in _in_task_order(run_tasks)
         if _is_landed(row)
         for record in (_record(row.get("record_json")),)
@@ -101,8 +125,9 @@ def _cost(calls: Iterable[Row]) -> float:
 
 
 def _initiative(run: Row, run_tasks: Iterable[Row]) -> str:
+    """The run's own initiative, else the first record's, else the run id without its trailing `-N` run number."""
     named = [str(i) for row in _in_task_order(run_tasks) if (i := _record(row.get("record_json")).get("initiative"))]
-    return str(run.get("initiative") or (named[0] if named else ""))
+    return str(run.get("initiative") or (named[0] if named else "") or re.sub(r"-\d+$", "", str(run.get("run_id") or "")))
 
 
 def _ended_runs(runs: Iterable[Row]) -> list[tuple[datetime, Row]]:
