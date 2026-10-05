@@ -239,6 +239,29 @@ def _withhold_remote_unfetched(actions: list[Action], remote_unfetched: frozense
     ]
 
 
+_HOST_BOUND_KINDS = frozenset({"fetch", "clear_branches", "land", "land_phase"})
+
+
+def _withhold_blocked_hosts(actions: list[Action], facts: Facts) -> list[Action]:
+    """Drop a fetch, clear_branches or land whose run or initiative is homed on a login-blocked host.
+
+    The run is looked up in run_hosts first, then the initiative in initiative_homes. needs_chair and every other
+    kind pass; the filter reads only these facts, so a host whose login_ok turns true plans again that same tick.
+    """
+    blocked = chair_login_watch.login_blocked(facts.get("login_hosts", []))
+    run_hosts = facts.get("run_hosts", {})
+    homes = facts.get("initiative_homes", {})
+    return [
+        a
+        for a in actions
+        if not (
+            blocked
+            and a["kind"] in _HOST_BOUND_KINDS
+            and (run_hosts.get(a.get("run", "")) or homes.get(a.get("initiative", ""))) in blocked
+        )
+    ]
+
+
 def _withhold_not_exited(actions: list[Action], not_exited: frozenset[str]) -> list[Action]:
     """Drop a relaunch for an initiative whose newest run has no recorded exit; its paired clear_branches goes with it.
 
@@ -477,5 +500,6 @@ def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
     login_checks = _login_check_actions(facts, now)
-    actions = [*_plan_as_holder(facts, now), *housekeeping, *login_checks] if gated is None else gated
+    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now), facts) if gated is None else []
+    actions = [*holder, *housekeeping, *login_checks] if gated is None else gated
     return [stamp(a, lease["epoch"]) for a in actions]
