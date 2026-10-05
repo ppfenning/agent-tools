@@ -107,6 +107,8 @@ cox route drift [--profile PROFILE] [--json]   items whose store state and file 
 cox route import [--profile PROFILE] [--workspace WORKSPACE]   load the current work item files into the store's work_items table
 cox route approve INITIATIVE [--task TASK] [--by BY] [--profile PROFILE]   approve a draft initiative's todo tickets: todo becomes ready
 cox route decline INITIATIVE --reason REASON [--by BY] [--profile PROFILE]   decline a draft initiative: its todo tickets become dropped
+cox route edit ID [--title TITLE] [--body BODY] [--body-file BODY_FILE] [--repo REPO] [--dry-run] [--profile PROFILE]   change a queued intake's or an initiative's title, body or repo
+cox route remove ID --reason REASON [--by BY] [--dry-run] [--profile PROFILE]   remove a queued intake or an initiative that has no live run
 cox route chair take [--profile PROFILE] [--label LABEL] [--pid PID] [--steal] [--hours HOURS]   take the chair lock if no live chair holds it
 cox route chair extend [--profile PROFILE] [--label LABEL] [--pid PID] [--hours HOURS]   move the end of the chair takeover this session holds
 cox route chair beat [--profile PROFILE] [--label LABEL] [--pid PID] [--run RUN]   refresh the chair lock's heartbeat

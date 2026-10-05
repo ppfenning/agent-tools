@@ -1,0 +1,11 @@
+usage: cox route remove [-h] --reason REASON [--by BY] [--dry-run] [--profile PROFILE] id
+
+positional arguments:
+  id                 a queued intake or an initiative
+
+options:
+  -h, --help         show this help message and exit
+  --reason REASON
+  --by BY            who removes; default the OS user
+  --dry-run          print the plan and write nothing
+  --profile PROFILE
