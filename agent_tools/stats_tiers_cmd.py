@@ -12,8 +12,14 @@ from agent_tools import stats_query, stats_tiers
 from agent_tools.store_dialect import connect_readonly_url
 
 
+def _model_key(r: Mapping[str, Any]) -> str | None:
+    """The model id when the call carries one, else the alias; a row from a db without the column reads as the alias."""
+    model_id = r.get("model_id")
+    return r["model"] if model_id is None else model_id
+
+
 def _scorable(r: Mapping[str, Any]) -> bool:
-    return r["task_outcome"] is not None and None not in (r["role"], r["model"], r["cost_usd"], r["turns"])
+    return r["task_outcome"] is not None and None not in (r["role"], _model_key(r), r["cost_usd"], r["turns"])
 
 
 def to_tier_rows(joined: Sequence[Mapping[str, Any]]) -> list[stats_tiers.TierRow]:
@@ -21,7 +27,7 @@ def to_tier_rows(joined: Sequence[Mapping[str, Any]]) -> list[stats_tiers.TierRo
     return [
         stats_tiers.TierRow(
             role=r["role"],
-            model=r["model"],
+            model=_model_key(r),
             task_id=f"{r['run_id']}/{r['task_id']}",
             cost_usd=r["cost_usd"],
             turns=r["turns"],
