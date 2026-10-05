@@ -111,6 +111,38 @@ class ReviewPr(TypedDict):
     merged_at: str | None
 
 
+class CarryTask(TypedDict):
+    """One approved task commit to cherry-pick; run_seq is higher for a newer run."""
+
+    task: str
+    run: str
+    host: str
+    branch: str  # the run's agents branch
+    commit: str  # the newest commit recorded for that task in that run
+    needs: list[str]  # task ids it depends on, for ordering
+    run_seq: int
+
+
+class StrandedPhase(TypedDict):
+    """A phase with approved work that has not landed."""
+
+    initiative: str
+    phase: str
+    phase_branch: str
+    # One row per approved-but-not-landed task per run holding an approved commit, so a task approved in two runs appears twice.
+    approved: list[CarryTask]
+    pending: list[str]  # task ids of the phase not yet approved
+
+
+class PhaseBranch(TypedDict):
+    initiative: str
+    phase: str
+    branch: str
+    ahead: int  # commits on the branch that main lacks
+    behind: int  # commits on main that the branch lacks
+    tip: str
+
+
 class ReadyTask(TypedDict):
     id: str
     needs: list[str]
@@ -224,6 +256,8 @@ class Facts(TypedDict):
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]
+    stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
+    phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
 
 
 ActionKind = Literal[
@@ -249,6 +283,8 @@ ActionKind = Literal[
     "stalled_stop",
     "review_landed",
     "steer_clear",
+    "carry_phase",
+    "rebase_phase",
 ]
 
 
@@ -260,15 +296,17 @@ class Action(TypedDict, total=False):
     initiative and cause, or host and cause when the entry names a lane host rather than an
     initiative; when host is present cause is "login_lapsed" and there is no initiative key.
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
-    initiative, other and paths: the launch of initiative is deferred because it shares paths with other."""
+    initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
+    carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
+    tip and base."""
 
     kind: ActionKind
     epoch: int
     task_id: str
     repo: str
     run: str  # a land or fetch names the run that holds the approved record; a fetch_exit or mark_lost names the lost run; a land_phase names the run whose phase-mode land command performs it
-    initiative: str  # retry, rescue and land_phase carry initiative (land_phase carries no task_id); a stale_to_draft or mark_lost names the initiative
-    phase: str  # a land_phase names the phase it lands
+    initiative: str  # retry, rescue and land_phase carry initiative (land_phase carries no task_id); a stale_to_draft, mark_lost, carry_phase or rebase_phase names the initiative
+    phase: str  # a land_phase names the phase it lands; a carry_phase or rebase_phase names the phase it works on
     cause: str
     intake_ids: list[str]
     holder: str
@@ -282,6 +320,11 @@ class Action(TypedDict, total=False):
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
     paths: list[str]  # a steer_clear names the shared paths
+    pr_branch: str  # a carry_phase names the branch its pull request is opened from
+    picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
+    branch: str  # a rebase_phase names the phase branch it rebases
+    tip: str  # a rebase_phase names the tip being replaced, for the backup ref
+    base: str  # a rebase_phase names the commit or ref it rebases onto
 
 
 class PlanLands(Protocol):

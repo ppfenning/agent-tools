@@ -477,4 +477,6 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stall_candidates": list(deps.stall_candidates(now)) if deps.stall_candidates is not None else [],
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
         "review_prs": list(deps.review_prs()),
+        "stranded": [],  # empty until the facts task gathers stranded phases
+        "phase_branches": [],  # empty until the facts task gathers phase branches
     }
