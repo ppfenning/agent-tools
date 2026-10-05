@@ -31,7 +31,7 @@ from agent_tools import (
     events as events_module,
 )
 from agent_tools.chair_read_exits import exit_rows
-from agent_tools.chair_read_housekeeping import latest_housekeeping
+from agent_tools.chair_read_housekeeping import latest_housekeeping, read_last_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_read_review_prs import read_review_prs
 from agent_tools.chair_types import EASTERN, ReviewPr
@@ -39,6 +39,7 @@ from agent_tools.dash_chair_action import read_current_action
 from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
 from agent_tools.dash_chair_counters import chair_counters
+from agent_tools.dash_chair_store import chair_from_store, read_chair_rows
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
 from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
@@ -303,6 +304,21 @@ def _age_s(text, at: datetime) -> int:
         return 0
 
 
+def _tick_age_s(last_tick_at: str | None, at: datetime) -> int | None:
+    """Whole seconds from the status line's stamp (`MM-DD HH:MM TZ`, Eastern, no year) to `at`; None when absent or unreadable.
+
+    The stamp carries no year, so it reads in `at`'s year, or the year before when that would be later than `at`."""
+    local = at.astimezone(EASTERN)
+    for year in (local.year, local.year - 1):
+        try:
+            then = datetime.strptime(f"{year} {(last_tick_at or '')[:11]}", "%Y %m-%d %H:%M").replace(tzinfo=EASTERN)
+        except ValueError:
+            continue
+        if then <= at:
+            return int((at - then).total_seconds())
+    return None
+
+
 def _chair_v1(
     row: dict, lease: dict, record: dict, at: datetime,
     status: tuple[str | None, str | None] = (None, None),
@@ -343,6 +359,7 @@ def _chair_v1(
         "session": str(record.get("claude_session") or "")[:8],
         "last_tick_at": last_tick_at or "",
         "last_status": last_status or "",
+        "tick_age_s": _tick_age_s(last_tick_at, at),
         "current_action": action,
         "today": chair_today(rows, needs_chair_open, at, offset),
         **{key: int(value or 0) for key, value in extras.items()},
@@ -564,6 +581,64 @@ def _chair_edge(runs_dir: Path) -> dict:
     }
 
 
+def _stamp(tick_at: str | None) -> str:
+    """The status line's stamp (`MM-DD HH:MM TZ`, Eastern) for an ISO `tick_at`; `tick_at` as given when it is not aware ISO."""
+    try:
+        then = datetime.fromisoformat(tick_at) if tick_at else None
+    except ValueError:
+        return tick_at or ""
+    return f"{then.astimezone(EASTERN):%m-%d %H:%M %Z}" if then is not None and then.tzinfo else tick_at or ""
+
+
+def _chair_from_store_v1(
+    lease: dict, rows: list[dict], record: dict, at: datetime, needs_chair_open: int,
+    last_housekeeping_at: str | None, inbox_entries: list[dict], drafts: list,
+) -> dict:
+    """The schema-1 chair from the store's lease row and `chair_actions` rows. Pure: `at` is the one clock.
+
+    `chair_from_store` has no session, counter or attention keys, and its `last_tick_at` is ISO where the feed prints
+    the status line's Eastern stamp, so those come from `record`, `rows` and the inbox here. The store's values win.
+    """
+    offset = at.astimezone(EASTERN).utcoffset()
+    stored = chair_from_store(lease, rows, needs_chair_open, at, offset)
+    extras = {
+        **chair_counters(_as_results(rows, at, offset), rows, last_housekeeping_at, at, offset),
+        **chair_attention(inbox_entries, drafts),
+    }
+    return {
+        "session": str(record.get("claude_session") or "")[:8],
+        **{key: int(value or 0) for key, value in extras.items()},
+        **stored,
+        "last_tick_at": _stamp(stored["last_tick_at"]),
+        "last_status": stored["last_status"] or "",
+    }
+
+
+def _iso_ts(row: dict) -> dict:
+    """`row` with a Postgres `datetime` ts as ISO text, the form `chair_today` reads."""
+    ts = row.get("ts")
+    return {**row, "ts": ts.isoformat()} if isinstance(ts, datetime) else row
+
+
+def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list, at: datetime) -> dict:
+    """Edge: the chair from the store, and from the local record files only when the store fetch returns None."""
+    offset = at.astimezone(EASTERN).utcoffset()
+    needs_chair_open = _needs_chair_open(entries)
+    # Other seats drop out as in `_inbox`; `chair_attention` drops `chair` itself.
+    people = [e for e in entries if _reaches_a_person(str(e.get("to") or ""))]
+    fetched = read_chair_rows(runs_dir, at, offset)
+    if fetched is None:
+        return _chair_v1(
+            row, _lease(runs_dir), _chair_record(runs_dir), at,
+            needs_chair_open=needs_chair_open, inbox_entries=people, drafts=drafts, **_chair_edge(runs_dir),
+        )
+    lease, raw_rows = fetched
+    rows = [_iso_ts(r) for r in raw_rows]
+    # The fetch reaches back about a day, so a housekeeping row older than that is read whole from the store.
+    last_housekeeping_at = latest_housekeeping(rows) or read_last_housekeeping(runs_dir)
+    return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
+
+
 def _history_v1(rows: Mapping, at: datetime) -> tuple[list[dict], dict]:
     """`history` and `history_today` from store rows, counting a day in the chair's zone."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
@@ -610,14 +685,7 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     history, today = _history_edge(runs_dir, at)
     return snapshot(
         now,
-        _chair_v1(
-            chair_row, _lease(runs_dir), _chair_record(runs_dir), at,
-            needs_chair_open=_needs_chair_open(entries),
-            # Other seats drop out as in `_inbox`; `chair_attention` drops `chair` itself.
-            inbox_entries=[e for e in entries if _reaches_a_person(str(e.get("to") or ""))],
-            drafts=read_drafts(work_dir, now),
-            **_chair_edge(runs_dir),
-        ),
+        _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
         _runs_v1(sections["lanes"], local_name, records, at, calls_by_run),

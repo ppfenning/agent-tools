@@ -5,8 +5,9 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
-from agent_tools import chair_facts, chair_run, cli, host_cmd
+from agent_tools import chair_facts, chair_report, chair_run, cli, host_cmd
 
 # Fields the dataclass carries as plain metadata, not as wired sources: never callable, never unwired.
 _FACTS_DEPS_METADATA_FIELDS = frozenset({"session", "pid", "host"})
@@ -456,3 +457,77 @@ def test_the_real_deps_read_run_exits_from_the_store(tmp_path, monkeypatch) -> N
     runs = tmp_path / "runs"
     deps = cli._chair_run_deps(runs, {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
     assert deps.facts_deps.run_exited() == {"i": True, "runs": str(runs)}  # type: ignore[misc]
+
+
+def _tick_status_deps(tmp_path, writer, recorded: list, echoed: list, now: datetime) -> chair_run.RunDeps:
+    return chair_run.RunDeps(
+        facts_deps=object(),  # type: ignore[arg-type]
+        exec_deps=SimpleNamespace(record=recorded.append),  # type: ignore[arg-type]
+        report_deps=chair_report.Deps(echo=echoed.append),
+        beat=lambda: None,
+        current_epoch=lambda: 7,
+        holds=lambda: False,
+        release=lambda: None,
+        sleep=lambda _seconds: None,
+        now=lambda: now,
+        gather=lambda facts_deps, at: {},  # type: ignore[arg-type,return-value]
+        plan=lambda facts, at: [],
+        perform=lambda actions, exec_deps, current_epoch, dry_run: [],
+        meter_doc=lambda: None,
+        runs_dir=tmp_path,
+        read_action=lambda runs_dir: None,
+        write_tick_status=writer,
+    )
+
+
+def test_a_tick_writes_its_status_line_and_now_to_the_lease_once_under_the_held_epoch(tmp_path) -> None:
+    now = datetime(2026, 10, 5, 12, 30, 15, tzinfo=UTC)
+    calls: list[tuple] = []
+    echoed: list = []
+    deps = _tick_status_deps(tmp_path, lambda *args: calls.append(args) or True, [], echoed, now)
+
+    chair_run._attempt(deps, False)
+
+    assert len(calls) == 1
+    runs_dir, epoch, text = calls[0]
+    assert (runs_dir, epoch) == (tmp_path, 7)
+    assert json.loads(text) == {"tick_at": "2026-10-05T12:30:15Z", "status": echoed[0], "current_action": None}
+    assert echoed[0].strip()
+
+
+def test_a_dry_run_tick_writes_no_tick_status(tmp_path) -> None:
+    calls: list[tuple] = []
+    now = datetime(2026, 10, 5, 12, 30, tzinfo=UTC)
+    deps = _tick_status_deps(tmp_path, lambda *args: calls.append(args) or True, [], [], now)
+
+    chair_run._attempt(deps, True)
+
+    assert calls == []
+
+
+def test_a_writer_returning_false_neither_stops_the_tick_nor_skips_the_local_record(tmp_path) -> None:
+    calls: list[tuple] = []
+    recorded: list = []
+    echoed: list = []
+    now = datetime(2026, 10, 5, 12, 30, tzinfo=UTC)
+    deps = _tick_status_deps(tmp_path, lambda *args: calls.append(args) or False, recorded, echoed, now)
+
+    chair_run._attempt(deps, False)
+
+    assert len(calls) == 1
+    assert [r["kind"] for r in recorded] == ["status"]
+    assert recorded[0]["line"] == echoed[0]
+
+
+def test_a_writer_that_raises_does_not_stop_the_tick(tmp_path) -> None:
+    def boom(*_args) -> bool:
+        raise RuntimeError("store down")
+
+    recorded: list = []
+    echoed: list = []
+    deps = _tick_status_deps(tmp_path, boom, recorded, echoed, datetime(2026, 10, 5, 12, 30, tzinfo=UTC))
+
+    chair_run._attempt(deps, False)
+
+    assert len(recorded) == 1
+    assert len(echoed) == 1
