@@ -8,8 +8,17 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
-from agent_tools import chair_exec, chair_land, chair_report, land_repo_lease, usage_meter
+from agent_tools import (
+    chair_exec,
+    chair_land,
+    chair_report,
+    chair_tick_status,
+    dash_chair_action,
+    land_repo_lease,
+    usage_meter,
+)
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import plan_tick
@@ -75,6 +84,9 @@ class RunDeps:
     meter_doc: Callable[[], dict | None] = _read_meter_doc
     stop_lands: Callable[[], object] = no_lands_to_stop
     install_sigterm: Callable[[], Callable[[], None]] = sigterm_as_interrupt
+    runs_dir: Path | None = None  # None writes no tick status to the lease
+    read_action: Callable[[Path], dict | None] = dash_chair_action.read_current_action
+    write_tick_status: Callable[[Path, int, str], bool] = chair_tick_status.write_tick_status
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -163,6 +175,16 @@ def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> N
         deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat()})
 
 
+def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
+    """Write the tick's status JSON to the chair lease row under the held epoch; a False return is not an error."""
+    if dry_run or not line.strip() or deps.runs_dir is None:
+        return
+    with contextlib.suppress(Exception):
+        action = deps.read_action(deps.runs_dir)
+        text = chair_tick_status.dump_tick_status(chair_tick_status.build_tick_status(line, now, action))
+        deps.write_tick_status(deps.runs_dir, deps.current_epoch(), text)
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
@@ -189,6 +211,7 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
     except Exception as exc:  # one bad tick must not stop the loop
         line = error_line(exc, now)
     _publish_status(deps, dry_run, line, now)
+    _publish_tick_status(deps, dry_run, line, now)
     try:
         write_status(line, deps.report_deps)
     except Exception as exc:  # a failed notify or echo must not stop the loop either

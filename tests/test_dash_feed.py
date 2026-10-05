@@ -42,7 +42,7 @@ def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
 def test_snapshot_matches_committed_fixture():
     at = "2026-09-29T00:00:00Z"
     chair = {
-        "holder": "chair@omarchy:12345",
+        "holder": "chair",
         "host": "omarchy",
         "epoch": 7,
         "liveness": "live",
@@ -50,6 +50,7 @@ def test_snapshot_matches_committed_fixture():
         "session": "a1b2c3d4",
         "last_tick_at": "09-28 19:59 EDT",
         "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1",
+        "tick_age_s": 60,
         "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"},
         "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1},
         "lands_today": 2,
@@ -345,8 +346,8 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
     rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
-    # `current_action` is null when nothing is running; it is the one null the feed allows.
-    assert all(value is not None for row in rows for key, value in row.items() if key != "current_action")
+    # `current_action` is null when nothing is running and `tick_age_s` when no tick was read; the only nulls the feed allows.
+    assert all(value is not None for row in rows for key, value in row.items() if key not in ("current_action", "tick_age_s"))
     assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("omarchy", 7, 60)
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60
