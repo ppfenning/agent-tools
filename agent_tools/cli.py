@@ -36,6 +36,7 @@ from agent_tools import (
     chair_capacity,
     chair_exec,
     chair_facts,
+    chair_pid_probe,
     chair_read_approved,
     chair_read_attempts,
     chair_read_docket,
@@ -3946,6 +3947,20 @@ def _host_env_probe(argv: list[str]) -> tuple[int, str]:
     return done.returncode, done.stdout if done.returncode == 0 else done.stderr
 
 
+def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
+    """Edge: (exit code, stdout) of a pid check run from `ssh_argv`; None when ssh cannot run or takes over 15s,
+    so a probe that failed is left out of the facts rather than read as a dead pid.
+
+    Probes run one per remote lane, in series, every tick. BatchMode makes a host that would prompt for a password
+    fail at once instead of hanging, and ConnectTimeout bounds a host slow to accept, so a tick waits at most 15s a lane."""
+    batch = [argv[0], "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", *argv[1:]] if argv[:1] == ["ssh"] else argv
+    try:
+        done = subprocess.run(batch, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.returncode, done.stdout
+
+
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
 ) -> int:
@@ -6801,6 +6816,9 @@ def _chair_run_deps(
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         hosts=lambda: run_store.hosts(runs_dir),
+        pid_probe=lambda: chair_pid_probe.read_pid_probe(
+            runs_dir, now_text(), _pid_probe_ssh, () if isinstance(parsed_hosts, lane_hosts.LaneHostError) else parsed_hosts, host
+        ),
     )
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
