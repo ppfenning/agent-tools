@@ -3831,7 +3831,8 @@ def _route_launch(a: argparse.Namespace) -> int:
         return 0
 
     if host is not None:
-        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None)
+        launch_harness = str(Path(harness_dir).expanduser()) if harness_dir else None
+        return _route_launch_on_host(a, host, runs_dir, run_id, env_repo or None, launch_harness)
 
     if overlaid_path is not None:
         overlaid_path.write_text(yaml.safe_dump(overlaid_provider_profile, sort_keys=True), encoding="utf-8")
@@ -3963,6 +3964,7 @@ def _pid_probe_ssh(argv: list[str]) -> tuple[int, str] | None:
 
 def _route_launch_on_host(
     a: argparse.Namespace, host: lane_hosts.LaneHost, runs_dir: Path, run_id: str, repo: str | None = None,
+    harness_dir: str | None = None,
 ) -> int:
     """Copies the initiative to `host` and starts the lane there; writes only `<run>.remote.json`, and only on success."""
     run, locate = _remote_edge(runs_dir.parent)
@@ -3978,7 +3980,8 @@ def _route_launch_on_host(
             env_names, {name: _host_env_probe(ssh_argv(host.ssh, env_check_argv(name))) for name in env_names}
         )
     result = remote_launch.launch_on_host(
-        host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, preflight=preflight
+        host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
+        preflight=preflight,
     )
     if isinstance(result, remote_launch.LaunchError):
         print(f"routing: launch on {host.name} failed at {result.step}: {result.message}")

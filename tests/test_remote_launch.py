@@ -118,6 +118,48 @@ def test_launch_plan_with_a_repo_returns_three_argv():
     ]
 
 
+def test_launch_plan_with_a_harness_dir_syncs_it_before_the_repo():
+    host = LaneHost("box2", "me@box2", "/ws")
+    plan = launch_plan(host, "init-x", "init-x-1", "l", repo="/r", harness_dir="/h")
+    assert plan[1:3] == [ssh_argv("me@box2", sync_argv("/h")), ssh_argv("me@box2", sync_argv("/r"))]
+    assert len(plan) == 4
+
+
+def test_launch_plan_without_a_harness_dir_is_todays_list():
+    host = LaneHost("box2", "me@box2", "/ws")
+    assert launch_plan(host, "init-x", "init-x-1", "l", repo="/r", harness_dir=None) == launch_plan(
+        host, "init-x", "init-x-1", "l", repo="/r"
+    )
+    assert len(launch_plan(host, "init-x", "init-x-1", "l", harness_dir=None)) == 2
+
+
+def test_a_failing_harness_sync_stops_before_the_repo_sync_and_the_launch():
+    host, calls = LaneHost("box2", "me@box2", "/ws"), []
+    codes = iter([0, 1])
+
+    def run(argv):
+        calls.append(argv)
+        return next(codes)
+
+    result = launch_on_host(host, "init-x", "init-x-1", "l", "t", run, repo="/r", harness_dir="/h")
+    assert result == LaunchError(
+        "harness",
+        "updating the harness at /h on box2 exited 1: the lane would run an older harness than the store",
+    )
+    assert calls == [
+        ["rsync", "-a", "--delete", "work/init-x/", "me@box2:/ws/work/init-x/"],
+        ssh_argv("me@box2", sync_argv("/h")),
+    ]
+
+
+def test_a_passing_harness_sync_reaches_the_launch_argv():
+    host, calls = LaneHost("box2", "me@box2", "/ws"), []
+    result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0, harness_dir="/h")
+    assert calls == launch_plan(host, "init-x", "init-x-1", "l", harness_dir="/h")
+    assert calls[1] == ssh_argv("me@box2", sync_argv("/h")) and "route launch epic" in calls[-1][2]
+    assert result == remote_record("box2", "t")
+
+
 def test_launch_on_host_runs_the_planned_argvs_in_order():
     host, calls = LaneHost("box2", "me@box2", "/ws"), []
     result = launch_on_host(host, "init-x", "init-x-1", "l", "t", lambda argv: calls.append(argv) or 0)
