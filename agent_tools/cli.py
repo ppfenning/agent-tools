@@ -5114,6 +5114,24 @@ def _resolved_pacing_policy(runs_dir: Path) -> pacing.Policy:
     )
 
 
+def _chair_meter(
+    local: usage_meter.Meter | None, now: datetime.datetime, runs_dir,
+) -> tuple[usage_meter.Meter | None, str]:
+    """A fresh local reading is 'meter'; else a store row under 15 minutes old is 'meter, store'; else the local reading
+    (stale, or None) with 'est', so a stale local reading is still carried forward by `usable_percentage`."""
+    if local is not None and usage_meter.fresh(local, now):
+        return local, "meter"
+    doc = run_store.latest_chair_meter(Path(runs_dir))
+    chair = usage_meter.parse(doc) if doc else None
+    # A naive `observed_at` cannot be compared with an aware `now`; `fresh` would raise, so it is not adopted.
+    if (
+        chair is not None and chair.observed_at.tzinfo is not None
+        and usage_meter.fresh(chair, now, max_age=datetime.timedelta(minutes=15))
+    ):
+        return chair, "meter, store"
+    return local, "est"
+
+
 def _usage_assessment(
     runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None,
     weekly_reset: str | None = None,
@@ -5125,16 +5143,9 @@ def _usage_assessment(
     now = datetime.datetime.now(datetime.UTC)
     reset = usage_window.parse_weekly_reset(weekly_reset)
     usage = usage_window.read_usage(runs_dir, now, reset)
-    meter = usage_meter.read()
-    local = meter
-    if meter is None or not usage_meter.fresh(meter, now):
-        doc = run_store.latest_chair_meter(Path(runs_dir))
-        chair = usage_meter.parse(doc) if doc else None
-        # A naive `observed_at` cannot be compared with an aware `now`; `fresh` would raise, so it is not adopted.
-        if chair is not None and chair.observed_at.tzinfo is not None and usage_meter.fresh(chair, now):
-            meter = chair
+    meter, source = _chair_meter(usage_meter.read(), now, runs_dir)
     # Calibration divides spend up to `now` by the reading's percentage, so only a fresh local reading may write it.
-    calibrate = local is not None and usage_meter.fresh(local, now)
+    calibrate = source == "meter"
 
     five_hour_ceiling = usage_meter.implied_ceiling("five_hour", now)
     if five_hour_ceiling is None:
@@ -6578,7 +6589,7 @@ def _chair_run_deps(
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
-    meter_snapshot: list[tuple[usage_meter.Meter | None, bool]] = []
+    meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
     def docket() -> dict:
         if not snapshot:
@@ -6694,16 +6705,15 @@ def _chair_run_deps(
 
     weekly_reset = usage_window.parse_weekly_reset(profile.get("weekly_reset"))
 
-    def meter_fresh_now() -> tuple[usage_meter.Meter | None, bool]:
-        """One meter read and one freshness verdict per tick, shared by `window`, `weekly` and both source
+    def meter_fresh_now() -> tuple[usage_meter.Meter | None, str]:
+        """One meter read and one source verdict per tick, shared by `window`, `weekly` and both source
         labels, so a label always names the side its figure was built from."""
         if not meter_snapshot:
-            meter = usage_meter.read()
-            meter_snapshot.append((meter, meter is not None and usage_meter.fresh(meter, now())))
+            meter_snapshot.append(_chair_meter(usage_meter.read(), now(), runs_dir))
         return meter_snapshot[0]
 
     def window() -> pacing.Window:
-        meter, fresh = meter_fresh_now()
+        meter, source = meter_fresh_now()
         now_ = now()
         ceiling = usage_meter.implied_ceiling("five_hour", now_)
         if ceiling is None:
@@ -6719,16 +6729,15 @@ def _chair_run_deps(
             )
             if usable is not None else None
         )
-        if fresh:
+        if source == "meter":
             usage_meter.record_implied_ceiling("five_hour", meter.five_hour, Path(runs_dir), now_)
         return usage_meter.prefer(meter_window, estimate_window)
 
     def window_source() -> str:
-        _, fresh = meter_fresh_now()
-        return "meter" if fresh else "est"
+        return meter_fresh_now()[1]
 
     def weekly() -> pacing.Window:
-        meter, fresh = meter_fresh_now()
+        meter, source = meter_fresh_now()
         now_ = now()
         ceiling = usage_meter.implied_ceiling("weekly", now_)
         if ceiling is None:
@@ -6748,13 +6757,12 @@ def _chair_run_deps(
             )
             if usable is not None else None
         )
-        if fresh:
+        if source == "meter":
             usage_meter.record_implied_ceiling("weekly", meter.seven_day, Path(runs_dir), now_)
         return usage_meter.prefer(meter_weekly, estimate_weekly)
 
     def weekly_source() -> str:
-        _, fresh = meter_fresh_now()
-        return "meter" if fresh else "est"
+        return meter_fresh_now()[1]
 
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
