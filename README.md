@@ -98,6 +98,7 @@ cox epic watch PIDFILE [--log LOG] [--max-seconds MAX_SECONDS] [--interval INTER
 cox route context [--profile PROFILE] [--json]   the routing profile's resolved context
 cox route status [--profile PROFILE] [--json] [--all]   what is queued or running for this profile
 cox route file [--profile PROFILE] [--repo REPO] [--title TITLE] [--body BODY] [--phase PHASE] [--intake] [--from-intake FROM_INTAKE]   file a new ticket for the harness
+cox route priority INITIATIVE [--profile PROFILE] [--set N] [--up] [--down]   move an initiative up or down the launch order
 cox route pull [--profile PROFILE] [--source SOURCE] [--dry-run]   file intake tickets from a source, once per link
 cox route lint INITIATIVE_DIR [--repo REPO]   static ticket lint over a filed initiative, work-shape.md §3
 cox route groups [--profile PROFILE]   print the newest plans/intake-groups/<date>.md file, work-shape.md §5
