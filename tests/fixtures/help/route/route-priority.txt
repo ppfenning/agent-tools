@@ -1,0 +1,11 @@
+usage: cox route priority [-h] [--profile PROFILE] [--set N | --up | --down] initiative
+
+positional arguments:
+  initiative
+
+options:
+  -h, --help         show this help message and exit
+  --profile PROFILE
+  --set N            write N on every item
+  --up               one above the initiative's highest priority
+  --down             one below the initiative's highest priority
