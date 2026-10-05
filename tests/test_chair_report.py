@@ -88,6 +88,12 @@ def test_weekly_names_an_est_source():
     assert _weekly(limits) == "weekly 61%/90% (est)"
 
 
+def test_store_fed_sources_render_meter_store_in_both_limit_fragments():
+    line = format_status(_facts(five=0.12, weekly=0.13, five_hour_source="meter, store", weekly_source="meter, store"),
+                         [], [], NOW)
+    assert "5h 12% (meter, store) weekly 13%/90% (meter, store)" in line
+
+
 def test_dry_run_line_says_dry_run():
     line = format_status(_facts(), [{"kind": "land"}], [_landed("land", "dry_run")], NOW)
     assert " | dry-run | " in line

@@ -662,6 +662,95 @@ def test_facts_deps_window_and_weekly_report_est_when_there_is_no_fresh_meter(mo
     assert deps.facts_deps.weekly_source() == "est"
 
 
+def _store_meter_row(age: timedelta, five: float = 12.0, week: float = 13.0) -> dict:
+    now = datetime.now(UTC)
+    return {
+        "five_hour": {"used_percentage": five, "resets_at": (now + timedelta(hours=2)).timestamp()},
+        "seven_day": {"used_percentage": week, "resets_at": (now + timedelta(days=3)).timestamp()},
+        "observed_at": (now - age).isoformat(),
+    }
+
+
+def _local_meter(age: timedelta) -> "cli.usage_meter.Meter":
+    now = datetime.now(UTC)
+    return cli.usage_meter.Meter(
+        five_hour=cli.usage_meter.MeterEntry(used_percentage=40.0, resets_at=now + timedelta(hours=2)),
+        seven_day=cli.usage_meter.MeterEntry(used_percentage=60.0, resets_at=now + timedelta(days=3)),
+        observed_at=now - age,
+    )
+
+
+def _store_fallback_fakes(monkeypatch, local, row):
+    """Real `fresh`, `parse`, `usable_percentage` and `as_window`; only the two meter sources and the estimates are faked."""
+    recorded: list[str] = []
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: local)
+    monkeypatch.setattr(cli.run_store, "latest_chair_meter", lambda runs_dir: row)
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setattr(cli.usage_meter, "record_implied_ceiling", lambda kind, *a, **k: recorded.append(kind))
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(222.0))
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: _tagged_window(444.0))
+    return recorded
+
+
+def test_facts_deps_keep_a_fresh_local_meter_over_a_fresh_store_row(monkeypatch, tmp_path):
+    recorded = _store_fallback_fakes(monkeypatch, _local_meter(timedelta(minutes=1)), _store_meter_row(timedelta(minutes=1)))
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    assert (deps.facts_deps.window().spent_usd, deps.facts_deps.weekly().spent_usd) == (40.0, 60.0)
+    assert (deps.facts_deps.window_source(), deps.facts_deps.weekly_source()) == ("meter", "meter")
+    assert sorted(recorded) == ["five_hour", "weekly"]
+
+
+def test_facts_deps_use_a_five_minute_old_store_row_when_there_is_no_local_meter(monkeypatch, tmp_path):
+    recorded = _store_fallback_fakes(monkeypatch, None, _store_meter_row(timedelta(minutes=5)))
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    assert (deps.facts_deps.window().spent_usd, deps.facts_deps.weekly().spent_usd) == (12.0, 13.0)
+    assert (deps.facts_deps.window_source(), deps.facts_deps.weekly_source()) == ("meter, store", "meter, store")
+    assert recorded == []  # the store row never calibrates
+
+
+def test_facts_deps_fall_back_to_the_estimate_when_the_store_row_is_sixteen_minutes_old(monkeypatch, tmp_path):
+    recorded = _store_fallback_fakes(monkeypatch, None, _store_meter_row(timedelta(minutes=16)))
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    assert (deps.facts_deps.window().spent_usd, deps.facts_deps.weekly().spent_usd) == (222.0, 444.0)
+    assert (deps.facts_deps.window_source(), deps.facts_deps.weekly_source()) == ("est", "est")
+    assert recorded == []
+
+
+def test_facts_deps_use_a_fresh_store_row_over_a_stale_local_meter(monkeypatch, tmp_path):
+    recorded = _store_fallback_fakes(monkeypatch, _local_meter(timedelta(hours=2)), _store_meter_row(timedelta(minutes=5)))
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    assert (deps.facts_deps.window().spent_usd, deps.facts_deps.weekly().spent_usd) == (12.0, 13.0)
+    assert (deps.facts_deps.window_source(), deps.facts_deps.weekly_source()) == ("meter, store", "meter, store")
+    assert recorded == []
+
+
+def test_facts_deps_report_est_with_no_local_meter_and_no_store_row(monkeypatch, tmp_path):
+    _store_fallback_fakes(monkeypatch, None, None)
+
+    deps = _chair_run_deps_for(tmp_path, {})
+
+    assert (deps.facts_deps.window().spent_usd, deps.facts_deps.weekly().spent_usd) == (222.0, 444.0)
+    assert (deps.facts_deps.window_source(), deps.facts_deps.weekly_source()) == ("est", "est")
+
+
+def test_usage_assessment_gate_reads_the_same_store_figures_as_the_status_line(monkeypatch, tmp_path):
+    recorded = _store_fallback_fakes(monkeypatch, None, _store_meter_row(timedelta(minutes=5)))
+    captured = _capture_assess(monkeypatch)
+
+    cli._usage_assessment(tmp_path, 50.0, 200.0, None)
+
+    assert (captured["window"].spent_usd, captured["weekly"].spent_usd) == (12.0, 13.0)
+    assert recorded == []
+
+
 def _land_result(repo: str, pr: int = 9, commit: str = "deadbeef") -> dict:
     return {
         "action": {"kind": "land", "repo": repo}, "status": "landed",
