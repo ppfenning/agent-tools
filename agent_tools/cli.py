@@ -7,6 +7,7 @@ import collections
 import contextlib
 import dataclasses
 import datetime
+import getpass
 import importlib.metadata
 import importlib.util
 import io
@@ -92,6 +93,7 @@ from agent_tools import (
     pacing,
     plan,
     provenance,
+    queue_rows,
     records,
     remote_doctor,
     remote_fetch,
@@ -100,7 +102,10 @@ from agent_tools import (
     review_pr,
     route,
     route_drift,
+    route_edit,
+    route_guard,
     route_import,
+    route_remove,
     route_sync,
     route_sync_gh,
     router,
@@ -2825,6 +2830,59 @@ def _route_approve(a: argparse.Namespace) -> int:
 
 def _route_decline(a: argparse.Namespace) -> int:
     return _route_draft(a, lambda work, store: draft_apply.decline(work, a.initiative, a.reason, a.by, store))
+
+
+def _live_runs(runs_dir: Path, now: str) -> set[str]:
+    """Edge. Every live run on any host: the store's live leases, which remote lanes hold, plus local pidfile lanes.
+
+    A lane carries no initiative, so `route edit` and `route remove` refuse on any of them (route_edit's contract).
+    `now` is `_now_iso()`'s form, which `live_lanes` compares as text."""
+    leased = {lane.run for lane in run_store.live_lanes(runs_dir, now)}
+    return leased | {pf.stem for pf in runs_dir.glob("*.pid") if _lane_live(runs_dir, pf.stem)}
+
+
+def _route_edit(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    result = route_edit.apply_edit(
+        runs_dir, runs_dir.parent, a.id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
+        dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()),
+    )
+    if result.code != route_edit.DONE:
+        print(f"edit: {'refused' if result.code == route_edit.REFUSED else 'failed'}: {result.text}")
+    else:
+        print(result.text.rstrip("\n") or "edit: no change")
+    return result.code
+
+
+def _route_remove(a: argparse.Namespace) -> int:
+    runs_dir, reason = _runs_dir_for_land(a)
+    if runs_dir is None:
+        print(f"route: {reason}")
+        return 2
+    store = draft_apply.Store(
+        work_state.work_state_mode(_lake_provider(a)[0]),
+        lambda initiative: run_store.work_items(runs_dir, initiative),
+        lambda initiative, task, state, by, expected: store_cli.set_state(runs_dir, initiative, task, state, by, expected),
+    )
+    now, rows = datetime.datetime.now(datetime.UTC), run_store.read_queue(runs_dir)
+    live = _live_runs(runs_dir, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    rc = route_remove.remove(runs_dir.parent, a.id, a.reason, a.by or getpass.getuser(), now, rows, live, store, dry_run=a.dry_run)
+    target = route_guard.resolve_target(rows, a.id)
+    if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
+        _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
+    return rc
+
+
+def _record_intake_done(runs_dir: Path, done_path: Path) -> None:
+    """Edge. Move a removed intake's queue row from `queued` to `done`, so `route status` and the guard stop seeing it.
+
+    The file has already moved; a store that cannot take the row is one warning, as in `route.write_filed_item`."""
+    row = queue_rows.parse_item("intake", ("done", done_path.name), done_path.read_text(encoding="utf-8"))
+    if row is None or not run_store.upsert_row(runs_dir, row):
+        print(f"remove: warning: the store still lists {done_path.stem} as queued; run cox route import to reconcile")
 
 
 def _route_status(a: argparse.Namespace) -> int:
@@ -6313,6 +6371,27 @@ ROUTE_COMMANDS = [
             commands.Arg(("--by",), {"help": "who declines; default the OS user"}), commands.Arg(("--profile",)),
         ),
         _route_decline, False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "edit", "route", "change a queued intake's or an initiative's title, body or repo",
+        (
+            commands.Arg(("id",), {"help": "a queued intake or an initiative"}), commands.Arg(("--title",)),
+            commands.Arg(("--body",)), commands.Arg(("--body-file",)), commands.Arg(("--repo",)),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        _route_edit, False, (), defaults={"runs_dir": None},
+    ),
+    commands.Command(
+        "remove", "route", "remove a queued intake or an initiative that has no live run",
+        (
+            commands.Arg(("id",), {"help": "a queued intake or an initiative"}),
+            commands.Arg(("--reason",), {"required": True}),
+            commands.Arg(("--by",), {"help": "who removes; default the OS user"}),
+            commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
+            commands.Arg(("--profile",)),
+        ),
+        _route_remove, False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
