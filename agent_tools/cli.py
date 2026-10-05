@@ -3375,6 +3375,18 @@ def _route_file(a: argparse.Namespace) -> int:
     return 0
 
 
+def _route_priority(a: argparse.Namespace) -> int:
+    if a.set is None and not a.up and not a.down:
+        print("routing: exactly one of --set, --up, --down is required")
+        return 2
+    profile, rc = _resolve_profile_or_refuse(a)
+    if rc is not None:
+        return rc
+    ws = Path(profile["workspace_dir"]).expanduser()
+    flag = a.set if a.set is not None else ("up" if a.up else "down")
+    return route.set_initiative_priority(ws / "runs", ws, a.initiative, flag)
+
+
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
     """`(returncode, stdout, stderr)`; a missing executable is returncode 127, never an exception."""
     try:
@@ -6224,6 +6236,17 @@ ROUTE_COMMANDS = [
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
         ),
         _route_file, False, (),
+    ),
+    commands.Command(
+        "priority", "route", "move an initiative up or down the launch order",
+        (
+            commands.Arg(("initiative",)), commands.Arg(("--profile",)),
+            commands.Arg(("--set",), {"type": int, "default": None, "metavar": "N", "help": "write N on every item"}),
+            commands.Arg(("--up",), {"action": "store_true", "help": "one above the initiative's highest priority"}),
+            commands.Arg(("--down",), {"action": "store_true", "help": "one below the initiative's highest priority"}),
+        ),
+        _route_priority, False, (),
+        exclusive=("--set", "--up", "--down"),
     ),
     commands.Command(
         "pull", "route", "file intake tickets from a source, once per link",

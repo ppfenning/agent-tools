@@ -1,6 +1,7 @@
 """Pure core for the routing layer: profile parsing and naming, plus the one thin edge `cox route file`
-writes a file through. Every function here but `write_filed_item` takes plain arguments and returns plain
-values, with no file reads and no env access. `write_filed_item` is the exception the name says it is: it
+writes a file through. Every function here but `write_filed_item` and `set_initiative_priority` takes plain
+arguments and returns plain values, with no file reads and no env access. `set_initiative_priority` is a
+second edge that writes through `write_filed_item`. `write_filed_item` is the exception the name says it is: it
 decides through two pure helpers (`_unrecorded_row_warning`, `_filed_write_error`) what to print, and does
 no more I/O than the one store call and the one file write the ticket asks it to order."""
 
@@ -27,6 +28,7 @@ __all__ = [
     "context_document",
     "context_from_rows",
     "context_rows",
+    "current_priority",
     "harness_argv",
     "initiative_files",
     "initiative_summaries",
@@ -39,18 +41,21 @@ __all__ = [
     "launch_gate",
     "lint_items",
     "merge_same_phase",
+    "next_priority",
     "next_run_id",
     "overlay",
     "parse_allocate_id",
     "parse_frontmatter",
     "parse_pid",
     "parse_profile",
+    "priority_text",
     "pull_plan",
     "render_context",
     "render_status",
     "review_argv",
     "run_entries",
     "run_under_claim",
+    "set_initiative_priority",
     "slugify",
     "state_problems",
     "status_entries",
@@ -1348,6 +1353,63 @@ def write_filed_item(runs_dir: Path, path: Path, kind: str, path_parts: tuple[st
     except OSError as exc:
         print(_filed_write_error(path, stored, exc))
         return 1
+    return 0
+
+
+def next_priority(current: int, flag: int | str) -> int:
+    """Pure: an int `flag` is `--set N` and wins; "up" and "down" step `current` by one. No clamping, so a
+    negative priority is legal and sorts below the default 0."""
+    if isinstance(flag, int):
+        return flag
+    if flag == "up":
+        return current + 1
+    if flag == "down":
+        return current - 1
+    raise ValueError(f"unknown priority flag: {flag!r}")
+
+
+def current_priority(texts: Sequence[str]) -> int:
+    """Pure: the highest `priority:` among item file `texts`; an item with no key, or a value that is not an
+    integer, counts as the default 0, and no items at all is 0."""
+    def one(text: str) -> int:
+        try:
+            return int(parse_frontmatter(text)[0].get("priority", 0))
+        except (TypeError, ValueError):
+            return 0
+    return max(map(one, texts), default=0)
+
+
+def priority_text(original: str, value: int) -> str:
+    """Pure: `original` with its `priority:` key set to `value`; every other header line stays byte for byte."""
+    opening, closing = "---\n", "\n---\n"
+    close_index = original.find(closing, len(opening)) if original.startswith(opening) else -1
+    if close_index == -1:
+        return f"{opening}priority: {value}\n---\n{original}"
+    header_lines = original[len(opening):close_index].split("\n")
+    header = "\n".join(_with_header_fields(header_lines, [("priority", value)]))
+    return f"{opening}{header}{original[close_index:]}"
+
+
+def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int | str) -> int:
+    """Edge: one priority on every `work/<initiative>/<phase>/*.md` under `ws`, the store first and the file
+    second through `write_filed_item`, as `cox route file` orders them. `up` and `down` step from the highest
+    current priority, so one call leaves the initiative's items all equal. Stops at the first file that fails
+    to write. Returns 0, or non-zero after printing one line."""
+    root = ws / "work" / initiative
+    paths = sorted(root.glob("*/*.md")) if Path(initiative).name == initiative else []
+    if not paths:
+        print(f"routing: unknown initiative {initiative}")
+        return 2
+    try:
+        texts = [p.read_text(encoding="utf-8") for p in paths]
+    except OSError as exc:
+        print(f"routing: cannot read the items of {initiative}: {exc}")
+        return 1
+    value = next_priority(current_priority(texts), flag)
+    for path, text in zip(paths, texts, strict=True):
+        if write_filed_item(runs_dir, path, "task", path.relative_to(ws / "work").parts, priority_text(text, value)) != 0:
+            return 1
+    print(f"{initiative}: priority {value} on {len(paths)} item(s)")
     return 0
 
 

@@ -57,6 +57,24 @@ def _initiative_row(summary: Row, items: Sequence[Row]) -> dict[str, Any]:
     }
 
 
+def _priority(item: Row) -> int:
+    """An item's `priority`; a missing key or a value that is not an int reads as 0."""
+    try:
+        return int(item.get("priority") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _initiative_priority(initiative: str, items: Sequence[Row]) -> int:
+    """The highest priority among `initiative`'s ready items, 0 when it has none."""
+    return max((_priority(i) for i in items if i["initiative"] == initiative and i["state"] == "ready"), default=0)
+
+
+def _by_priority(rows: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
+    """`rows` by initiative priority descending, then id ascending. The docket rows carry no age, so there is no age tie-break."""
+    return sorted(rows, key=lambda r: (-_initiative_priority(r["id"], items), r["id"]))
+
+
 def _initiative_rows(summaries: Sequence[Row], items: Sequence[Row]) -> list[dict[str, Any]]:
     """One row per summary, then one per initiative `initiative_summaries` omitted that holds a waiting task.
 
@@ -65,7 +83,8 @@ def _initiative_rows(summaries: Sequence[Row], items: Sequence[Row]) -> list[dic
     listed = {s["id"] for s in summaries}
     omitted = sorted({i["initiative"] for i in items if i["state"] == "ready" and i["initiative"] not in listed})
     held = [_initiative_row({"id": initiative, "phase": None, "ready": 0}, items) for initiative in omitted]
-    return [*(_initiative_row(s, items) for s in summaries), *(row for row in held if row["waiting_tasks"])]
+    rows = [*(_initiative_row(s, items) for s in summaries), *(row for row in held if row["waiting_tasks"])]
+    return _by_priority(rows, items)
 
 
 def docket_from_builder(summaries: Sequence[Row], items: Sequence[Row], busy_lanes: int, max_in_flight: int) -> dict[str, Any]:
@@ -89,6 +108,7 @@ def _item_of(row: Row) -> dict[str, Any]:
     return {
         "id": row["task_id"], "initiative": row["initiative"], "phase": row["phase"], "state": row["state"],
         "needs": list(row["needs"]), "requires": queue_rows.row_requires(row),
+        "priority": row.get("priority", (row.get("extra") or {}).get("priority")),
     }
 
 

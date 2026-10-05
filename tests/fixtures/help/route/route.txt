@@ -1,14 +1,15 @@
 usage: cox route [-h]
-                 {context,status,file,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
+                 {context,status,file,priority,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
                  ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,approve,decline,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
+    priority            move an initiative up or down the launch order
     pull                file intake tickets from a source, once per link
     lint                static ticket lint over a filed initiative, work-shape.md §3
     groups              print the newest plans/intake-groups/<date>.md file, work-shape.md §5
