@@ -4,6 +4,7 @@ import os
 import socket
 import sqlite3
 import time
+from dataclasses import replace
 
 import pytest
 from test_run_store import lane_run, lane_store, leases_table
@@ -169,6 +170,19 @@ class _FakeStdscr:
     def getch(self):
         self.checkpoints.append(len(self.addnstr_calls))
         return self._keys.pop(0)
+
+
+def test_draw_shows_the_short_id_on_the_run_line_and_the_key_when_there_is_none():
+    keyed = runs_top.row("acme-20261005-long-slug", True, [], [], [], None)
+    stdscr = _FakeStdscr([], size=(24, 200))
+    draw(stdscr, [replace(keyed, short_id="I7-2")])
+    shown = " ".join(c[2] for c in stdscr.addnstr_calls)
+    assert "I7-2" in shown
+    assert "acme-20261005-long-slug" not in shown
+
+    stdscr = _FakeStdscr([], size=(24, 200))
+    draw(stdscr, [keyed])
+    assert any("acme-20261005-long-slug" in c[2] for c in stdscr.addnstr_calls)
 
 
 def test_draw_never_writes_a_line_wider_than_the_fake_width():

@@ -913,6 +913,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": None,
         "usage": None,
+        "short_id": None,
     }
     assert rows[1] == {
         "id": "widget-2",
@@ -923,6 +924,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": "epic done",
         "usage": "usage $0.42",
+        "short_id": None,
     }
     assert rows[2] == {
         "id": "widget-3",
@@ -933,7 +935,24 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": None,
         "usage": None,
+        "short_id": None,
     }
+
+
+def test_status_rows_carries_short_id_from_the_dict_and_none_when_absent():
+    entries = [{"id": "widget-1", "pid": None}, {"id": "widget-2", "pid": None}]
+    rows = route.status_rows(entries, {"widget-1": "w1a"})
+    assert [r["short_id"] for r in rows] == ["w1a", None]
+
+
+def test_render_status_shows_the_short_id_beside_the_slug():
+    rows = route.status_rows([{"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"}])
+    assert route.render_status(rows, short_ids={"widget-1": "w1a"}) == "widget-1 [w1a]: alive (pid 4242, started 14:02)"
+
+
+def test_render_status_shows_the_slug_alone_without_a_short_id():
+    rows = route.status_rows([{"id": "widget-3", "pid": None}])
+    assert route.render_status(rows, short_ids={"widget-1": "w1a"}) == "widget-3: no pidfile"
 
 
 def test_parse_frontmatter_returns_empty_fields_when_there_is_no_leading_fence():
@@ -1416,14 +1435,22 @@ def test_link_intake_updates_an_existing_field_in_place_instead_of_duplicating_i
     assert route.parse_frontmatter(new_initiative)[0]["intake"] == "intake/new.md"
 
 
-def test_initiative_states_is_true_for_an_id_with_no_items_and_false_for_one_not_all_done():
+def test_initiative_states_is_false_for_an_id_with_no_items_and_for_one_not_all_done():
     items = [
         {"initiative": "alpha", "state": "done"},
         {"initiative": "beta", "state": "ready"},
     ]
     assert route.initiative_states(["alpha", "beta", "gamma"], items) == {
-        "alpha": True, "beta": False, "gamma": True,
+        "alpha": True, "beta": False, "gamma": False,
     }
+
+
+def test_initiative_states_an_initiative_with_zero_items_is_not_done():
+    assert route.initiative_states(["z"], []) == {"z": False}
+
+
+def test_initiative_states_an_initiative_with_all_items_done_is_done():
+    assert route.initiative_states(["a"], [{"initiative": "a", "state": "done"}]) == {"a": True}
 
 
 def test_initiative_states_reads_done_plus_dropped_as_complete():
@@ -1458,6 +1485,15 @@ def test_intake_groups_classifies_a_done_plus_dropped_initiative_as_landed():
     entry = {"id": "g1", "title": "G", "initiative": "gamma", "done": False, "path": "intake/g1.md"}
     groups = route.intake_groups([entry], initiatives)
     assert groups["landed"] == [entry]
+
+
+def test_intake_groups_calls_an_intake_whose_initiative_has_zero_items_decomposed_not_landed():
+    done = route.initiative_states(["x"], [])["x"]
+    initiatives = [{"id": "x", "done": done, "text": ""}]
+    entry = {"id": "x1", "title": "X", "initiative": "x", "done": False, "path": "intake/x1.md"}
+    groups = route.intake_groups([entry], initiatives)
+    assert groups["decomposed"] == [entry]
+    assert groups["landed"] == []
 
 
 def test_intake_groups_splits_queued_decomposed_landed_and_the_legacy_case():

@@ -61,6 +61,20 @@ def test_a_width_of_10_does_not_raise():
     assert all(len(line) <= 10 for line in lines)
 
 
+def test_a_row_with_a_short_id_shows_it_in_place_of_the_run_key():
+    line = render([row("acme-20261005-long-slug", True, [], [], [], short_id="I7-2")], 200)[1]
+    assert "I7-2" in line
+    assert "acme-20261005-long-slug" not in line
+
+
+def test_a_row_with_no_short_id_shows_the_run_key():
+    assert "acme-20261005-long-slug" in render([row("acme-20261005-long-slug", True, [], [], [])], 200)[1]
+
+
+def test_a_remote_row_carries_its_short_id():
+    assert remote_row("acme-1", "jarvis", 5, short_id="I7-2").short_id == "I7-2"
+
+
 def test_row_with_a_ceiling_carries_the_applied_tier_and_effort():
     ceiling = {"requested": {"tier": "deep", "effort": None}, "applied": {"tier": "standard", "effort": "high"}, "profile": "p.yaml"}
     r = row("r1", True, [], [], [], ceiling)

@@ -1413,7 +1413,7 @@ def set_initiative_priority(runs_dir: Path, ws: Path, initiative: str, flag: int
     return 0
 
 
-def status_rows(entries) -> list:
+def status_rows(entries, short_ids: Mapping[str, str] | None = None) -> list:
     """Format the rows `agent-tools route status` prints, spec §5, from a
     pre-gathered list of run entries. Each entry is
     `{"id", "pid", "alive", "started", "quarantined", "reused", "summary",
@@ -1422,6 +1422,7 @@ def status_rows(entries) -> list:
     `pid` is None for a run with no pidfile at all, which this renders as
     a distinct "no pidfile" state rather than a crash. Order is preserved
     from `entries`; no pidfile is read and `epic.alive` is not called here.
+    `short_ids` maps slug to short id as plain data; a row's `short_id` is None when its slug is absent.
     """
     rows = []
     for entry in entries:
@@ -1442,6 +1443,7 @@ def status_rows(entries) -> list:
                 "reused": entry.get("reused", []),
                 "summary": entry.get("summary"),
                 "usage": entry.get("usage"),
+                "short_id": (short_ids or {}).get(entry["id"]),
             }
         )
     return rows
@@ -1467,11 +1469,13 @@ def _started_since(started, cutoff: datetime.datetime) -> bool:
     return (when if when.tzinfo else when.replace(tzinfo=datetime.UTC)) >= cutoff
 
 
-def _status_line(row: dict) -> str:
+def _status_line(row: dict, short_id: str | None = None) -> str:
+    short = short_id or row.get("short_id")
+    name = f"{row['id']} [{short}]" if short else row["id"]
     head = (
-        f"{row['id']}: {row['state']}"
+        f"{name}: {row['state']}"
         if row["pid"] is None
-        else f"{row['id']}: {row['state']} (pid {row['pid']}, started {row['started']})"
+        else f"{name}: {row['state']} (pid {row['pid']}, started {row['started']})"
     )
     tails = (
         ["; ".join(row[key]) for key in ("quarantined", "reused") if row.get(key)]
@@ -1486,7 +1490,8 @@ def _intake_group_line(name: str, entries: list) -> str:
 
 
 def render_status(rows: list, groups: dict | None = None, problems: list | None = None,
-                  gate_level: str | None = None, hidden: int = 0) -> str:
+                  gate_level: str | None = None, hidden: int = 0,
+                  short_ids: Mapping[str, str] | None = None) -> str:
     """The human-readable text `agent-tools route status` prints, spec §5,
     from `status_rows`' output. One line per row: a run with no pidfile
     states only its id and state, since `pid` and `started` are both
@@ -1497,8 +1502,10 @@ def render_status(rows: list, groups: dict | None = None, problems: list | None 
     group when given, and nothing when `None`. `problems`, `state_problems`'
     output, appends one line per entry last. `hidden`, when positive, adds
     one line after the rows saying that many older runs were left out.
+    `short_ids` (slug to short id) shows `slug [short]` on a row whose slug is in it.
     """
-    lines = [_status_line(row) for row in rows]
+    ids = short_ids or {}
+    lines = [_status_line(row, ids.get(row["id"])) for row in rows]
     lines += [f"({hidden} older runs hidden; --all shows every run)"] if hidden > 0 else []
     if groups is not None:
         lines += [_intake_group_line(name, groups[name]) for name in ("queued", "decomposed", "landed")]
@@ -1684,8 +1691,9 @@ TERMINAL = frozenset({"done", "dropped"})
 
 
 def initiative_states(ids: list, items: list) -> dict:
-    """`id -> True` when every item naming it has state `"done"` or `"dropped"` (vacuously true for an id with none)."""
-    return {i: all(item["state"] in TERMINAL for item in items if item["initiative"] == i) for i in ids}
+    """`id -> True` when it has at least one item and every item naming it is `"done"` or `"dropped"`; an id with no items is not done."""
+    own = {i: [item for item in items if item["initiative"] == i] for i in ids}
+    return {i: bool(own[i]) and all(item["state"] in TERMINAL for item in own[i]) for i in ids}
 
 
 def intake_groups(intake: list, initiatives: list) -> dict:

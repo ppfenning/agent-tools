@@ -175,6 +175,21 @@ def test_lane_line_shows_its_own_runs_top_phase_and_its_initiatives_phase_progre
     assert "1/2 phases" in line
 
 
+def test_lane_line_shows_the_runs_short_id_and_the_run_key_when_it_has_none():
+    lane = Lane("acme-20261005-long-slug", "jarvis", "2026-09-28T00:00:00+00:00", _BEAT)
+    with_id = runs_top.Row(run=lane.run, alive=True, phase="build", node="claude", attempt=1, turns=1, cost_usd=0.0,
+                           verdict="", status="running", short_id="I7-2")
+    without = runs_top.Row(run=lane.run, alive=True, phase="build", node="claude", attempt=1, turns=1, cost_usd=0.0,
+                           verdict="", status="running")
+
+    short = console_screen._lane_line(console_screen._lane_rows([lane], {lane.run: with_id}, [])[0], _NOW, _EASTERN)
+    keyed = console_screen._lane_line(console_screen._lane_rows([lane], {lane.run: without}, [])[0], _NOW, _EASTERN)
+
+    assert short.startswith("I7-2  ")
+    assert lane.run not in short
+    assert keyed.startswith(lane.run)
+
+
 def test_gather_reads_work_items_once_per_snapshot_window(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(console_screen.draft_list, "read_drafts", lambda work_dir, now: [])
