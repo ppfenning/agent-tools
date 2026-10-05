@@ -30,15 +30,21 @@ def _remote_argv(host_name: str, ssh: str, argv: list[str]) -> list[str]:
     return argv if host_name == socket.gethostname() else ssh_argv(ssh, argv)
 
 
+def _login_status(host_name: str, ssh: str, ssh_run: SshRun) -> tuple[bool | None, str]:
+    """`claude auth status` run once: the verdict `_login_ok` documents, and the captured output, which
+    holds a Tailscale re-auth URL when check mode asked for one."""
+    _, output = ssh_run(_remote_argv(host_name, ssh, auth_status_argv()))
+    verdict = remote_doctor.auth_verdict(output)
+    if verdict is None:
+        return True, output
+    return (False if "not logged in" in verdict else None), output
+
+
 def _login_ok(host_name: str, ssh: str, ssh_run: SshRun) -> bool | None:
     """True when `claude auth status` and the reused JSON parse confirm the host is logged in; False when
     that parse says explicitly it is not; None when the reply cannot be read at all (the command failed,
     or the reply is not the expected JSON)."""
-    _, output = ssh_run(_remote_argv(host_name, ssh, auth_status_argv()))
-    verdict = remote_doctor.auth_verdict(output)
-    if verdict is None:
-        return True
-    return False if "not logged in" in verdict else None
+    return _login_status(host_name, ssh, ssh_run)[0]
 
 
 def _env_check(host_name: str, ssh: str, ssh_run: SshRun, env_names: tuple[str, ...]) -> tuple[bool, str | None]:
@@ -75,11 +81,18 @@ def check_login_on_host(
     reused `cox host beat` argv, and returns the row `cli_run` prints. `runner == "claude-code"` (the
     default) asks `claude auth status`, its `None` result merging as `login_ok: False` since an
     unreachable host cannot be trusted to launch. Any other `runner` checks `env_names` instead; `claude`
-    is never invoked on that branch."""
+    is never invoked on that branch. A failed `claude auth status` check also stores the first https URL
+    in its captured output, a timed-out ssh's partial output included, as `login_url`; a passing check
+    clears any stored one."""
+    login_url = None
     if runner == "claude-code":
-        login_ok, check, reason = _login_ok(host_name, ssh, ssh_run) is True, "claude_auth", None
+        status, output = _login_status(host_name, ssh, ssh_run)
+        login_ok, check, reason = status is True, "claude_auth", None
+        login_url = None if login_ok else chair_login_watch.login_url_from_output(output)
     else:
         login_ok, reason = _env_check(host_name, ssh, ssh_run, env_names)
         check = "env_vars"
-    merged = chair_login_watch.merge_login_versions(current_versions, login_ok, now, check=check, reason=reason)
+    merged = chair_login_watch.merge_login_versions(
+        current_versions, login_ok, now, check=check, reason=reason, login_url=login_url
+    )
     return cli_run(host_cmd.beat_argv(host_name, merged))

@@ -252,6 +252,7 @@ class Facts(TypedDict):
     # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
     # landed) maps to that run's host, "" meaning this machine; nothing consumes this yet.
     home: dict[str, str]
+    run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.

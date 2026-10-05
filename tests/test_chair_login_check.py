@@ -166,3 +166,44 @@ def test_an_env_vars_runner_with_no_env_names_is_not_logged_in_and_runs_nothing(
         "reason": "no auth_env or endpoint_env configured",
     }
     assert calls == []
+
+
+def test_a_failed_check_stores_the_login_url_from_the_ssh_output() -> None:
+    def ssh_run(argv: list[str]) -> tuple[int, str]:
+        return 255, "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/abc123\n"
+
+    captured: list = []
+
+    def cli_run(argv: list[str]) -> dict:
+        captured.append(_versions_arg(argv))
+        return {}
+
+    check_login_on_host("shed", "user@shed", {}, NOW, ssh_run, cli_run)
+
+    assert captured[0]["login_ok"] is False
+    assert captured[0]["login_url"] == "https://login.tailscale.com/a/abc123"
+
+
+def test_a_failed_check_with_no_url_stores_no_login_url_key() -> None:
+    captured: list = []
+
+    def cli_run(argv: list[str]) -> dict:
+        captured.append(_versions_arg(argv))
+        return {}
+
+    check_login_on_host("shed", "user@shed", {}, NOW, lambda argv: (1, "connection refused"), cli_run)
+
+    assert "login_url" not in captured[0]
+
+
+def test_a_passing_check_clears_a_stored_login_url() -> None:
+    captured: list = []
+
+    def cli_run(argv: list[str]) -> dict:
+        captured.append(_versions_arg(argv))
+        return {}
+
+    stored = {"login_ok": False, "login_url": "https://login.tailscale.com/a/abc123"}
+    check_login_on_host("shed", "user@shed", stored, NOW, lambda argv: (0, '{"loggedIn": true}'), cli_run)
+
+    assert captured[0] == {"login_ok": True, "login_checked_at": NOW, "check": "claude_auth"}

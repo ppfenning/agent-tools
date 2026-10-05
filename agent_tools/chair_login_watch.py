@@ -9,6 +9,7 @@ JSON string on SQLite and a mapping on Postgres; `_versions` below decodes both,
 `host_cmd`'s own private helper of the same purpose, so this module carries no dependency on it.
 """
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,15 @@ from typing import Any
 Row = Mapping[str, Any]
 
 DEFAULT_THRESHOLD_S = 1800
+
+_HTTPS_URL = re.compile(r"https://[^\s<>\"']+")
+
+
+def login_url_from_output(output: str) -> str | None:
+    """The first https URL in `output` (Tailscale SSH check mode prints its re-auth link there), minus
+    trailing sentence punctuation; None when the text holds none."""
+    found = _HTTPS_URL.search(output)
+    return found.group().rstrip(".,;:)]") if found else None
 
 
 def _versions(row: Row) -> dict:
@@ -68,8 +78,18 @@ def login_blocked(hosts: Sequence[Row]) -> set[str]:
 
 def login_needs_chair(hosts: Sequence[Row]) -> list[dict]:
     """One `{"kind": "needs_chair", "host": name, "cause": "login_lapsed"}` action per name in
-    `login_blocked(hosts)`, never more than one per host."""
-    return [{"kind": "needs_chair", "host": name, "cause": "login_lapsed"} for name in sorted(login_blocked(hosts))]
+    `login_blocked(hosts)`, never more than one per host. The action gains a `url` key when the host's
+    `versions_json` holds a `login_url`, and has no such key otherwise."""
+    blocked = login_blocked(hosts)
+    urls = {
+        str(row.get("name") or ""): _versions(row).get("login_url")
+        for row in hosts
+        if str(row.get("name") or "") in blocked
+    }
+    return [
+        {"kind": "needs_chair", "host": name, "cause": "login_lapsed", **({"url": urls[name]} if urls.get(name) else {})}
+        for name in sorted(blocked)
+    ]
 
 
 def merge_login_versions(
@@ -78,9 +98,14 @@ def merge_login_versions(
     checked_at: str,
     check: str = "claude_auth",
     reason: str | None = None,
+    *,
+    login_url: str | None = None,
 ) -> dict:
     """A new dict carrying every key of `versions` plus `login_ok`, `login_checked_at` and `check` set to
-    the given values. `reason` is added only when it is not `None`; a `None` reason is dropped, never
-    stored as a null. `versions` itself is never mutated."""
-    merged = {**versions, "login_ok": login_ok, "login_checked_at": checked_at, "check": check}
-    return merged if reason is None else {**merged, "reason": reason}
+    the given values. `reason` and `login_url` are added only when not `None`; a `None` is dropped, never
+    stored as a null. A stored `login_url` is dropped when the new one is `None`, so a passing check
+    clears it. `versions` itself is never mutated."""
+    kept = {key: value for key, value in versions.items() if key != "login_url"}
+    merged = {**kept, "login_ok": login_ok, "login_checked_at": checked_at, "check": check}
+    with_reason = merged if reason is None else {**merged, "reason": reason}
+    return with_reason if login_url is None else {**with_reason, "login_url": login_url}

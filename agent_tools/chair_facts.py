@@ -81,6 +81,8 @@ class FactsDeps:
         means every initiative counts as non-empty, so none is reported as empty-decompose.
     newest_run_host: initiative id to its newest run's host, "" meaning the local machine
         (`run_store.newest_run_hosts`). Optional, and absent means no initiative counts.
+    run_hosts: run id to the host name that ran it, "" meaning the local machine. Defaults to a callable
+        returning {}, so no run counts until the edge wires it. `run_host_facts` drops the local entries, so the `run_hosts` fact holds remote runs only.
     hosts: the same seam as `lost_runs`, `run_store.hosts(runs_dir)`'s raw rows from the store's `hosts`
         table, one per host, keys name, state, versions_json, and whatever else that table carries. Stored
         verbatim under the `login_hosts` fact for the login watch to read. Defaults to a callable returning [].
@@ -149,6 +151,7 @@ class FactsDeps:
     decomposed_intake: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest decompose run id, for a decomposed intake; absent means {}
     item_counts: Callable[[], Mapping[str, int]] | None = None  # initiative to its stored task-item count; absent means every initiative counts as non-empty
     newest_run_host: Callable[[], Mapping[str, str]] | None = None  # initiative to its newest run's host, "" meaning local; absent means {}
+    run_hosts: Callable[[], Mapping[str, str]] = lambda: {}  # run id to the host that ran it, "" meaning local; absent means {}
     schema_deaths: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to its newest two run ids when both died on the schema refusal; absent means {}
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
@@ -173,6 +176,11 @@ def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], An
 
     module = resolve(forge_name)  # None for a missing forge, and `forge.pr_state` answers unknown for None
     return read_review_prs(Path(runs_dir), lambda url: forge.pr_state(module, url))
+
+
+def run_host_facts(raw: Mapping[str, str]) -> dict[str, str]:
+    """Run id to host name for the runs that ran on a remote host; a local run (host "") is absent."""
+    return {run: host for run, host in raw.items() if host}
 
 
 def lease_facts(record: Row, session: str, pid: int, host: str) -> LeaseFacts:
@@ -560,6 +568,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.item_counts()) if deps.item_counts is not None else {},
         ),
         "newest_run_host": newest_run_host,
+        "run_hosts": run_host_facts(deps.run_hosts()),
         "login_hosts": deps.hosts(),
         "last_housekeeping_at": deps.history() if deps.history is not None else None,
         "housekeeping_hours": resolve_housekeeping_hours(deps.housekeeping_hours())
