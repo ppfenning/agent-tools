@@ -859,6 +859,48 @@ def test_resolve_id_is_none_on_a_nonzero_exit(tmp_path, monkeypatch):
     assert run_store.resolve_id(tmp_path, "I412-7") is None
 
 
+_TWO_INITIATIVES = json.dumps(
+    [{"initiative": "widget-feed", "short_id": "I412"}, {"initiative": "lake-sync", "short_id": "I7"}]
+)
+
+
+def test_initiative_short_ids_maps_a_two_row_reply(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES + "\n"))
+    assert run_store.initiative_short_ids(tmp_path) == {"widget-feed": "I412", "lake-sync": "I7"}
+    assert calls == [run_store._initiative_ids_argv("/h/python", "sqlite:///s.db")]
+
+
+def test_initiative_short_ids_skips_a_row_without_a_short_id():
+    assert run_store._short_ids_from('[{"initiative": "a", "short_id": null}, {"initiative": "b", "short_id": "I2"}]') == {"b": "I2"}
+
+
+@pytest.mark.parametrize("stdout", ["", "not json", '{"a": "I1"}', "null"])
+def test_short_ids_from_output_that_is_not_an_array_is_empty(stdout):
+    assert run_store._short_ids_from(stdout) == {}
+
+
+def test_resolve_initiative_maps_a_short_id_to_its_slug(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
+    assert run_store.resolve_initiative(tmp_path, "I412") == "widget-feed"
+
+
+def test_resolve_initiative_returns_a_slug_unchanged(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
+    assert run_store.resolve_initiative(tmp_path, "widget-feed") == "widget-feed"
+
+
+def test_resolve_initiative_returns_an_unknown_token_unchanged(tmp_path, monkeypatch):
+    stub_harness(monkeypatch, result=done(0, _TWO_INITIATIVES))
+    assert run_store.resolve_initiative(tmp_path, "I999") == "I999"
+
+
+def test_initiative_lookups_without_a_harness_python_run_nothing(tmp_path, monkeypatch):
+    calls = stub_harness(monkeypatch, python=None)
+    assert run_store.initiative_short_ids(tmp_path) == {}
+    assert run_store.resolve_initiative(tmp_path, "I412") == "I412"
+    assert calls == []
+
+
 def test_the_task_record_script_reads_a_row_from_a_sqlite_store(tmp_path):
     db = tmp_path / "s.db"
     conn = sqlite3.connect(db)

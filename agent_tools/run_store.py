@@ -988,6 +988,46 @@ def resolve_id(runs_dir: Path, token: str) -> dict | None:
     return _task_record_from(done.stdout) if done.returncode == 0 else None
 
 
+def _initiative_ids_argv(python: str, url: str) -> list[str]:
+    """Pure: the argv that lists every initiative's short id as a JSON array of `{"initiative", "short_id"}` rows.
+    Unmeasured: the `initiatives` subcommand name and this reply shape are assumed, not read from harness.store_ids."""
+    return [python, "-m", "harness.store_ids", "initiatives", url, "--json"]
+
+
+def _short_ids_from(stdout: str) -> dict[str, str]:
+    """Pure: slug to short id from the reply rows. Empty when the output is not a JSON array; rows missing either field are skipped."""
+    try:
+        rows = json.loads(stdout.strip())
+    except ValueError:
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    return {
+        row["initiative"]: row["short_id"]
+        for row in rows
+        if isinstance(row, dict) and row.get("initiative") and row.get("short_id")
+    }
+
+
+def initiative_short_ids(runs_dir: Path) -> dict[str, str]:
+    """Edge: slug to short id for every initiative that has one. Empty when the harness, the call, or the output cannot say."""
+    python = _harness_python()
+    if python is None:
+        return {}
+    argv = _initiative_ids_argv(str(python), _store_url(Path(runs_dir)))
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return _short_ids_from(done.stdout) if done.returncode == 0 else {}
+
+
+def resolve_initiative(runs_dir: Path, token: str) -> str:
+    """Edge: the initiative slug for a short id; a slug, an unknown token, or any failure to read comes back unchanged."""
+    by_short_id = {short_id: slug for slug, short_id in initiative_short_ids(runs_dir).items()}
+    return by_short_id.get(token, token)
+
+
 _WORK_ITEMS_COLUMNS = ("initiative", "task_id", "phase", "state", "needs_json", "updated_at", "updated_by")
 
 _WORK_ITEMS_SCRIPT = """import json, sqlite3, sys

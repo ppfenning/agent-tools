@@ -913,6 +913,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": None,
         "usage": None,
+        "short_id": None,
     }
     assert rows[1] == {
         "id": "widget-2",
@@ -923,6 +924,7 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": "epic done",
         "usage": "usage $0.42",
+        "short_id": None,
     }
     assert rows[2] == {
         "id": "widget-3",
@@ -933,7 +935,24 @@ def test_status_rows_covers_live_dead_and_no_pidfile_runs_in_order():
         "reused": [],
         "summary": None,
         "usage": None,
+        "short_id": None,
     }
+
+
+def test_status_rows_carries_short_id_from_the_dict_and_none_when_absent():
+    entries = [{"id": "widget-1", "pid": None}, {"id": "widget-2", "pid": None}]
+    rows = route.status_rows(entries, {"widget-1": "w1a"})
+    assert [r["short_id"] for r in rows] == ["w1a", None]
+
+
+def test_render_status_shows_the_short_id_beside_the_slug():
+    rows = route.status_rows([{"id": "widget-1", "pid": 4242, "alive": True, "started": "14:02"}])
+    assert route.render_status(rows, short_ids={"widget-1": "w1a"}) == "widget-1 [w1a]: alive (pid 4242, started 14:02)"
+
+
+def test_render_status_shows_the_slug_alone_without_a_short_id():
+    rows = route.status_rows([{"id": "widget-3", "pid": None}])
+    assert route.render_status(rows, short_ids={"widget-1": "w1a"}) == "widget-3: no pidfile"
 
 
 def test_parse_frontmatter_returns_empty_fields_when_there_is_no_leading_fence():

@@ -1,5 +1,9 @@
 name: ci
-on: [push, pull_request]
+on:
+  # a pull request's branch runs once, on pull_request; push runs only for main
+  push:
+    branches: [main]
+  pull_request:
 jobs:
   test:
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
