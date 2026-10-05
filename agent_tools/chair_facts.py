@@ -3,14 +3,16 @@
 The shapers are pure and `gather_facts` calls each source once. The only clock is the `now` argument.
 No retry state is stored: `harness_failures` is counted from run history on every call.
 """
+import json
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import reduce
 from pathlib import Path
 from typing import Any
 
-from agent_tools import chair_smoke, forge, pacing
+from agent_tools import chair_read_docket, chair_smoke, forge, pacing, route
 from agent_tools.chair import lease_holder
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -30,12 +32,15 @@ from agent_tools.chair_types import (
     PidProbeFact,
     QuarantineFacts,
     ReviewPr,
+    RunningInitiative,
 )
 
 HARNESS_CAUSE = "harness"
 RESCUE_FAILED_CAUSE = "rescue_failed"
 STRANDED_CAUSE = "stranded"
 LAUNCHING_VERDICTS = frozenset({"go", "go_degraded"})
+LAUNCH_KINDS = frozenset({"launch_epic", "relaunch", "retry", "rescue"})
+STEER_STATES = frozenset({"ready", "approved"})
 
 Row = Mapping[str, Any]
 
@@ -106,6 +111,13 @@ class FactsDeps:
         Optional, and absent means "", so no hold is ever read and `limits.smoke_hold` stays None.
     review_prs: the approved tasks awaiting a review PR, each with its forge state, as `forge_review_prs` builds
         them in production. Optional, and absent means an empty list.
+    tickets: every work item under `work/<initiative>/<phase>/<task>.md`, keys initiative, id, state, surfaces
+        (`read_ticket_items`). Optional, and absent means no initiative has surfaces and `running` is empty.
+        The store queue is not bound in the chair, so surfaces are never read from `queue`.
+    repos: initiative id to the `repo:` of its `initiative.md` (`read_initiative_repos`). Optional, and absent
+        means no initiative has a known repo.
+    actions: the `chair_actions` rows, keys kind, ts, and action_json or the action's own keys
+        (`chair_read_stale.read_chair_actions`). `steer_streaks` derives from them. Optional, and absent means {}.
     """
 
     lease: Callable[[], Row]
@@ -149,6 +161,9 @@ class FactsDeps:
     runs_dir: Callable[[], str] = lambda: ""  # the runs directory `limits_facts` reads chair.hold.json from; absent means no hold is ever read
     review_prs: Callable[[], list[ReviewPr]] = lambda: []  # forge_review_prs bound to the profile's forge; absent means []
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
+    tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
+    repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
+    actions: Callable[[], Sequence[Row]] | None = None  # chair_actions rows; absent means no steer streaks
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -293,8 +308,76 @@ def quarantine_facts(
     ]
 
 
-def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts]:
-    """The docket's initiatives with no live run, so a live run is never relaunched."""
+def _surfaces_of(item: Row) -> list[str]:
+    raw = item.get("surfaces")
+    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
+
+
+def ticket_surfaces(items: Sequence[Row], ready_ids: Mapping[str, Collection[str]]) -> dict[str, list[str]]:
+    """Initiative to the sorted union of the surfaces of its ready tasks; a task with no surfaces adds nothing."""
+    return {
+        initiative: sorted({s for i in items if i["initiative"] == initiative and i["id"] in ids for s in _surfaces_of(i)})
+        for initiative, ids in ready_ids.items()
+    }
+
+
+def running_initiatives(live: Collection[str], items: Sequence[Row], repos: Mapping[str, str]) -> list[RunningInitiative]:
+    """One entry per live initiative, by id; surfaces are the sorted union over its ready or approved tasks."""
+    return [
+        {
+            "id": initiative,
+            "repo": repos.get(initiative, ""),
+            "surfaces": sorted(
+                {s for i in items if i["initiative"] == initiative and i.get("state") in STEER_STATES for s in _surfaces_of(i)}
+            ),
+        }
+        for initiative in sorted(live)
+    ]
+
+
+def _action_doc(row: Row) -> Row:
+    raw = row.get("action_json")
+    doc = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+    return {**row, **(doc if isinstance(doc, dict) else {})}
+
+
+def _streak_step(streaks: Mapping[str, int], doc: Row) -> dict[str, int]:
+    initiative = doc.get("initiative") or doc.get("target")
+    if doc.get("kind") == "steer_clear" and initiative and doc.get("other"):
+        key = f"{initiative}|{doc['other']}"
+        return {**streaks, key: streaks.get(key, 0) + 1}
+    if doc.get("kind") in LAUNCH_KINDS and initiative:
+        return {k: n for k, n in streaks.items() if k.partition("|")[0] != initiative}
+    return dict(streaks)
+
+
+def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
+    """`<initiative>|<other>` to its steer_clear count since that initiative's last launch; no record, no key."""
+    ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
+    return reduce(_streak_step, map(_action_doc, ordered), {})
+
+
+def read_ticket_items(ws: Path, mode: str) -> list[dict]:
+    """Edge. Every ticket under `ws/work`, parsed as the docket reader parses it, its state from the store in "store" mode."""
+    return chair_read_docket._work_items(ws, mode)
+
+
+def read_initiative_repos(ws: Path) -> dict[str, str]:
+    """Edge. Initiative id to the `repo:` in `work/<initiative>/initiative.md`; an unreadable file or no `repo:` is left out."""
+    texts = {p.parent.name: chair_read_docket._text(p) for p in sorted((ws / "work").glob("*/initiative.md"))}
+    fields = {name: route.parse_frontmatter(text)[0] for name, text in texts.items() if text is not None}
+    return {name: f["repo"] for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
+
+
+def initiative_facts(
+    docket: Row,
+    live: Collection[str],
+    surfaces: Mapping[str, list[str]] | None = None,
+    repos: Mapping[str, str] | None = None,
+) -> list[InitiativeFacts]:
+    """The docket's initiatives with no live run, so a live run is never relaunched.
+
+    `repo` and `ready_surfaces` ride along only when their source was read."""
     return [
         {
             "id": i["id"],
@@ -308,6 +391,8 @@ def initiative_facts(docket: Row, live: Collection[str]) -> list[InitiativeFacts
                 for t in i.get("waiting_tasks", [])
             ],
             "landed": set(i["landed"]),
+            **({"ready_surfaces": list(surfaces.get(i["id"], []))} if surfaces is not None else {}),
+            **({"repo": repos[i["id"]]} if repos is not None and i["id"] in repos else {}),
         }
         for i in docket["initiatives"]
         if i["id"] not in live
@@ -428,7 +513,14 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     dispatch = deps.dispatch(docket) if deps.dispatch else dispatch_facts(docket, [], {"": int(docket["busy_lanes"])})
     live = set(deps.live_initiatives())
     approved = approved_facts(deps.approved())
-    initiatives = initiative_facts({"initiatives": ready}, live)
+    items = list(deps.tickets()) if deps.tickets is not None else []
+    repos = dict(deps.repos()) if deps.repos is not None else {}
+    ready_ids = {i["id"]: {t["id"] for t in i["ready_tasks"]} for i in ready}
+    initiatives = initiative_facts(
+        {"initiatives": ready}, live,
+        ticket_surfaces(items, ready_ids) if deps.tickets is not None else None,
+        repos if deps.repos is not None else None,
+    )
     newest_run_host = dict(deps.newest_run_host()) if deps.newest_run_host is not None else {}
     # An approved row is, by construction, an approved task not yet landed; `chair_plan_prune.phases_to_carry`
     # draws its carried-partial-phase set from these same rows, so their initiatives cover both cases home tracks.
@@ -479,4 +571,6 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "review_prs": list(deps.review_prs()),
         "stranded": [],  # empty until the facts task gathers stranded phases
         "phase_branches": [],  # empty until the facts task gathers phase branches
+        "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
+        "steer_streaks": steer_streaks_from_actions(list(deps.actions())) if deps.actions is not None else {},
     }
