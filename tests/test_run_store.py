@@ -129,6 +129,15 @@ def test_latest_chair_meter_returns_the_row_with_the_newer_ts(tmp_path):
     assert run_store.latest_chair_meter(tmp_path) == METER_DOC
 
 
+def test_latest_chair_meter_ignores_a_newer_row_of_another_kind(tmp_path):
+    chair_actions_table(
+        tmp_path,
+        {"kind": "meter", "ts": "2026-09-29T00:00:00+00:00", "action_json": json.dumps(METER_DOC)},
+        {"kind": "housekeeping", "ts": "2026-09-29T00:05:00+00:00", "action_json": "{}"},
+    )
+    assert run_store.latest_chair_meter(tmp_path) == METER_DOC
+
+
 def test_latest_chair_meter_is_none_with_no_meter_row(tmp_path):
     chair_actions_table(tmp_path, {"kind": "housekeeping", "ts": "2026-09-29T00:00:00+00:00", "action_json": "{}"})
     assert run_store.latest_chair_meter(tmp_path) is None
