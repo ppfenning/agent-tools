@@ -90,6 +90,7 @@ def test_snapshot_matches_committed_fixture():
             "cost": 0.84,
             "verdict": "approve",
             "status": "running",
+            "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]],
         },
         {
             "run": "dash-feed-0",
@@ -101,6 +102,7 @@ def test_snapshot_matches_committed_fixture():
             "cost": 2.15,
             "verdict": "approve",
             "status": "landed",
+            "cost_series": [],
         },
         {
             "run": "dash-feed-9",
@@ -112,6 +114,7 @@ def test_snapshot_matches_committed_fixture():
             "cost": 0.42,
             "verdict": "reject",
             "status": "quarantined",
+            "cost_series": [],
         },
     ]
     queue = [
@@ -141,7 +144,9 @@ def test_snapshot_matches_committed_fixture():
         }
     ]
 
-    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch, decisions)
+    spend_series = [["2026-09-28T23:40:00Z", 0.42], ["2026-09-28T23:50:00Z", 0.84]]
+
+    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch, decisions, spend_series)
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)

@@ -39,7 +39,9 @@ from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
 from agent_tools.dash_chair_counters import chair_counters
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
+from agent_tools.dash_cost_series import run_cost_series
 from agent_tools.dash_finished_runs import LIMIT, finished_runs
+from agent_tools.dash_spend_series import spend_series as _spend_series
 from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
 from agent_tools.runs_top_screen import calls_from_usage
@@ -58,16 +60,19 @@ _GRAPH_NAMES = ("epic", "decompose", "rescue", "cos", "sweep")
 _SEATS = frozenset((*NODE_ORDER, *_GRAPH_NAMES))
 
 
-def snapshot(at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=()) -> dict:
+def snapshot(
+    at, chair, spend, machines, runs, queue, queue_total, inbox, inbox_total, watch, decisions=(), spend_series=(),
+) -> dict:
     """Assemble the schema-1 dash feed snapshot from its sections. `queue_total`/`inbox_total` are each
     section's filtered count before the 50-row cap, for coxtop to render "50 of N". `decisions` is the open
-    decision asks, newest first."""
+    decision asks, newest first. `spend_series` is today's cumulative lane spend as `[at, cumulative_usd]` pairs."""
     # coxswain-dash carries its own copy of tests/fixtures/dash_feed_v1.json and will need these two fields too.
     return {
         "schema": 1,
         "at": at,
         "chair": chair,
         "spend": spend,
+        "spend_series": [list(point) for point in spend_series],
         "machines": machines,
         "runs": runs,
         "queue": queue,
@@ -407,6 +412,8 @@ def _finished_record(row: Mapping, calls: Sequence[Mapping], phases: Sequence[st
         "verdict": verdicts[-1] if verdicts else "",
         "status": _finished_status(row),
         "ended_at": row["ended_at"],
+        # Carried so `gather_feed` reads each run's calls once; `finished_runs` drops keys it does not know.
+        "calls": list(calls),
     }
 
 
@@ -427,10 +434,45 @@ def _finished_records(runs_dir: Path, live_ids: Collection[str]) -> list[dict]:
     return records
 
 
-def _runs_v1(lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime) -> list[dict]:
-    """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped."""
+def _run_calls(runs_dir: Path, run: str) -> list[dict]:
+    """Edge: a run's calls as `calls_from_usage` rows. `run_store.usage` reads `<run>.usage.json` beside the pidfile for a local run and the shared store rows for a remote one; `[]` when neither has any."""
+    return calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+
+
+def _call_points(calls: Sequence[Mapping]) -> list[dict]:
+    """`calls_from_usage` rows as the `{at, cost_usd, node}` calls `run_cost_series` takes; a call with no `ts` is dropped."""
+    return [
+        {"at": call["ts"], "cost_usd": float(call.get("cost_usd") or 0.0), "node": call["node"]}
+        for call in calls
+        if call.get("ts")
+    ]
+
+
+def _utc(text) -> datetime | None:
+    """An ISO `text` as an aware datetime, a naive one read as UTC; None when it cannot be read."""
+    try:
+        parsed = _parse_now(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _spend_points(calls_by_run: Mapping[str, Sequence[Mapping]]) -> list[tuple[datetime, float]]:
+    """Every run's calls as the `(time, cost_usd)` pairs `spend_series` takes; a call with no readable `ts` is dropped."""
+    stamped = [(_utc(call.get("ts")), call) for calls in calls_by_run.values() for call in calls if call.get("ts")]
+    return [(ts, float(call.get("cost_usd") or 0.0)) for ts, call in stamped if ts is not None]
+
+
+def _runs_v1(
+    lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
+    calls_by_run: Mapping[str, Sequence[Mapping]] | None = None,
+) -> list[dict]:
+    """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
+    Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`."""
     aware = now if now.tzinfo else now.replace(tzinfo=UTC)
-    return [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
+    rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
+    by_run = calls_by_run or {}
+    return [{**row, "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ())))} for row in rows]
 
 
 def _queue_v1(row: dict) -> dict:
@@ -520,6 +562,12 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
     blob = _courier_blob(work_dir)
     entries = courier.inbox(blob)
     inbox, inbox_total = _inbox(entries)
+    lane_ids = {lane.run for lane in sections["lanes"]}
+    records = _finished_records(runs_dir, lane_ids)
+    calls_by_run = {
+        **{run: _run_calls(runs_dir, run) for run in lane_ids},
+        **{record["run"]: record["calls"] for record in records},
+    }
     return snapshot(
         now,
         _chair_v1(
@@ -532,14 +580,12 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         ),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
-        _runs_v1(
-            sections["lanes"], local_name,
-            _finished_records(runs_dir, {lane.run for lane in sections["lanes"]}), at,
-        ),
+        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run),
         [_queue_v1(row) for row in queue],
         queue_total,
         [_inbox_v1(entry) for entry in inbox],
         inbox_total,
         [],
         _open_decisions(entries, blob),
+        _spend_series(_spend_points(calls_by_run), at),
     )
