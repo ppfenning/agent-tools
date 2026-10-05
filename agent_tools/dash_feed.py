@@ -11,7 +11,8 @@ import os
 import re
 import socket
 import subprocess
-from datetime import datetime, timedelta
+from collections.abc import Collection, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_tools import (
@@ -26,6 +27,10 @@ from agent_tools import (
     usage_meter,
     usage_window,
 )
+from agent_tools import (
+    events as events_module,
+)
+from agent_tools.chair_read_exits import exit_rows
 from agent_tools.chair_read_housekeeping import latest_housekeeping
 from agent_tools.chair_read_record import ACTION_LOG
 from agent_tools.chair_types import EASTERN
@@ -34,8 +39,10 @@ from agent_tools.dash_chair_attention import chair_attention
 from agent_tools.dash_chair_beat import beat_age_s, read_status_record, status_from_store
 from agent_tools.dash_chair_counters import chair_counters
 from agent_tools.dash_chair_today import _ts, chair_today, local_midnight
+from agent_tools.dash_finished_runs import LIMIT, finished_runs
 from agent_tools.draft_list import read_drafts
 from agent_tools.runs_detail import NODE_ORDER
+from agent_tools.runs_top_screen import calls_from_usage
 
 __all__ = ["gather_feed", "snapshot"]
 
@@ -381,6 +388,51 @@ def _run_v1(lane: console_screen.LaneRow, local_name: str) -> dict:
     }
 
 
+def _finished_status(row: Mapping) -> str:
+    """An ended run is approved, landed or quarantined when the store says so, and exited otherwise."""
+    return row["status"] if row.get("status") in ("approved", "landed", "quarantined") else "exited"
+
+
+def _finished_record(row: Mapping, calls: Sequence[Mapping], phases: Sequence[str], events: Sequence) -> dict:
+    """A `runs` row with its calls, phases and events as the record `finished_runs` takes. `machine` is empty: the row carries no host."""
+    verdicts = [e.detail["verdict"] for e in events if e.kind == "verdict"]
+    return {
+        "run": row["run_id"],
+        "machine": "",
+        "phase": phases[-1] if phases else "",
+        "node": calls[-1]["node"] if calls else "",
+        "attempt": calls[-1]["attempt"] if calls else 0,
+        "turns": sum(int(c["turns"] or 0) for c in calls),
+        "cost": round(sum(float(c["cost_usd"] or 0.0) for c in calls), 4),
+        "verdict": verdicts[-1] if verdicts else "",
+        "status": _finished_status(row),
+        "ended_at": row["ended_at"],
+    }
+
+
+def _finished_records(runs_dir: Path, live_ids: Collection[str]) -> list[dict]:
+    """Edge: the newest `LIMIT` ended runs outside `live_ids`, each read the way `runs_top_screen._fact` reads a run."""
+    ended = [r for r in exit_rows(runs_dir) if r["ended_at"] is not None and r["run_id"] not in live_ids]
+    records = []
+    for row in sorted(ended, key=lambda r: str(r["ended_at"]), reverse=True)[:LIMIT]:
+        run = str(row["run_id"])
+        try:
+            lines = (runs_dir / f"{run}.log").read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            lines = []
+        calls = calls_from_usage((run_store.usage(runs_dir, run) or {}).get("calls") or [])
+        records.append(
+            _finished_record(row, calls, run_store.phase_names(runs_dir, run), events_module.from_log(run, lines))
+        )
+    return records
+
+
+def _runs_v1(lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime) -> list[dict]:
+    """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped."""
+    aware = now if now.tzinfo else now.replace(tzinfo=UTC)
+    return [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
+
+
 def _queue_v1(row: dict) -> dict:
     return {**row, "priority": int(row.get("priority") or 0), "current_phase": str(row.get("current_phase") or "")}
 
@@ -480,7 +532,10 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         ),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
-        [_run_v1(lane, local_name) for lane in sections["lanes"]],
+        _runs_v1(
+            sections["lanes"], local_name,
+            _finished_records(runs_dir, {lane.run for lane in sections["lanes"]}), at,
+        ),
         [_queue_v1(row) for row in queue],
         queue_total,
         [_inbox_v1(entry) for entry in inbox],

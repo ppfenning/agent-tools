@@ -90,7 +90,29 @@ def test_snapshot_matches_committed_fixture():
             "cost": 0.84,
             "verdict": "approve",
             "status": "running",
-        }
+        },
+        {
+            "run": "dash-feed-0",
+            "machine": "omarchy",
+            "phase": "p1-foundations",
+            "node": "build",
+            "attempt": 2,
+            "turns": 31,
+            "cost": 2.15,
+            "verdict": "approve",
+            "status": "landed",
+        },
+        {
+            "run": "dash-feed-9",
+            "machine": "omarchy",
+            "phase": "p2-feed",
+            "node": "review",
+            "attempt": 1,
+            "turns": 8,
+            "cost": 0.42,
+            "verdict": "reject",
+            "status": "quarantined",
+        },
     ]
     queue = [
         {
