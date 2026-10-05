@@ -22,6 +22,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict
 from agent_tools import (
     chair,
     chair_apply_fetch,
+    chair_apply_review,
     chair_housekeeping,
     chair_login_check,
     chair_login_watch,
@@ -672,6 +673,30 @@ def _stalled(action: Action, deps: Deps, sig: int) -> Result:
     return _result(action, "done")
 
 
+def _review_landed(action: Action, deps: Deps) -> Result:
+    """Edge. `chair_apply_review.apply_review` over this tick's store, git and ssh doors."""
+
+    def delete_branches(ssh: str, repo: str, pattern: str) -> tuple[list[str], str]:
+        return (_over_ssh(deps, ssh) if ssh else deps).delete_branches(repo, pattern)
+
+    outcome = chair_apply_review.apply_review(
+        action,
+        set_state=partial(store_cli.set_state, deps.runs_dir),
+        mark_landed=partial(store_cli.mark_landed, deps.runs_dir),
+        delete_branches=delete_branches,
+        ssh_for=deps.ssh_for,
+        now=deps.now,
+    )
+    if outcome.status != "needs_chair":
+        return _result(action, outcome.status, outcome.reason)
+    raised: Action = {
+        "kind": "needs_chair", "initiative": action.get("initiative", ""), "phase": action.get("phase", ""),
+        "task_id": action.get("task_id", ""), "url": action.get("url", ""), "cause": outcome.cause,
+        "epoch": action.get("epoch", 0), "reason": outcome.reason,
+    }
+    return {**_result(action, "refused", outcome.reason), "needs_chair": raised}
+
+
 def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     kind = action.get("kind")
     if (
@@ -685,6 +710,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _land_phase(action, deps, blocked)
     if kind == "clear_branches":
         return _clear(action, deps, blocked)
+    if kind == "review_landed":
+        return _review_landed(action, deps)
     if kind == "take_lease":
         return _lease(action, deps)
     if kind == "check_login":
@@ -797,7 +824,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
-        if action.get("kind") == "clear_branches" and "needs_chair" in result:
+        if action.get("kind") in ("clear_branches", "review_landed") and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
