@@ -44,8 +44,8 @@ from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
 
 __all__ = [
-    "FetchError", "FetchPlan", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "pull_argvs",
-    "refuse_unended", "task_repos",
+    "FetchError", "FetchPlan", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "probe_argv",
+    "pull_argvs", "refuse_unended", "task_repos",
 ]
 
 
@@ -90,6 +90,12 @@ def pull_argvs(run_location: str, log_location: str, chair_runs_dir: str, run: s
         rsync_pull_argv(run_location.rstrip("/") + "/", f"{runs}/{run}/"),
         rsync_pull_argv(log_location, runs + "/"),
     ]
+
+
+def probe_argv(location: str) -> list[str]:
+    """A bounded `rsync --list-only` of one location; the `.` destination is required by the builder and never written."""
+    argv = rsync_pull_argv(location, ".")
+    return [argv[0], "--list-only", *argv[1:]]
 
 
 def fetch_plan(
@@ -150,8 +156,8 @@ def fetch_run(
     # A cheap probe over the same connection rsync uses, so a run directory that never existed
     # (the run stopped before writing anything) is planned for, instead of rsynced blind and retried
     # forever on its exit-23 "No such file or directory".
-    run_dir_exists = run_cmd(["rsync", "--list-only", run_location]) == 0
-    log_exists = run_cmd(["rsync", "--list-only", log_location]) == 0
+    run_dir_exists = run_cmd(probe_argv(run_location)) == 0
+    log_exists = run_cmd(probe_argv(log_location)) == 0
     chair_runs_dir.mkdir(parents=True, exist_ok=True)
     plan = fetch_plan(run_location, log_location, str(chair_runs_dir), run, run_dir_exists, log_exists)
     for argv in plan.pull_argvs:
@@ -167,6 +173,7 @@ def fetch_run(
         return FetchError("repos", f"no task record under {chair_runs_dir / run}/tasks names a repo")
     for repo in repos:
         # git_fetch_argv has no repo selector, so `-C` goes in after its leading "git".
+        # git runs its own ssh transport, so no 30s bound from this file applies to this call.
         fetch = git_fetch_argv(place(host_repo_path(chair_ws, host_ws, repo)), run)
         code = run_cmd(["git", "-C", repo, *fetch[1:]])
         if code != 0:

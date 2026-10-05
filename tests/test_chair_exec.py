@@ -2,6 +2,7 @@ import json
 import shlex
 import signal
 import subprocess
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent_tools.chair_exec import (
     land_refusal,
     perform,
     run_argv,
+    run_lane_host,
     smoke_targets,
     tail,
 )
@@ -917,6 +919,57 @@ def test_the_loop_takes_the_lease_under_its_own_host_though_the_action_names_non
 
 def test_a_command_past_its_timeout_is_exit_124_not_an_exception() -> None:
     assert run_argv(["sleep", "5"], timeout=0.2)[0] == 124
+
+
+def test_a_lane_host_ssh_that_times_out_fails_with_its_partial_output_and_is_not_retried(monkeypatch) -> None:
+    seen: list = []
+
+    def hung(argv, **kwargs):
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(argv, 30, output=b"visit https://login.example/x\n", stderr="waiting\n")
+
+    monkeypatch.setattr(chair_exec.subprocess, "run", hung)
+    code, output = run_lane_host(["ssh", "h", "true"])
+    assert code == 124
+    assert "https://login.example/x" in output and "waiting" in output
+    assert [kwargs["timeout"] for kwargs in seen] == [30]
+
+
+def test_a_hung_lane_host_child_is_cut_off_at_the_bound_not_awaited(monkeypatch) -> None:
+    monkeypatch.setattr(chair_exec, "LANE_HOST_TIMEOUT_S", 0.5)
+    hung = ["sh", "-c", "echo partial; exec sleep 30"]
+    started = time.monotonic()
+    code, output = run_lane_host(hung)
+    assert code == 124
+    assert "partial" in output
+    assert time.monotonic() - started < 3
+
+
+def test_the_real_run_door_bounds_an_ssh_argv_and_leaves_any_other_unbounded(monkeypatch, tmp_path) -> None:
+    seen: list = []
+    monkeypatch.setattr(chair_exec.subprocess, "run", lambda argv, **kw: seen.append((argv[0], kw["timeout"])) or subprocess.CompletedProcess(argv, 0, "", ""))
+    deps = chair_exec.edge_deps(
+        tmp_path, tmp_path, "s", 1, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
+        host="h", harness_python="/venv/bin/python",
+    )
+    deps.run(["ssh", "h", "true"])
+    deps.run(["git", "-C", "/r", "push", "u@h:/r", "refs/heads/b:refs/heads/b"])
+    deps.run(["git", "status"])
+    assert seen == [("ssh", 30), ("git", 30), ("git", None)]
+
+
+def test_a_timed_out_branch_check_on_the_host_is_a_failure_not_an_absent_branch() -> None:
+    remote: list = []
+    local: list = []
+
+    def at_home(argv):
+        remote.append(argv)
+        return 124, "ssh: timed out after 30s\nhalf a line"
+
+    deps = replace(_deps([]), run=lambda argv: local.append(argv) or (1, ""))
+    present, error = chair_exec._branch_on_host(deps, at_home, "u@h", "/r", "b")
+    assert (present, len(remote), local) == (False, 1, [])
+    assert "timed out after 30s" in error and "half a line" in error
 
 
 def test_an_intake_with_an_id_yields_that_id() -> None:
