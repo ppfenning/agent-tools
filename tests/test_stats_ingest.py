@@ -446,16 +446,19 @@ _STORE_TABLES = {
 _ENDED = "2026-09-25T05:03:46+00:00"
 
 
-def _write_store(runs_dir, run_id, *, roles=(), phases=()):
-    """A `cox.db` holding one ended run: a `node_calls` row per role and a `phases` row per phase."""
+def _write_store(runs_dir, run_id, *, roles=(), phases=(), models=()):
+    """A `cox.db` holding one ended run: a `node_calls` row per role and a `phases` row per phase.
+    `models` is an optional `(model_alias, model_id)` pair per role, in role order."""
     conn = sqlite3.connect(runs_dir / "cox.db")
     for name, columns in _STORE_TABLES.items():
         conn.execute(f"CREATE TABLE {name} ({columns})")
     conn.execute("INSERT INTO runs (run_id, ended_at, status) VALUES (?, ?, 'ok')", (run_id, _ENDED))
     for seq, role in enumerate(roles):
+        alias, model_id = models[seq] if seq < len(models) else (None, None)
         conn.execute(
-            "INSERT INTO node_calls (call_id, run_id, seq, role, cost_usd, ok, ts) VALUES (?, ?, ?, ?, 0.5, 1, ?)",
-            (f"c{seq}", run_id, seq, role, f"2026-09-25T04:3{seq}:00+00:00"),
+            "INSERT INTO node_calls (call_id, run_id, seq, role, model_alias, model_id, cost_usd, ok, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0.5, 1, ?)",
+            (f"c{seq}", run_id, seq, role, alias, model_id, f"2026-09-25T04:3{seq}:00+00:00"),
         )
     for n, phase in enumerate(phases):
         record = {"manifest_record": {"run_id": f"{run_id}:{phase}", "cartridge_team": "pat", "human_minutes": 1.0}}
@@ -502,6 +505,32 @@ def test_a_store_only_ended_run_is_discovered_and_ingested_with_its_calls_and_ph
     assert report.runs_ingested == 1
     assert calls == [("scope_epic",), ("build",)]
     assert team == ("pat",)
+
+
+def test_a_node_call_with_a_model_id_lands_with_that_id_and_its_alias_still_in_model(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("build",), models=(("haiku", "claude-haiku-4-5-20251001"),))
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    row = conn.execute("SELECT model, model_id FROM calls WHERE run_id = 'sr1'").fetchone()
+    conn.close()
+    assert row == ("haiku", "claude-haiku-4-5-20251001")
+
+
+def test_a_node_call_with_no_model_id_lands_with_model_id_null_not_the_alias(tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    _write_store(runs_dir, "sr1", roles=("build",), models=(("haiku", None),))
+
+    stats_ingest.ingest(runs_dir, tmp_path / "stats.db")
+
+    conn = connect(tmp_path / "stats.db")
+    row = conn.execute("SELECT model, model_id FROM calls WHERE run_id = 'sr1'").fetchone()
+    conn.close()
+    assert row == ("haiku", None)
 
 
 def test_a_run_with_files_ignores_the_store_rows_for_the_same_run(tmp_path):

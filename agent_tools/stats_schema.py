@@ -63,6 +63,7 @@ CALLS_COLUMNS = (
     Column("attempt", "INTEGER"),
     Column("tier", "TEXT"),
     Column("model", "TEXT"),
+    Column("model_id", "TEXT"),
     Column("cost_usd", "REAL"),
     Column("turns", "INTEGER"),
     Column("duration_ms", "INTEGER"),

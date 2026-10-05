@@ -50,6 +50,7 @@ def test_calls_columns_match_spec_names_verbatim_and_keep_the_join_columns():
         "attempt",
         "tier",
         "model",
+        "model_id",
         "cost_usd",
         "turns",
         "duration_ms",
@@ -159,6 +160,17 @@ def test_ensure_schema_adds_a_missing_column_with_its_default_without_dropping_r
 
     row = conn.execute("SELECT run_id, vendor FROM runs WHERE run_id = 'r1'").fetchone()
     assert row == ("r1", "claude-code")
+
+
+def test_ensure_schema_adds_model_id_to_an_existing_calls_table_and_keeps_its_rows(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "stats.db"))
+    conn.execute("CREATE TABLE calls (run_id TEXT, seq INTEGER, model TEXT)")
+    conn.execute("INSERT INTO calls (run_id, seq, model) VALUES ('r1', 0, 'haiku')")
+    conn.commit()
+
+    ensure_schema(conn)
+
+    assert conn.execute("SELECT model, model_id FROM calls").fetchall() == [("haiku", None)]
 
 
 def test_a_calls_row_inserted_without_challenger_reads_back_zero_not_null(tmp_path):
