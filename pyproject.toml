@@ -10,7 +10,7 @@ version = "0.28.0"
 description = "The coxswain's operator tools behind the `cox` command; `agent-tools` is a deprecated alias for one release."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 # zstandard reads the trace store; since the 0.17 cutover a run's traces live only there.
 dependencies = ["pyyaml>=6", "zstandard>=0.23"]
 

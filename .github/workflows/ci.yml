@@ -13,14 +13,14 @@ jobs:
         run: python3 .github/check_clean.py
       - name: ruff (rules in pyproject.toml; pre-commit mirrors it)
         run: pip install ruff==0.16.6 && ruff check .
-  py312:
-    # The suite on Python 3.12, the supported floor. Not in the branch ruleset, which requires
-    # `test` by name, so a red run here is a finding, not a merge block.
+  py315:
+    # The suite on Python 3.15, a canary ahead of the 3.14 floor. Not in the branch ruleset, which
+    # requires `test` by name, so a red run here is a finding, not a merge block.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with: { python-version: "3.15" }
       - run: pip install -e ".[dev]"
       - run: pytest -q
   extras:
@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       - run: pip install -e ".[dev,postgres,parquet,lake]"
       # Fails here, with the import error, rather than as a pytest run that skipped them all.
       - run: python -c "import psycopg, pyarrow, pyiceberg, duckdb"
