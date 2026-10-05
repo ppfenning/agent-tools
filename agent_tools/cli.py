@@ -5546,7 +5546,7 @@ SETTINGS_COMMANDS = [
     commands.Command(
         "set", "settings", "change one setting: print the diff, write the file, commit it when git tracks it",
         (
-            commands.Arg(("scope",), {"choices": ("cartridge", "profile")}),
+            commands.Arg(("scope",), {"choices": ("cartridge", "profile", "host")}),
             commands.Arg(("key",)),
             commands.Arg(("value",)),
             commands.Arg(("--dry-run",), {"action": "store_true"}),
