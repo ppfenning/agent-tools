@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
+REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
 
 
 class LeaseFacts(TypedDict):
@@ -96,6 +97,18 @@ class ApprovedTask(TypedDict):
     needs: list[str]
     run: str  # the newest run whose task record is approved and unlanded; empty when none is
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
+
+
+class ReviewPr(TypedDict):
+    """An approved task whose review PR the forge is asked about; state is "unknown" when the forge said nothing."""
+
+    initiative: str
+    phase: str
+    task_id: str
+    repo: str
+    url: str
+    state: Literal["open", "merged", "closed", "unknown"]
+    merged_at: str | None
 
 
 class ReadyTask(TypedDict):
@@ -187,6 +200,7 @@ class Facts(TypedDict):
     # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet
     # landed) maps to that run's host, "" meaning this machine; nothing consumes this yet.
     home: dict[str, str]
+    review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
 
 
 ActionKind = Literal[
@@ -210,6 +224,7 @@ ActionKind = Literal[
     "check_login",
     "stalled_usr1",
     "stalled_stop",
+    "review_landed",
 ]
 
 
@@ -219,7 +234,8 @@ class Action(TypedDict, total=False):
     harness_failures or any retry cap. check_login carries host, performs an ssh call and a store
     write, and like mark_lost never touches the attempts table. needs_chair carries either
     initiative and cause, or host and cause when the entry names a lane host rather than an
-    initiative; when host is present cause is "login_lapsed" and there is no initiative key."""
+    initiative; when host is present cause is "login_lapsed" and there is no initiative key.
+    review_landed carries initiative, phase, task_id, repo, url and merged_at."""
 
     kind: ActionKind
     epoch: int
@@ -237,6 +253,8 @@ class Action(TypedDict, total=False):
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into
+    url: str  # a review_landed names the review PR
+    merged_at: str | None  # a review_landed names when that PR merged
 
 
 class PlanLands(Protocol):

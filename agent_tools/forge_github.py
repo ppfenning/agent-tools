@@ -26,6 +26,32 @@ def find_open_prs(repo: Path, branch: str) -> list[int] | str:
         return f"could not read the open pull requests for {branch}: {r.stdout.strip()}"
 
 
+UNKNOWN_PR_STATE = {"state": "unknown", "merged_at": None}
+_PR_STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
+
+
+def parse_pr_state(stdout: str) -> dict:
+    """`gh pr view --json state,mergedAt` output as `{"state", "merged_at"}`; `merged_at` is gh's UTC string, set only when merged."""
+    try:
+        data = json.loads(stdout)
+    except (ValueError, TypeError):
+        return dict(UNKNOWN_PR_STATE)
+    raw = data.get("state") if isinstance(data, dict) else None
+    state = _PR_STATES.get(raw) if isinstance(raw, str) else None
+    if state is None:
+        return dict(UNKNOWN_PR_STATE)
+    merged_at = data.get("mergedAt")
+    return {"state": state, "merged_at": merged_at if state == "merged" and isinstance(merged_at, str) else None}
+
+
+def pr_state(url: str) -> dict:
+    try:
+        r = subprocess.run(["gh", "pr", "view", url, "--json", "state,mergedAt"], capture_output=True, text=True)
+    except OSError:
+        return dict(UNKNOWN_PR_STATE)
+    return parse_pr_state(r.stdout) if r.returncode == 0 else dict(UNKNOWN_PR_STATE)
+
+
 def push(repo: Path, branch: str) -> tuple[bool, str]:
     r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", branch], capture_output=True, text=True)
     return r.returncode == 0, (branch if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
