@@ -80,7 +80,7 @@ cox versions [--root ROOT] [--manifest MANIFEST]   component versions against th
 cox console [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--interval INTERVAL] [--once] [--profile PROFILE]   one screen of hosts, drafts, lanes and the chair; keys run cox commands after a y/n
 cox dash [--runs-dir RUNS_DIR] [--work-dir WORK_DIR] [--feed] [--once] [--interval INTERVAL] [--detail KIND]   a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind
 cox settings get [--json] [--profile PROFILE]   print every setting present, grouped by section
-cox settings set cartridge|profile KEY VALUE [--dry-run] [--profile PROFILE]   change one setting: print the diff, write the file, commit it when git tracks it
+cox settings set cartridge|profile|host KEY VALUE [--dry-run] [--profile PROFILE]   change one setting: print the diff, write the file, commit it when git tracks it
 cox install --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--edge] [--dry-run]   clone/update coxswain components against the manifest
 cox upgrade --root ROOT [--manifest MANIFEST] [--provider PROVIDER] [--with FLAG] [--team TEAM] [--workspace WORKSPACE] [--to TO] [--dry-run]   fetch and check out newer pinned versions; refuses dirty checkouts
 cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog

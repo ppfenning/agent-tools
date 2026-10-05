@@ -8,6 +8,7 @@ broken or non-mapping document).
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -151,9 +152,42 @@ def git_commit(path: Path, message: str) -> str | None:
     return None if done.returncode == 0 else (done.stderr.strip() or done.stdout.strip() or "git commit failed")
 
 
+def parse_host_capacity(key: str, value: str) -> tuple[str, int] | str:
+    """The (host, n) of `<host>.capacity N`, or an error message. Host names may contain dots, so the split is on the last one."""
+    host, _, field = key.rpartition(".")
+    if not host or field != "capacity":
+        return f"host key must be <host>.capacity, got {key!r}"
+    try:
+        return host, int(value)
+    except ValueError:
+        return f"host capacity must be an integer, got {value!r}"
+
+
+def capacity_command(host: str, n: int) -> str:
+    return f"cox host capacity {host} {n}"
+
+
+def _run_set_host(profile_path: Path, key: str, value: str, dry_run: bool) -> int:
+    """Edge. Writes through `cli._host_capacity`, the function `cox host capacity` calls."""
+    parsed = parse_host_capacity(key, value)
+    if isinstance(parsed, str):
+        print(f"error: {parsed}")
+        return 1
+    host, n = parsed
+    if dry_run:
+        print(capacity_command(host, n))
+        return 0
+    from agent_tools.cli import _host_capacity  # cli imports this module, so a top-level import is circular
+
+    return _host_capacity(argparse.Namespace(profile=str(profile_path), name=host, n=n, json=False))
+
+
 def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool) -> int:
     """Edge. Plan the change against the target file's text and print the diff. Unless `dry_run`, write
-    it, and commit it as the caller when git tracks the file; a machine-local file is written only."""
+    it, and commit it as the caller when git tracks the file; a machine-local file is written only.
+    The `host` scope writes the hosts table instead of a file."""
+    if scope == "host":
+        return _run_set_host(profile_path, key, value, dry_run)
     profile_text = _read_text_or_none(profile_path)
     _, profile = parse_documents(None, profile_text)
     path = target_path(scope, profile_path, profile)
