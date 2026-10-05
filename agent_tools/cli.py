@@ -5153,6 +5153,9 @@ def _dash(a: argparse.Namespace) -> int:
 
 def _home(a: argparse.Namespace) -> int:
     from agent_tools import home_screen
+    # `--profile` keeps the curses screen: coxtop takes no profile, and bare `cox` treats the flag the same way
+    if home_target(sys.stdin.isatty(), sys.stdout.isatty(), shutil.which("coxtop") is not None, a.profile is not None) == "coxtop":
+        os.execvp("coxtop", ["coxtop"])
     profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
     if refuse_rc is not None:
         return refuse_rc
@@ -5161,6 +5164,14 @@ def _home(a: argparse.Namespace) -> int:
     return home_screen.main(
         runs_dir, workspace / "work", workspace / "intake", str(plugin_root or ""),
         window_ceiling_usd=profile.get("window_ceiling_usd"),
+    )
+
+
+def _session(a: argparse.Namespace) -> int:
+    """`cox session`: the coxswain Claude session, with the argv bare `cox` uses."""
+    return _launcher(
+        argparse.Namespace(launcher_profile=a.profile, no_plugin=a.session_no_plugin, print_argv=a.session_print_argv),
+        a.session_extra,
     )
 
 
@@ -5562,6 +5573,20 @@ UPGRADE_GROUP = commands.Group(
 HOME_GROUP = commands.Group(
     name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
     args=(commands.Arg(("--profile",)),), fn=_home,
+)
+
+SESSION_GROUP = commands.Group(
+    name="session", help="open the coxswain Claude session",
+    description="Open the coxswain Claude session: the argv bare `cox` used before coxtop became the entry point.",
+    epilog="examples:\n  cox session\n  cox session --print-argv\n  cox session -- -r resume-me",
+    args=(
+        commands.Arg(("--profile",), {"help": "the profile to launch claude against"}),
+        # distinct dests: the top-level parser owns no_plugin and print_argv, and argparse copies a matched subparser's namespace over it
+        commands.Arg(("--no-plugin",), {"action": "store_true", "dest": "session_no_plugin", "help": "start claude without --plugin-dir"}),
+        commands.Arg(("--print-argv",), {"action": "store_true", "dest": "session_print_argv", "help": "print the claude argv and cwd instead of exec'ing it"}),
+        commands.Arg(("session_extra",), {"nargs": "*", "metavar": "CLAUDE_ARG", "help": "after --: passed to claude verbatim, as bare cox does"}),
+    ),
+    fn=_session,
 )
 
 USAGE_GROUP = commands.Group(
@@ -6069,7 +6094,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox opens the coxswain session\n"
+            "  bare cox on a terminal opens coxtop, the entry point and live dashboard\n"
+            "  cox session opens the coxswain Claude session\n"
             "  cox setup doctor checks this machine\n"
             "  cox route launch epic runs a filed initiative"
         ),
@@ -6149,6 +6175,9 @@ def build_parser() -> argparse.ArgumentParser:
     old_rel.set_defaults(fn=_dev_moved)
 
     group, rows = _table_entry("home")
+    commands.build_parser(rows, [group], sub)
+
+    group, rows = _table_entry("session")
     commands.build_parser(rows, [group], sub)
 
     group, rows = _table_entry("setup")
@@ -7586,6 +7615,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (INSTALL_GROUP, []),
     (UPGRADE_GROUP, []),
     (HOME_GROUP, []),
+    (SESSION_GROUP, []),
     (STATS_GROUP, STATS_COMMANDS),
     (LAKE_GROUP, LAKE_COMMANDS),
     (USAGE_GROUP, USAGE_COMMANDS),
@@ -7609,15 +7639,15 @@ def _table_entry(name: str) -> tuple[commands.Group, list[commands.Command]]:
     return next((group, rows) for group, rows in COMMAND_TABLE if group.name == name)
 
 
-def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
-    """Bare `cox` (spec §7): a real Claude Code session with the coxswain
-    plugin loaded and the profile's workspace as cwd. Resolves the profile
-    the same way `setup doctor` does, via `_profile_path`, off the dedicated
-    `launcher_profile` dest. A missing profile is the usual help, exit 2 —
-    this launcher needs a real workspace to run in, not a one-liner; an
-    unreadable one or a missing `workspace_dir` gets the same one-line reason
-    `route`'s own commands print, not swallowed into that help text."""
-    profile_path = _profile_path(argparse.Namespace(profile=a.launcher_profile))
+def _session_launch(launcher_profile: str | None, no_plugin: bool, extra_args: list[str]) -> tuple[list[str], str, str | None] | int:
+    """The one place the coxswain session's argv is built, shared by bare `cox`
+    and `cox session` so the two cannot drift. Resolves the profile the same
+    way `setup doctor` does, via `_profile_path`. Returns (argv, cwd, warning),
+    or an exit code. A missing profile is the usual help, exit 2 — this
+    launcher needs a real workspace to run in, not a one-liner; an unreadable
+    one or a missing `workspace_dir` gets the same one-line reason `route`'s
+    own commands print, not swallowed into that help text."""
+    profile_path = _profile_path(argparse.Namespace(profile=launcher_profile))
     text = _read_text_or_none(profile_path)
     if text is None:
         build_parser().print_help()
@@ -7635,11 +7665,40 @@ def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
         print("claude not found on PATH")
         return 2
     skills_roots = profile.get("skills_roots") or []
-    plugin_root = None if a.no_plugin else _plugin_root(skills_roots)
-    argv, warning = _launcher_argv(plugin_root, skills_roots, a.no_plugin, extra_args)
+    plugin_root = None if no_plugin else _plugin_root(skills_roots)
+    argv, warning = _launcher_argv(plugin_root, skills_roots, no_plugin, extra_args)
+    return argv, str(Path(workspace).expanduser()), warning
+
+
+def should_exec_coxtop(stdin_is_tty: bool, stdout_is_tty: bool, coxtop_on_path: bool, flags_given: bool) -> bool:
+    """True only on a real terminal with coxtop installed and no launcher flag or extra argument given."""
+    return stdin_is_tty and stdout_is_tty and coxtop_on_path and not flags_given
+
+
+def home_target(stdin_is_tty: bool, stdout_is_tty: bool, coxtop_on_path: bool, flags_given: bool) -> str:
+    """`cox home` opens coxtop when it would run, else the curses screen; the same decision bare `cox` makes."""
+    return "coxtop" if should_exec_coxtop(stdin_is_tty, stdout_is_tty, coxtop_on_path, flags_given) else "curses"
+
+
+def _exec_coxtop_if_wanted(flags_given: bool, stdin_is_tty: bool, stdout_is_tty: bool, which: Callable[[str], str | None]) -> None:
+    """Edge: replaces this process with coxtop when `should_exec_coxtop` says
+    so, and returns only when it does not. The callers pass the terminal
+    probes and `shutil.which` in."""
+    if should_exec_coxtop(stdin_is_tty, stdout_is_tty, which("coxtop") is not None, flags_given):
+        os.execvp("coxtop", ["coxtop"])
+
+
+def _launcher(a: argparse.Namespace, extra_args: list[str]) -> int:
+    """Bare `cox` (spec §7) and `cox session`: a real Claude Code session with
+    the coxswain plugin loaded and the profile's workspace as cwd, off the
+    dedicated `launcher_profile` dest. The argv comes from `_session_launch`."""
+    launch = _session_launch(a.launcher_profile, a.no_plugin, extra_args)
+    if isinstance(launch, int):
+        return launch
+    argv, workspace, warning = launch
+    cwd = workspace
     if warning:
         print(warning)
-    cwd = str(Path(workspace).expanduser())
     if a.print_argv:
         print(argv)
         print(cwd)
@@ -7711,6 +7770,7 @@ def main(argv: list[str] | None = None) -> int:
     head, tail = split if split is not None else (args, [])
     a = build_parser().parse_args(head)
     if not hasattr(a, "fn"):
+        _exec_coxtop_if_wanted(bool(args), sys.stdin.isatty(), sys.stdout.isatty(), shutil.which)
         return _launcher(a, tail)
     return a.fn(a)
 
