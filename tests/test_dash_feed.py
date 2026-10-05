@@ -131,7 +131,14 @@ def test_snapshot_matches_committed_fixture():
             "kind": "needs_chair",
             "target": "some-task",
             "reason": "budget stop after 2 attempts",
-        }
+        },
+        {
+            "kind": "review_pr",
+            "initiative": "dash-feed",
+            "target": "p2-feed-task",
+            "url": "https://github.com/pat/coxswain-tools/pull/42",
+            "reason": "awaiting review",
+        },
     ]
     watch = []
     decisions = [
@@ -146,7 +153,7 @@ def test_snapshot_matches_committed_fixture():
 
     spend_series = [["2026-09-28T23:40:00Z", 0.42], ["2026-09-28T23:50:00Z", 0.84]]
 
-    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 1, watch, decisions, spend_series)
+    result = snapshot(at, chair, spend, machines, runs, queue, 1, inbox, 2, watch, decisions, spend_series)
 
     with open("tests/fixtures/dash_feed_v1.json") as f:
         expected = json.load(f)

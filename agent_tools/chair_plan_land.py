@@ -77,12 +77,19 @@ def fetch_action(run: str, repo: str, initiative: str) -> Action:
     return {"kind": "fetch", "run": run, "repo": repo, "initiative": initiative, "epoch": None}  # type: ignore[typeddict-item]
 
 
+def awaiting_phases(facts: Facts) -> frozenset[tuple[str, str]]:
+    """The (initiative, phase) of every task awaiting its review PR, whatever the PR's state."""
+    return frozenset((r["initiative"], r["phase"]) for r in facts.get("review_prs", []))
+
+
 def plan_lands(facts: Facts) -> list[Action]:
     """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
 
     A group whose resolved run is empty gets one needs_chair (cause `no_run`) instead: a land_phase with an empty
     run has nowhere to land from, whatever moved the task to approved."""
-    tasks = planned_tasks(facts["approved"], facts["initiatives"])
+    # Awaiting phases leave before scheduling, so a task needing an awaiting task is deferred, not landed ahead of it.
+    awaiting = awaiting_phases(facts)
+    tasks = planned_tasks([t for t in facts["approved"] if (t["initiative"], t["phase"]) not in awaiting], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
         groups.setdefault((t["initiative"], t["phase"]), []).append(t)

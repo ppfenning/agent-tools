@@ -169,6 +169,30 @@ def test_a_phase_with_one_known_run_and_one_unknown_waits_with_no_run_instead_of
     assert plan_lands(_facts([known, unknown])) == [{"kind": "needs_chair", "initiative": "i", "cause": "no_run"}]
 
 
+def test_an_awaiting_task_skips_its_phase_land_and_a_ready_phase_in_the_same_repo_still_lands():
+    facts = _facts([_task("a", phase="p1"), _task("b", phase="p2")])
+    facts["review_prs"] = [
+        {"initiative": "i", "phase": "p1", "task_id": "a", "repo": "r", "url": "u", "state": "open", "merged_at": None}
+    ]
+    assert _phases(facts) == ["p2"]
+
+
+def _awaiting(phase: str, task_id: str, state: str) -> dict:
+    return {"initiative": "i", "phase": phase, "task_id": task_id, "repo": "r", "url": "u", "state": state, "merged_at": None}
+
+
+def test_a_phase_awaiting_review_plans_no_land_whatever_the_pr_state():
+    facts = _facts([_task(x) for x in ("a", "b", "c", "d", "e")])
+    facts["review_prs"] = [_awaiting(x, x, s) for x, s in (("a", "open"), ("b", "merged"), ("c", "closed"), ("d", "unknown"))]
+    assert _phases(facts) == ["e"]
+
+
+def test_a_phase_needing_an_awaiting_task_plans_no_land_while_an_independent_one_does():
+    facts = _facts([_task("a", phase="p1"), _task("b", phase="p2", needs=("a",)), _task("c", phase="p3")])
+    facts["review_prs"] = [_awaiting("p1", "a", "open")]
+    assert _phases(facts) == ["p3"]
+
+
 def test_newest_run_orders_a_non_numeric_suffix_first_instead_of_raising():
     from agent_tools.chair_plan_land import newest_run
 

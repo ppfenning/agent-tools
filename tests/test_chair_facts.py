@@ -1,11 +1,14 @@
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from agent_tools import chair_smoke, pacing, queue_rows
 from agent_tools.chair import lease_holder
 from agent_tools.chair_facts import (
     FactsDeps,
     dispatch_facts,
+    forge_review_prs,
     gather_facts,
     harness_failures,
     lease_facts,
@@ -78,6 +81,42 @@ def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
 
 def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
+
+
+REVIEW_PR = {
+    "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
+    "url": "https://example.test/pr/1", "state": "open", "merged_at": None,
+}
+
+
+def _review_runs_dir(tmp_path):
+    path = tmp_path / "i-1" / "tasks" / "p1" / "a.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"status": "approved", "review_pr": REVIEW_PR["url"], "repo": "r"}), encoding="utf-8")
+    return str(tmp_path)
+
+
+def test_a_review_prs_callables_list_appears_under_review_prs():
+    deps = replace(_deps(), review_prs=lambda: [REVIEW_PR])
+    assert gather_facts(deps, NOW)["review_prs"] == [REVIEW_PR]
+
+
+def test_an_absent_review_prs_callable_gives_an_empty_list():
+    assert gather_facts(_deps(), NOW)["review_prs"] == []
+
+
+def test_a_fake_forge_reporting_merged_gives_that_entry_with_state_merged(tmp_path):
+    fake = SimpleNamespace(pr_state=lambda url: {"state": "merged", "merged_at": "2026-10-04T00:00:00Z"})
+    rows = forge_review_prs(_review_runs_dir(tmp_path), "fake", lambda name: fake)
+    assert rows == [{
+        "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
+        "url": REVIEW_PR["url"], "state": "merged", "merged_at": "2026-10-04T00:00:00Z",
+    }]
+
+
+def test_a_missing_forge_gives_state_unknown_for_every_entry(tmp_path):
+    rows = forge_review_prs(_review_runs_dir(tmp_path), "nope", lambda name: None)
+    assert [(r["url"], r["state"]) for r in rows] == [(REVIEW_PR["url"], "unknown")]
 
 
 def test_a_newest_run_host_callables_mapping_appears_under_newest_run_host():
@@ -362,8 +401,7 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
-    # review_prs is declared on Facts but gather_facts does not fill it yet: a later task does.
-    assert set(facts) == (set(Facts.__annotations__) - {"review_prs"}) | {"login_hosts"}
+    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True

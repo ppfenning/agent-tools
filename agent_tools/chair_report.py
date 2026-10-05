@@ -11,7 +11,7 @@ from datetime import datetime
 
 from agent_tools.chair_exec import LAUNCH_KINDS, Result
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
-from agent_tools.chair_types import EASTERN, Action, Facts
+from agent_tools.chair_types import EASTERN, Action, Facts, ReviewPr
 from agent_tools.notify import Notification
 
 __all__ = [
@@ -148,6 +148,12 @@ def housekeeping_fragment(last_housekeeping_at: str | None, now: datetime) -> st
     return f"housekeeping {hours // 24}d"
 
 
+def review_fragment(review_prs: Sequence[ReviewPr]) -> str:
+    """`review: N awaiting (task url, ...)`; empty when none are awaiting."""
+    items = [pr["task_id"] + " " + pr["url"] for pr in review_prs]
+    return f"review: {len(items)} awaiting ({', '.join(items)})" if items else ""
+
+
 def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Result], now: datetime) -> str:
     """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
     limits, dispatch = facts["limits"], facts["dispatch"]
@@ -158,6 +164,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         landing_items(results),
     )
     drafts = facts.get("drafts", 0)
+    review = review_fragment(facts.get("review_prs", []))
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
@@ -170,6 +177,7 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
         *([f"launched: {', '.join(launched)}"] if launched else []),
         *([f"fetched: {', '.join(fetched)}"] if fetched else []),
         *([f"failed: {', '.join(failed)}"] if failed else []),
+        *([review] if review else []),
         *(f"skipped missing repo {p}" for p in facts.get("missing_repos", [])),
         ", ".join(needs) if needs else "needs chair: none",
         *([housekeeping_fragment(facts["last_housekeeping_at"], now)] if "last_housekeeping_at" in facts else []),

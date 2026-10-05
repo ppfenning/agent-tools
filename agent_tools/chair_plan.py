@@ -9,6 +9,7 @@ from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import _initiative_first_unmet_need, plan_lost_runs, plan_recover
+from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_types import (
     Action,
@@ -343,6 +344,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
+    review = plan_review(facts)
     unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
@@ -363,6 +365,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
             *_needs_chair_only(recovered),
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *review,
             *unstarted_waiting_chair,
         ]
     cap = _launch_cap(facts["limits"])
@@ -392,6 +395,7 @@ def _plan_as_holder(facts: Facts, now: datetime | None) -> list[Action]:
         *filled,
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *review,
         *unstarted_waiting_chair,
     ]
 

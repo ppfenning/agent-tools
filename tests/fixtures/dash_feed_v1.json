@@ -8,8 +8,8 @@
   "runs": [{"run": "dash-feed-1", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running", "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]]}, {"run": "dash-feed-0", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 2, "turns": 31, "cost": 2.15, "verdict": "approve", "status": "landed", "cost_series": []}, {"run": "dash-feed-9", "machine": "omarchy", "phase": "p2-feed", "node": "review", "attempt": 1, "turns": 8, "cost": 0.42, "verdict": "reject", "status": "quarantined", "cost_series": []}],
   "queue": [{"initiative": "dash-feed-streams-a-versioned-json-snapshot-of", "priority": 1, "phases_landed": 0, "phases_total": 3, "current_phase": "p1-foundations"}],
   "queue_total": 1,
-  "inbox": [{"kind": "needs_chair", "target": "some-task", "reason": "budget stop after 2 attempts"}],
-  "inbox_total": 1,
+  "inbox": [{"kind": "needs_chair", "target": "some-task", "reason": "budget stop after 2 attempts"}, {"kind": "review_pr", "initiative": "dash-feed", "target": "p2-feed-task", "url": "https://github.com/pat/coxswain-tools/pull/42", "reason": "awaiting review"}],
+  "inbox_total": 2,
   "decisions": [{"id": "d-1", "question": "Ship 0.27 with the dash decisions pane?", "options": ["ship", "hold"], "context": "The pane is behind a flag and the fixture is already in coxswain-dash.", "asked_at": "2026-09-29T00:00:00Z"}],
   "watch": []
 }
