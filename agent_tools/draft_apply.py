@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import run_store, store_cli
-from agent_tools.draft_state import Plan, Refusal, plan_approve, plan_decline
+from agent_tools.draft_state import Plan, Refusal, _field, _rewrite, plan_approve, plan_decline
 
 REFUSED, STORE_STOPPED = 2, 1
 
@@ -73,7 +73,8 @@ def _refuse(verb: str, refusal: Refusal) -> int:
 
 
 def _run(
-    verb: str, work_dir: Path, initiative: str, by: str, store: Store, plan_of: Callable[[str, Mapping[str, str]], Plan | Refusal]
+    verb: str, work_dir: Path, initiative: str, by: str, store: Store, plan_of: Callable[[str, Mapping[str, str]], Plan | Refusal],
+    *, dry_run: bool = False,
 ) -> int:
     loaded = _load(work_dir, initiative)
     if isinstance(loaded, Refusal):
@@ -82,6 +83,9 @@ def _run(
     plan = plan_of(_read(initiative_path), {task: _read(path) for task, path in paths.items()})
     if isinstance(plan, Refusal):
         return _refuse(verb, plan)
+    if dry_run:
+        print(f"would {verb}: {initiative}: {', '.join(f'{task} {was} -> {to}' for task, was, to in plan.moves)}")
+        return 0
     for task, text in plan.tickets.items():  # tickets first: a crash leaves the draft flag set, so a rerun finishes the job
         paths[task].write_bytes(text.encode("utf-8"))
     initiative_path.write_bytes(plan.initiative_text.encode("utf-8"))
@@ -105,3 +109,31 @@ def decline(
     """Edge. Same exits as `approve`."""
     who, now = by or user(), clock()
     return _run("decline", work_dir, initiative, who, store, lambda text, tickets: plan_decline(text, tickets, reason, who, now))
+
+
+def _as_declinable(initiative_text: str, tickets: Mapping[str, str]) -> tuple[str, dict[str, str]]:
+    """The same files seen as a draft whose open tickets are all todo, so plan_decline accepts an approved initiative and its ready tickets."""
+    return _rewrite(initiative_text, {"draft": "true"}), {
+        task: _rewrite(text, {"state": "todo"}) if _field(text, "state") == "ready" else text for task, text in tickets.items()
+    }
+
+
+def _plan_remove(initiative_text: str, tickets: Mapping[str, str], reason: str, who: str, now: datetime) -> Plan | Refusal:
+    view_initiative, view_tickets = _as_declinable(initiative_text, tickets)
+    plan = plan_decline(view_initiative, view_tickets, reason, who, now)
+    if isinstance(plan, Refusal):
+        return plan
+    # The view only renamed ready to todo; put the real old state back so the store's compare-and-set expects it.
+    moves = tuple((task, _field(tickets[task], "state") or was, to) for task, was, to in plan.moves)
+    return Plan(plan.initiative_text, plan.tickets, moves)
+
+
+def remove(
+    work_dir: Path, initiative: str, reason: str, by: str | None, store: Store,
+    *, dry_run: bool = False, clock: Callable[[], datetime] = _now, user: Callable[[], str] = getpass.getuser,
+) -> int:
+    """Edge. Decline's path for a removal: drops ready tickets as well as todo ones, on an approved initiative too. `dry_run` writes nothing. Same exits as `approve`."""
+    who, now = by or user(), clock()
+    return _run(
+        "remove", work_dir, initiative, who, store, lambda text, tickets: _plan_remove(text, tickets, reason, who, now), dry_run=dry_run
+    )
