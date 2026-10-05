@@ -91,3 +91,23 @@ def test_without_since_the_old_row_counts_and_the_db_is_not_written(tmp_path, ca
     assert _tiers(tmp_path) == 0
     assert "big: calls 3, tasks 3," in capsys.readouterr().out
     assert (tmp_path / "s.db").read_bytes() == before
+
+
+def test_pick_names_the_cheaper_model_id_not_the_shared_alias(tmp_path, capsys):
+    conn = connect(tmp_path / "s.db")
+    conn.execute("INSERT INTO runs (run_id, started_at) VALUES ('r', '2026-09-20T10:00Z')")
+    for model_id, cost in (("m-cheap-1", 0.1), ("m-dear-1", 1.0)):
+        for n in range(20):
+            task_id = f"{model_id}-t{n}"
+            conn.execute("INSERT INTO tasks (run_id, task_id, outcome) VALUES ('r', ?, 'landed')", (task_id,))
+            conn.execute(
+                "INSERT INTO calls (run_id, seq, role, model, model_id, cost_usd, turns, attempt, task_id, join_confidence)"
+                " VALUES ('r', ?, 'build', 'sonnet', ?, ?, 5, 1, ?, 'exact')",
+                (n, model_id, cost, task_id),
+            )
+    conn.commit()
+    conn.close()
+    assert main(["stats", "tiers", "--db", str(tmp_path / "s.db"), "--min-samples", "20"]) == 0
+    out = capsys.readouterr().out
+    assert "pick: m-cheap-1 (best landed rate: m-cheap-1)" in out
+    assert "sonnet" not in out

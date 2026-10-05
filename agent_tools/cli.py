@@ -124,6 +124,7 @@ from agent_tools import (
     stats_gates,
     stats_ingest,
     stats_lanes,
+    stats_models_cmd,
     stats_query,
     stats_schema,
     stats_system_one,
@@ -265,6 +266,13 @@ def _stats_tiers(a: argparse.Namespace) -> int:
         print(f"cox stats tiers: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
         return 2
     return stats_tiers_cmd.run(a.db, a.since, a.min_samples, a.json)
+
+
+def _stats_models(a: argparse.Namespace) -> int:
+    if a.since is not None and not _canonical_date(a.since):
+        print(f"cox stats models: --since must be a date as YYYY-MM-DD, got {a.since!r}", file=sys.stderr)
+        return 2
+    return stats_models_cmd.run(a.db, a.role, a.since, a.json)
 
 
 def _stats_causes(a: argparse.Namespace) -> int:
@@ -5481,6 +5489,16 @@ STATS_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
         _stats_tiers, False, (),
+    ),
+    commands.Command(
+        "models", "stats", "per-role cost, tokens, turns, $/landed and first-try per model id",
+        (
+            commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
+            commands.Arg(("--role",), {"default": None, "help": "keep only this role"}),
+            commands.Arg(("--since",), {"default": None, "help": "keep only calls whose run started on or after DATE (YYYY-MM-DD)"}),
+            commands.Arg(("--json",), {"action": "store_true"}),
+        ),
+        _stats_models, False, (),
     ),
     commands.Command(
         "causes", "stats", "quarantined attempts by cause and kind, with sample reasons",

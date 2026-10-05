@@ -1,14 +1,15 @@
 usage: cox stats [-h]
-                 {ingest,roles,tiers,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
+                 {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
                  ...
 
 Load the run corpus into the stats store.
 
 positional arguments:
-  {ingest,roles,tiers,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
+  {ingest,roles,tiers,models,causes,efficiency,gates,explain,series,coverage,bounds,spend-mix,chair,examples,system-one,lanes}
     ingest              load usage, task, node and launch records into stats.db
     roles               landed rate, attempts-to-land and $/landed per role and model
     tiers               per-role model summaries, a cost-aware pick and the spend it would save
+    models              per-role cost, tokens, turns, $/landed and first-try per model id
     causes              quarantined attempts by cause and kind, with sample reasons
     efficiency          cost per turn, cost per landed task, first-try rate, waste share, per day
     gates               what each review, validation and plan gate costs and how often it changes

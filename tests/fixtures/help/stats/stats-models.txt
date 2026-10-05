@@ -1,0 +1,8 @@
+usage: cox stats models [-h] [--db DB] [--role ROLE] [--since SINCE] [--json]
+
+options:
+  -h, --help     show this help message and exit
+  --db DB
+  --role ROLE    keep only this role
+  --since SINCE  keep only calls whose run started on or after DATE (YYYY-MM-DD)
+  --json

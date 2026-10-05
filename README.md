@@ -76,6 +76,7 @@ cox home [--profile PROFILE]   the live dashboard: runs, leader, backlog
 cox stats ingest [RUNS_DIR] [--db DB] [--work-store-root WORK_STORE_ROOT] [--cartridges-repo CARTRIDGES_REPO]   load usage, task, node and launch records into stats.db
 cox stats roles [--db DB] [--json] [--cartridge-sha CARTRIDGE_SHA] [--provider-profile PROVIDER_PROFILE]   landed rate, attempts-to-land and $/landed per role and model
 cox stats tiers [--db DB] [--since SINCE] [--min-samples MIN_SAMPLES] [--json]   per-role model summaries, a cost-aware pick and the spend it would save
+cox stats models [--db DB] [--role ROLE] [--since SINCE] [--json]   per-role cost, tokens, turns, $/landed and first-try per model id
 cox stats causes [--runs-dir RUNS_DIR] [--since SINCE] [--json]   quarantined attempts by cause and kind, with sample reasons
 cox stats efficiency [--runs-dir RUNS_DIR] [--days DAYS] [--json]   cost per turn, cost per landed task, first-try rate, waste share, per day
 cox stats gates [--db DB] [--since SINCE] [--store] [--runs-dir RUNS_DIR] [--min-sample MIN_SAMPLE] [--json]   what each review, validation and plan gate costs and how often it changes the outcome
