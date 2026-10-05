@@ -13,11 +13,20 @@ import json
 import subprocess
 from pathlib import Path
 
-from agent_tools import route, settings_model, settings_plan
+from agent_tools import route, run_store, settings_model, settings_plan
 from agent_tools.chair_cap import _load as _load_cartridge
+from agent_tools.settings_builds import builds_rows
+from agent_tools.settings_hosts import host_rows
+from agent_tools.settings_housekeeping import housekeeping_rows
 from agent_tools.settings_model import SettingRow
+from agent_tools.settings_model_rows import model_tier_rows
 
-Grouped = dict[str, list[SettingRow]]
+Row = SettingRow | dict
+Grouped = dict[str, list[Row]]
+
+# unknown: the cartridge key that holds the role-to-model map. `settings_model_rows` assumes a mapping of
+# role to {model, tier}; no code in the repo reads one, so `models` is the assumed top-level key.
+MODEL_MAP_KEY = "models"
 
 
 def parse_documents(cartridge_text: str | None, profile_text: str | None) -> tuple[dict, dict]:
@@ -43,7 +52,10 @@ def pat_only_for(row: SettingRow) -> bool:
     return setting.pat_only if setting is not None else False
 
 
-def _row_json(row: SettingRow) -> dict:
+def _row_json(row: Row) -> dict:
+    """A builder's dict row already carries `pat_only`; a `SettingRow` takes it from the registry."""
+    if isinstance(row, dict):
+        return row
     return {
         "section": row.section,
         "scope": row.scope,
@@ -60,16 +72,44 @@ def to_json(grouped: Grouped) -> dict:
     return {"sections": [{"name": name, "rows": [_row_json(r) for r in rows]} for name, rows in grouped.items()]}
 
 
-def _row_line(row: SettingRow) -> str:
-    where = "tracked" if row.tracked else "local"
-    marker = "  [pat-only]" if pat_only_for(row) else ""
-    return f"  {row.scope}:{row.key} = {json.dumps(row.value, default=str)}  ({row.source_file}, {where}){marker}"
+def _row_line(row: Row) -> str:
+    f = _row_json(row)
+    where = "tracked" if f["tracked"] else "local"
+    marker = "  [pat-only]" if f["pat_only"] else ""
+    return f"  {f['scope']}:{f['key']} = {json.dumps(f['value'], default=str)}  ({f['source_file']}, {where}){marker}"
 
 
 def render_text(grouped: Grouped) -> str:
     """One block per non-empty section: its name, then one line per row; blocks are separated by a blank line."""
     blocks = [[name, *(_row_line(r) for r in rows)] for name, rows in grouped.items() if rows]
     return "\n\n".join("\n".join(block) for block in blocks)
+
+
+def _first_per_key(rows: list[Row]) -> list[Row]:
+    """Drop a row whose `(scope, key)` an earlier row already holds."""
+    keys = [(f["scope"], f["key"]) for f in map(_row_json, rows)]
+    return [row for i, row in enumerate(rows) if keys.index(keys[i]) == i]
+
+
+def host_capacities(rows: list[dict]) -> dict[str, object]:
+    """`{name: capacity}` from `run_store.hosts` rows; a row without a name is dropped."""
+    return {str(r["name"]): r.get("capacity") for r in rows if r.get("name")}
+
+
+def sections(cartridge: dict, profile: dict, hosts: dict[str, object], tracked: dict[str, bool]) -> Grouped:
+    """Registry rows with each builder's rows appended to its section. A `(scope, key)` already in a
+    section keeps its first row, so the registry's rows win where a builder repeats them."""
+    model_map = cartridge.get(MODEL_MAP_KEY)
+    extra = {
+        "lanes and machines": host_rows(hosts, profile, tracked),
+        "builds and budgets": builds_rows(cartridge, settings_model.CARTRIDGE_FILE, tracked),
+        "housekeeping": housekeeping_rows(profile, tracked),
+        "models and tiers": model_tier_rows(
+            model_map if isinstance(model_map, dict) else {}, tracked.get(settings_model.CARTRIDGE_FILE, False)
+        ),
+    }
+    base = settings_model.rows(cartridge, profile, tracked)
+    return {name: _first_per_key([*found, *extra.get(name, [])]) for name, found in base.items()}
 
 
 def git_tracked(path: Path) -> bool:
@@ -103,7 +143,9 @@ def run_get(profile_path: Path, as_json: bool) -> int:
         settings_model.PROFILE_FILE: git_tracked(profile_path),
         settings_model.CARTRIDGE_FILE: git_tracked(cartridge_path) if cartridge_path is not None else False,
     }
-    grouped = settings_model.rows(cartridge, profile, tracked)
+    workspace = profile.get("workspace_dir")
+    hosts = host_capacities(run_store.hosts(Path(workspace).expanduser() / "runs")) if workspace else {}
+    grouped = sections(cartridge, profile, hosts, tracked)
     print(json.dumps(to_json(grouped), default=str, indent=2) if as_json else render_text(grouped))
     return 0
 
