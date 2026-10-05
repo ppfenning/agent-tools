@@ -36,7 +36,7 @@ from agent_tools import (
 )
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
-from agent_tools.remote_argv import ssh_argv, sync_argv
+from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, ssh_argv, sync_argv
 
 __all__ = [
     "LAUNCH_KINDS",
@@ -346,7 +346,10 @@ def _branch_on_host(deps: Deps, at_home: Run, ssh: str, repo: str, branch: str) 
     """(present on the host, failure line or ""). A branch only the chair holds is pushed to the host first, so
     the relaunch there builds on it; a branch on neither machine is nothing to carry."""
     verify = ["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]
-    if at_home(verify)[0] == 0:
+    on_host, host_out = at_home(verify)
+    if on_host == 124:
+        return False, f"git rev-parse of {branch} on {ssh}: {host_out.strip()}"
+    if on_host == 0:
         return True, ""
     if deps.run(verify)[0] != 0:
         return False, ""
@@ -890,18 +893,41 @@ def smoke_targets(results: list[Result]) -> list[LandTrigger]:
     ]
 
 
-_LOGIN_CHECK_TIMEOUT_S = 60  # an unreachable lane host must not stall a tick
+def _text(captured: str | bytes | None) -> str:
+    """`TimeoutExpired` hands back bytes or str, or None when nothing was printed."""
+    return captured.decode(errors="replace") if isinstance(captured, bytes) else captured or ""
 
 
 def run_argv(argv: list[str], cwd: Path | None = None, timeout: float | None = None) -> tuple[int, str]:
-    """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform."""
+    """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform.
+
+    A timeout keeps what the child printed before it was killed, after the message, so a later task can read it."""
     try:
         done = subprocess.run(argv, capture_output=True, text=True, check=False, cwd=cwd, timeout=timeout)
     except OSError as error:
         return 127, f"{argv[0] if argv else '<empty argv>'}: {error}"
-    except subprocess.TimeoutExpired:
-        return 124, f"{argv[0] if argv else '<empty argv>'}: timed out after {timeout}s"
+    except subprocess.TimeoutExpired as error:
+        message = f"{argv[0] if argv else '<empty argv>'}: timed out after {timeout}s\n"
+        return 124, message + _text(error.stdout) + _text(error.stderr)
     return done.returncode, done.stdout + done.stderr
+
+
+def run_lane_host(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
+    """Edge. One ssh against a lane host, bounded: a hung host comes back as exit 124 carrying its partial output."""
+    return run_argv(argv, cwd, timeout=LANE_HOST_TIMEOUT_S)
+
+
+def reaches_lane_host(argv: list[str]) -> bool:
+    """An `ssh` argv, or a `git push`, which the chair only sends to a lane host's `<ssh>:<repo>`."""
+    return argv[:1] == ["ssh"] or (argv[:1] == ["git"] and "push" in argv)
+
+
+def _bounded_for_ssh(cwd: Path) -> Run:
+    """Edge. A door that bounds an argv reaching a lane host by `LANE_HOST_TIMEOUT_S`; local argvs stay unbounded."""
+    def run(argv: list[str]) -> tuple[int, str]:
+        return run_lane_host(argv, cwd) if reaches_lane_host(argv) else run_argv(argv, cwd)
+
+    return run
 
 
 def land_commit(repo_dir: str) -> str:
@@ -992,7 +1018,7 @@ def edge_deps(
     `provider_profile` is the routing profile's `provider_profile` YAML, already resolved; unset, it names no
     runner override and `check_login` keeps today's `"claude-code"` default.
     """
-    run = partial(run_argv, cwd=workspace)
+    run = _bounded_for_ssh(workspace)
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
@@ -1005,7 +1031,7 @@ def edge_deps(
         runs_dir=runs_dir,
         work_dir=workspace,
         check_login=partial(
-            _check_login_edge, runs_dir, partial(run_argv, cwd=workspace, timeout=_LOGIN_CHECK_TIMEOUT_S), provider_profile,
+            _check_login_edge, runs_dir, partial(run_lane_host, cwd=workspace), provider_profile,
         ),
         log_retention_days=log_retention_days,
         harness_python=harness_python,

@@ -11,6 +11,7 @@ from agent_tools.remote_fetch import (
     fetch_plan,
     fetch_run,
     host_repo_path,
+    probe_argv,
     pull_argvs,
     refuse_unended,
     task_repos,
@@ -118,6 +119,23 @@ def test_fetch_run_is_an_error_when_no_record_names_a_repo(tmp_path):
     assert isinstance(result, FetchError) and result.step == "repos"
     # Two probe calls (run directory, log), then the two pull rsyncs the probe's "exists" answers plan.
     assert [c[0] for c in calls] == ["rsync", "rsync", "rsync", "rsync"]
+
+
+def test_probe_argv_is_a_bounded_list_only_rsync():
+    assert probe_argv("u@h:/w/runs/r1") == [
+        "rsync", "--list-only", "-a", "--timeout=30", "-e", "ssh -o ConnectTimeout=30", "u@h:/w/runs/r1", ".",
+    ]
+
+
+def test_fetch_run_hands_run_cmd_a_bounded_rsync_for_the_run_directory(tmp_path):
+    calls = []
+    fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", task_repos,
+              lambda argv: calls.append(argv) or 0, lease_released=True, ended_at="t")
+    rsyncs = [c for c in calls if c[0] == "rsync" and "u@h:/w/runs/r1/" in c]
+    assert rsyncs and all("--timeout=30" in c for c in rsyncs)
+    transport = rsyncs[0][rsyncs[0].index("-e") + 1]
+    assert transport == "ssh -o ConnectTimeout=30"
+    assert all("--timeout=30" in c and "ConnectTimeout=30" in c[c.index("-e") + 1] for c in calls if c[0] == "rsync")
 
 
 def test_fetch_run_refuses_an_unended_lane_before_running_anything(tmp_path):
