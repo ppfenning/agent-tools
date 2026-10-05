@@ -14,6 +14,7 @@ def _row(
     phase: str = "p1",
     holder: str | None = None,
     expires_at: str = "",
+    priority: int | None = None,
 ) -> dict:
     return {
         "kind": "task",
@@ -25,7 +26,7 @@ def _row(
         "title": task_id,
         "surfaces": [],
         "body": "",
-        "extra": {},
+        "extra": {} if priority is None else {"priority": priority},
         "holder": holder,
         "epoch": 0,
         "expires_at": expires_at,
@@ -177,3 +178,13 @@ def test_parity_the_same_board_as_rows_and_as_files_gives_the_same_initiatives()
     ]
     rows = [_row(i["id"], i["state"], tuple(i["needs"]), i["initiative"], i["phase"]) for i in items]
     assert docket_from_rows(rows, NOW) == docket_from_builder(route.initiative_summaries(items), items, 0, 4)["initiatives"]
+
+
+def test_initiatives_order_by_priority_descending_then_id():
+    rows = [_row("t", "ready", initiative="a", priority=1), _row("t", "ready", initiative="b", priority=5), _row("t", "ready", initiative="c", priority=5)]
+    assert [i["id"] for i in docket_from_rows(rows, NOW)] == ["b", "c", "a"]
+
+
+def test_an_initiative_with_no_priority_reads_as_zero():
+    rows = [_row("t", "ready", initiative="a"), _row("t", "ready", initiative="b", priority=1), _row("t", "ready", initiative="c")]
+    assert [i["id"] for i in docket_from_rows(rows, NOW)] == ["b", "a", "c"]
