@@ -26,14 +26,16 @@ def launch_plan(
     label: str,
     locate: Callable[[str], str] | None = None,
     repo: str | None = None,
+    harness_dir: str | None = None,
 ) -> list[list[str]]:
-    """The argv that `launch_on_host` runs in order: the rsync push, then, when `repo` is
-    given, the sync of `repo` on the lane host, then the launch ssh command.
+    """The argv that `launch_on_host` runs in order: the rsync push, then, when `harness_dir` is
+    given, the sync of the harness on the lane host, then, when `repo` is given, the sync of `repo`
+    there, then the launch ssh command.
 
     rsync needs the parent of the destination to exist; the copy keeps the local work/<id> layout.
     `route launch` reads --initiative as a path from its cwd, and an ssh command starts in the home directory.
     `repo` is the same path on both machines (each keeps it under ~/repos/<name>), so it is passed
-    through unchanged rather than rewritten under host.workspace_dir."""
+    through unchanged rather than rewritten under host.workspace_dir; so is `harness_dir`."""
     place = locate if locate is not None else (lambda path: f"{host.ssh}:{path}")
     src = f"work/{initiative}"
     remote_dir = f"{host.workspace_dir.rstrip('/')}/{src}"
@@ -41,9 +43,9 @@ def launch_plan(
     # where a second copy of one id fails the run's DAG check.
     rsync_step = rsync_push_argv(src, place(remote_dir), mirror=True)
     launch_step = ssh_argv(host.ssh, launch_argv(remote_dir, run_id, label))
-    if repo is None:
-        return [rsync_step, launch_step]
-    return [rsync_step, ssh_argv(host.ssh, sync_argv(repo)), launch_step]
+    harness_steps = [] if harness_dir is None else [ssh_argv(host.ssh, sync_argv(harness_dir))]
+    repo_steps = [] if repo is None else [ssh_argv(host.ssh, sync_argv(repo))]
+    return [rsync_step, *harness_steps, *repo_steps, launch_step]
 
 
 def env_preflight(names: tuple[str, ...], probes: Mapping[str, tuple[int, str]]) -> str | None:
@@ -66,19 +68,30 @@ def launch_on_host(
     run: Callable[[list[str]], int],
     locate: Callable[[str], str] | None = None,
     repo: str | None = None,
+    harness_dir: str | None = None,
     *,
     preflight: str | None = None,
 ) -> dict | LaunchError:
     """`preflight` is a refusal line from a check made before anything is copied; None lets the launch go on."""
     if preflight is not None:
         return LaunchError("auth", preflight)
-    plan = launch_plan(host, initiative, run_id, label, locate, repo)
+    plan = launch_plan(host, initiative, run_id, label, locate, repo, harness_dir)
     rsync_argv, ssh_cmd = plan[0], plan[-1]
     pushed = run(rsync_argv)
     if pushed != 0:
         return LaunchError("rsync", f"rsync of work/{initiative} to {host.name} exited {pushed}")
+    next_step = 1
+    if harness_dir is not None:
+        updated = run(plan[next_step])
+        next_step += 1
+        if updated != 0:
+            return LaunchError(
+                "harness",
+                f"updating the harness at {harness_dir} on {host.name} exited {updated}: "
+                "the lane would run an older harness than the store",
+            )
     if repo is not None:
-        synced = run(plan[1])
+        synced = run(plan[next_step])
         if synced != 0:
             return LaunchError(
                 "sync", f"updating {repo} on {host.name} exited {synced}: the lane would build on a stale main"
