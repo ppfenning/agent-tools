@@ -649,8 +649,6 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stall_candidates": list(deps.stall_candidates(now)) if deps.stall_candidates is not None else [],
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
         "review_prs": list(deps.review_prs()),
-        "stranded": [],  # empty until the facts task gathers stranded phases
-        "phase_branches": [],  # empty until the facts task gathers phase branches
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
         "steer_streaks": steer_streaks_from_actions(list(deps.actions())) if deps.actions is not None else {},
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
