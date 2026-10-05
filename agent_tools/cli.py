@@ -5111,6 +5111,16 @@ def _dash_detail(kind: str, id_: str | None, runs_dir: Path, work_dir: Path, now
     return None, 2
 
 
+def _dash_dirs(runs_dir: str | None, work_dir: str | None, profile: dict | None) -> tuple[Path, Path]:
+    """The feed's runs and work directories: a flag wins, then the profile's workspace, then `runs` and `.` under the
+    current directory. coxtop starts the feed wherever it was launched, so a launch outside the workspace still reads
+    the chair's records."""
+    workspace = Path(profile["workspace_dir"]).expanduser() if profile and profile.get("workspace_dir") else None
+    runs = Path(runs_dir) if runs_dir else (workspace / "runs" if workspace else Path("runs"))
+    work = Path(work_dir) if work_dir else (workspace if workspace else Path("."))
+    return runs, work
+
+
 def _dash(a: argparse.Namespace) -> int:
     """Edge. `--once` prints one `dash_feed.gather_feed` snapshot; `--feed` prints one per pass forever,
     `interval` seconds apart; `--detail <kind> [id]` prints one `dash_detail_*.build` result. `--feed` and
@@ -5118,8 +5128,8 @@ def _dash(a: argparse.Namespace) -> int:
     if a.feed and a.once:
         print("cox dash: --feed and --once are mutually exclusive", file=sys.stderr)
         return 2
-    runs_dir, work_dir = Path(a.runs_dir), Path(a.work_dir)
     profile = _tolerant_profile(a)
+    runs_dir, work_dir = _dash_dirs(a.runs_dir, a.work_dir, profile)
     if a.detail:
         kind, id_ = a.detail[0], (a.detail[1] if len(a.detail) > 1 else None)
         now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -5491,8 +5501,8 @@ DASH_GROUP = commands.Group(
     help="a versioned JSON snapshot of the workspace: --feed streams it, --once prints one, --detail drills into one kind",
     description="", epilog="",
     args=(
-        commands.Arg(("--runs-dir",), {"default": "runs"}),
-        commands.Arg(("--work-dir",), {"default": "."}),
+        commands.Arg(("--runs-dir",), {"default": None}),
+        commands.Arg(("--work-dir",), {"default": None}),
         commands.Arg(("--feed",), {"action": "store_true"}),
         commands.Arg(("--once",), {"action": "store_true"}),
         commands.Arg(("--interval",), {"type": float, "default": 2}),
