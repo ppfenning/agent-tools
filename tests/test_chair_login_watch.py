@@ -4,6 +4,7 @@ from agent_tools.chair_login_watch import (
     due_for_login_check,
     login_blocked,
     login_needs_chair,
+    login_url_from_output,
     merge_login_versions,
 )
 
@@ -77,3 +78,37 @@ def test_versions_json_as_a_sqlite_json_string_is_decoded():
     fresh = {"name": "f", "state": "active", "versions_json": json.dumps({"login_ok": True, "login_checked_at": "2026-09-27T11:50:00Z"})}
     assert due_for_login_check([stale, fresh], NOW) == ["s"]
     assert login_blocked([stale, fresh]) == {"s"}
+
+
+def test_login_url_from_output_returns_the_first_https_url():
+    output = "To authenticate, visit: https://login.tailscale.com/a/abc123. Then retry.\nhttps://other.example/x"
+    assert login_url_from_output(output) == "https://login.tailscale.com/a/abc123"
+
+
+def test_login_url_from_output_is_none_without_a_url():
+    assert login_url_from_output("ssh: connect to host shed port 22: Connection refused") is None
+
+
+def test_merge_login_versions_keeps_a_login_url_without_mutating_input():
+    versions = {"cox": "0.20.0"}
+    merged = merge_login_versions(versions, False, "t", login_url="https://login.tailscale.com/a/abc123")
+    assert merged == {
+        "cox": "0.20.0",
+        "login_ok": False,
+        "login_checked_at": "t",
+        "check": "claude_auth",
+        "login_url": "https://login.tailscale.com/a/abc123",
+    }
+    assert versions == {"cox": "0.20.0"}
+
+
+def test_merge_login_versions_omits_a_none_login_url_and_clears_a_stored_one():
+    merged = merge_login_versions({"login_url": "https://old.example/a"}, True, "t", login_url=None)
+    assert merged == {"login_ok": True, "login_checked_at": "t", "check": "claude_auth"}
+
+
+def test_a_blocked_host_holding_a_login_url_has_one_needs_chair_action_carrying_url():
+    host = _host("h", versions_json={"login_ok": False, "login_url": "https://login.tailscale.com/a/abc123"})
+    assert login_needs_chair([host]) == [
+        {"kind": "needs_chair", "host": "h", "cause": "login_lapsed", "url": "https://login.tailscale.com/a/abc123"}
+    ]

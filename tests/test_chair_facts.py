@@ -146,6 +146,21 @@ def test_home_has_no_entry_when_newest_run_host_is_unknown():
     assert gather_facts(_deps(), NOW)["home"] == {}
 
 
+def test_run_hosts_holds_a_remote_run_and_drops_a_local_one():
+    deps = replace(_deps(), run_hosts=lambda: {"run-1": "jarvis", "run-2": ""})
+    assert gather_facts(deps, NOW)["run_hosts"] == {"run-1": "jarvis"}
+
+
+def test_home_holds_an_initiative_homed_on_omarchy():
+    deps = replace(_deps(), newest_run_host=lambda: {"i": "omarchy"})
+    assert gather_facts(deps, NOW)["home"] == {"i": "omarchy"}
+
+
+def test_with_no_host_callables_run_hosts_and_home_are_empty():
+    facts = gather_facts(_deps(), NOW)
+    assert (facts["run_hosts"], facts["home"]) == ({}, {})
+
+
 def test_a_history_callable_returning_a_timestamp_is_held_as_last_housekeeping_at():
     deps = replace(_deps(), history=lambda: "2026-09-25T00:00:00Z")
     assert gather_facts(deps, NOW)["last_housekeeping_at"] == "2026-09-25T00:00:00Z"
