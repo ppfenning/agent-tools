@@ -122,7 +122,6 @@ from agent_tools import (
     runs_top_screen,
     schema,
     setup_install,
-    setup_screen,
     sources,
     stats_causes,
     stats_chair,
@@ -5172,10 +5171,12 @@ def _session(a: argparse.Namespace) -> int:
 
 
 def _setup_tui(a: argparse.Namespace) -> int:
-    if not sys.stdin.isatty():
-        print("setup: needs a terminal; use setup doctor / setup install / cartridge init directly")
-        return 2
-    return setup_screen.main(*_setup_fields(a))
+    """Bare `cox setup`: plain coxtop, which takes no settings-open argument yet."""
+    launched = coxtop_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin)
+    if launched:
+        return 0
+    print("setup: needs a terminal and coxtop; use setup doctor / setup install directly")
+    return 2
 
 
 _USAGE_ASSESS_EXIT = {"go": 0, "go_degraded": 0, "hold": 3, "stop": 4}
@@ -6195,7 +6196,7 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("setup")
     setup_p = commands.build_parser(rows, [group], sub)["setup"]
     # commands.build_parser's generic bare-group fallback prints help and
-    # exits 2; a bare `cox setup` instead opens the TUI, so override it here.
+    # exits 2; a bare `cox setup` instead hands off to coxtop, so override it here.
     setup_p.set_defaults(fn=_setup_tui)
     return p
 

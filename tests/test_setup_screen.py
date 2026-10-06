@@ -158,17 +158,35 @@ def test_q_ends_the_loop_without_running_anything():
     assert runs == []
 
 
-class _NonTty:
+class _Tty:
+    def __init__(self, is_tty):
+        self._is_tty = is_tty
+
     def isatty(self):
-        return False
+        return self._is_tty
 
 
-def test_setup_with_no_subcommand_on_a_non_tty_stdin_exits_2_before_reading_the_profile(monkeypatch, capsys):
-    monkeypatch.setattr(cli.sys, "stdin", _NonTty())
-    monkeypatch.setattr(cli, "_setup_fields", lambda a: (_ for _ in ()).throw(AssertionError("should not be called")))
-    rc = cli.main(["setup"])
-    assert rc == 2
-    assert "setup: needs a terminal; use setup doctor / setup install / cartridge init directly" in capsys.readouterr().out
+def _stub_terminal(monkeypatch, is_tty, coxtop_path):
+    execs = []
+    monkeypatch.setattr(cli.sys, "stdin", _Tty(is_tty))
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: is_tty)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: coxtop_path)
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: execs.append((path, argv)))
+    return execs
+
+
+def test_bare_setup_on_a_terminal_execs_plain_coxtop(monkeypatch):
+    execs = _stub_terminal(monkeypatch, True, "/usr/bin/coxtop")
+    assert cli.main(["setup"]) == 0
+    assert execs == [("/usr/bin/coxtop", ["/usr/bin/coxtop"])]
+
+
+@pytest.mark.parametrize("is_tty,coxtop_path", [(False, "/usr/bin/coxtop"), (True, None)])
+def test_bare_setup_off_a_terminal_or_without_coxtop_prints_the_message(monkeypatch, capsys, is_tty, coxtop_path):
+    execs = _stub_terminal(monkeypatch, is_tty, coxtop_path)
+    assert cli.main(["setup"]) == 2
+    assert "setup: needs a terminal and coxtop; use setup doctor / setup install directly" in capsys.readouterr().out
+    assert execs == []
 
 
 def test_setup_fields_prefills_from_a_resolved_profile_and_is_empty_otherwise(tmp_path):
@@ -183,6 +201,11 @@ def test_setup_doctor_still_dispatches_to_doctor(monkeypatch):
     monkeypatch.setattr(cli, "_setup_doctor", lambda a: calls.append(a) or 0)
     assert cli.main(["setup", "doctor"]) == 0
     assert len(calls) == 1
+
+
+def test_setup_install_still_resolves_to_the_install_handler_not_the_coxtop_hand_off():
+    args = cli.build_parser().parse_args(["setup", "install", "--root", "/r", "--team", "acme", "--workspace", "/w"])
+    assert args.fn is cli._setup_install
 
 
 def test_run_action_with_a_missing_binary_reports_a_line_instead_of_raising():
