@@ -105,7 +105,6 @@ chair_smoke = _LazyModule("agent_tools.chair_smoke")
 cleanup = _LazyModule("agent_tools.cleanup")
 console_screen = _LazyModule("agent_tools.console_screen")
 courier = _LazyModule("agent_tools.courier")
-coxtop_launch = _LazyModule("agent_tools.coxtop_launch")
 dash_detail_health = _LazyModule("agent_tools.dash_detail_health")
 dash_detail_initiative = _LazyModule("agent_tools.dash_detail_initiative")
 dash_detail_machine = _LazyModule("agent_tools.dash_detail_machine")
@@ -183,6 +182,7 @@ steward_draft = _LazyModule("agent_tools.steward_draft")
 store_cli = _LazyModule("agent_tools.store_cli")
 store_dialect = _LazyModule("agent_tools.store_dialect")
 store_url = _LazyModule("agent_tools.store_url")
+towpath_launch = _LazyModule("agent_tools.towpath_launch")
 tracker = _LazyModule("agent_tools.tracker")
 usage_meter = _LazyModule("agent_tools.usage_meter")
 usage_window = _LazyModule("agent_tools.usage_window")
@@ -894,9 +894,9 @@ def _run_short_ids(run_ids: Sequence[str], short_ids: Mapping[str, str]) -> dict
 
 
 def _runs_top(a: argparse.Namespace) -> int:
-    """On two terminals with coxtop installed, exec coxtop; otherwise, and always with --once, print the table."""
+    """On two terminals with towpath installed, exec towpath; otherwise, and always with --once, print the table."""
     # The seams are passed at call time so a test can stub them; launch's own defaults bind at import.
-    if not a.once and coxtop_launch.launch(shutil.which, os.execv, sys.stdout, sys.stdin):
+    if not a.once and towpath_launch.launch(shutil.which, os.execv, sys.stdout, sys.stdin):
         return 0
     heartbeat_minutes = _leader_heartbeat_minutes()
     chair_state = runs_top_screen.chair_now(a.runs_dir, heartbeat_minutes)
@@ -5311,8 +5311,8 @@ def _tolerant_profile(a: argparse.Namespace) -> dict:
 
 
 def _console(a: argparse.Namespace, launch=None) -> int:
-    """Open coxtop on a terminal; otherwise, and always with --once, print the one-shot text."""
-    if not a.once and (launch or coxtop_launch.launch)():
+    """Open towpath on a terminal; otherwise, and always with --once, print the one-shot text."""
+    if not a.once and (launch or towpath_launch.launch)():
         return 0
     profile = _tolerant_profile(a)
     runs_dir = Path(a.runs_dir)
@@ -5355,7 +5355,7 @@ def _dash_detail(kind: str, id_: str | None, runs_dir: Path, work_dir: Path, now
 
 def _dash_dirs(runs_dir: str | None, work_dir: str | None, profile: dict | None) -> tuple[Path, Path]:
     """The feed's runs and work directories: a flag wins, then the profile's workspace, then `runs` and `.` under the
-    current directory. coxtop starts the feed wherever it was launched, so a launch outside the workspace still reads
+    current directory. towpath starts the feed wherever it was launched, so a launch outside the workspace still reads
     the chair's records."""
     workspace = Path(profile["workspace_dir"]).expanduser() if profile and profile.get("workspace_dir") else None
     runs = Path(runs_dir) if runs_dir else (workspace / "runs" if workspace else Path("runs"))
@@ -5394,8 +5394,8 @@ def _dash(a: argparse.Namespace) -> int:
 
 
 def _home(a: argparse.Namespace) -> int:
-    # `--profile` skips coxtop: coxtop takes no profile, and bare `cox` treats the flag the same way
-    if a.profile is None and coxtop_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin):
+    # `--profile` skips towpath: towpath takes no profile, and bare `cox` treats the flag the same way
+    if a.profile is None and towpath_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin):
         return 0
     return _route_context(argparse.Namespace(profile=a.profile, json=False))
 
@@ -5409,11 +5409,11 @@ def _session(a: argparse.Namespace) -> int:
 
 
 def _setup_tui(a: argparse.Namespace) -> int:
-    """Bare `cox setup`: plain coxtop, which takes no settings-open argument yet."""
-    launched = coxtop_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin)
+    """Bare `cox setup`: plain towpath, which takes no settings-open argument yet."""
+    launched = towpath_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin)
     if launched:
         return 0
-    print("setup: needs a terminal and coxtop; use setup doctor / setup install directly")
+    print("setup: needs a terminal and towpath; use setup doctor / setup install directly")
     return 2
 
 
@@ -5843,7 +5843,7 @@ HOME_GROUP = commands.Group(
 
 SESSION_GROUP = commands.Group(
     name="session", help="open the coxswain Claude session",
-    description="Open the coxswain Claude session: the argv bare `cox` used before coxtop became the entry point.",
+    description="Open the coxswain Claude session: the argv bare `cox` used before towpath became the entry point.",
     epilog="examples:\n  cox session\n  cox session --print-argv\n  cox session -- -r resume-me",
     args=(
         commands.Arg(("--profile",), {"help": "the profile to launch claude against"}),
@@ -6361,7 +6361,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         epilog=(
             "examples:\n"
-            "  bare cox on a terminal opens coxtop, the entry point and live dashboard\n"
+            "  bare cox on a terminal opens towpath, the entry point and live dashboard\n"
             "  cox session opens the coxswain Claude session\n"
             "  cox setup doctor checks this machine\n"
             "  cox route launch epic runs a filed initiative"
@@ -6450,7 +6450,7 @@ def build_parser() -> argparse.ArgumentParser:
     group, rows = _table_entry("setup")
     setup_p = commands.build_parser(rows, [group], sub)["setup"]
     # commands.build_parser's generic bare-group fallback prints help and
-    # exits 2; a bare `cox setup` instead hands off to coxtop, so override it here.
+    # exits 2; a bare `cox setup` instead hands off to towpath, so override it here.
     setup_p.set_defaults(fn=_setup_tui)
     return p
 

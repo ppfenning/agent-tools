@@ -36,8 +36,9 @@ uv tool install -e .            # `coxswain-tools` on PATH for every seat
 
 ## Commands
 
-Bare `cox` on a terminal opens coxtop, the main entry point from 0.27.
-`cox home` also opens coxtop when it is installed.
+Bare `cox` on a terminal opens towpath, the main entry point from 0.27.
+`cox home` also opens towpath when it is installed.
+`cox` opens towpath and falls back to a coxtop binary while the alias lasts, for two releases.
 
 `cox session [--profile P] [--no-plugin] [--print-argv]` opens the coxswain
 session: a real Claude Code session with the `coxswain` plugin loaded, working
@@ -46,7 +47,7 @@ directory at the profile's `workspace_dir`. It also takes the chair lock under
 stolen, and the session starts anyway.
 
 Bare `cox` keeps its earlier behaviour and starts the Claude session in three
-cases. Stdin or stdout is not a terminal. Coxtop is not on PATH. Or `--profile`,
+cases. Stdin or stdout is not a terminal. Towpath is not on PATH. Or `--profile`,
 `--no-plugin` or `--print-argv` is given.
 
 `agent-tools` still works this release as a deprecated alias for `cox`.
