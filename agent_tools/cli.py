@@ -2849,8 +2849,22 @@ def _route_import(a: argparse.Namespace) -> int:
     return 0
 
 
-def _route_draft(a: argparse.Namespace, act: Callable[[Path, draft_apply.Store], int]) -> int:
-    """Resolve the workspace and the work-state mode, then hand both to `act`."""
+def _initiative_token(runs_dir: Path, token: str) -> str:
+    """Edge. The initiative slug for a token that may be its short id; a slug comes back unchanged."""
+    return run_store.resolve_initiative(runs_dir, token)
+
+
+def _initiative_path(runs_dir: Path, token: str) -> Path:
+    """Edge. A launch argument as a directory: a path stays as given, a bare short id becomes `<workspace>/work/<slug>`."""
+    path = Path(token).expanduser()
+    if len(path.parts) != 1 or path.exists():
+        return path
+    slug = _initiative_token(runs_dir, token)
+    return path if slug == token else runs_dir.parent / "work" / slug
+
+
+def _route_draft(a: argparse.Namespace, act: Callable[[Path, draft_apply.Store, str], int]) -> int:
+    """Resolve the workspace and the work-state mode, then hand both and the initiative slug to `act`."""
     runs_dir, reason = _runs_dir_for_land(a)
     if runs_dir is None:
         print(f"route: {reason}")
@@ -2860,15 +2874,15 @@ def _route_draft(a: argparse.Namespace, act: Callable[[Path, draft_apply.Store],
         lambda initiative: run_store.work_items(runs_dir, initiative),
         lambda initiative, task, state, by, expected: store_cli.set_state(runs_dir, initiative, task, state, by, expected),
     )
-    return act(runs_dir.parent / "work", store)
+    return act(runs_dir.parent / "work", store, _initiative_token(runs_dir, a.initiative))
 
 
 def _route_approve(a: argparse.Namespace) -> int:
-    return _route_draft(a, lambda work, store: draft_apply.approve(work, a.initiative, a.task, a.by, store))
+    return _route_draft(a, lambda work, store, slug: draft_apply.approve(work, slug, a.task, a.by, store))
 
 
 def _route_decline(a: argparse.Namespace) -> int:
-    return _route_draft(a, lambda work, store: draft_apply.decline(work, a.initiative, a.reason, a.by, store))
+    return _route_draft(a, lambda work, store, slug: draft_apply.decline(work, slug, a.reason, a.by, store))
 
 
 def _live_runs(runs_dir: Path, now: str) -> set[str]:
@@ -2886,7 +2900,7 @@ def _route_edit(a: argparse.Namespace) -> int:
         print(f"route: {reason}")
         return 2
     result = route_edit.apply_edit(
-        runs_dir, runs_dir.parent, a.id, title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
+        runs_dir, runs_dir.parent, _initiative_token(runs_dir, a.id), title=a.title, body=a.body, body_file=a.body_file, repo=a.repo,
         dry_run=a.dry_run, live_runs=_live_runs(runs_dir, _now_iso()),
     )
     if result.code != route_edit.DONE:
@@ -2908,8 +2922,9 @@ def _route_remove(a: argparse.Namespace) -> int:
     )
     now, rows = datetime.datetime.now(datetime.UTC), run_store.read_queue(runs_dir)
     live = _live_runs(runs_dir, now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    rc = route_remove.remove(runs_dir.parent, a.id, a.reason, a.by or getpass.getuser(), now, rows, live, store, dry_run=a.dry_run)
-    target = route_guard.resolve_target(rows, a.id)
+    target_id = _initiative_token(runs_dir, a.id)
+    rc = route_remove.remove(runs_dir.parent, target_id, a.reason, a.by or getpass.getuser(), now, rows, live, store, dry_run=a.dry_run)
+    target = route_guard.resolve_target(rows, target_id)
     if rc == route_guard.DONE and not a.dry_run and isinstance(target, route_guard.QueuedIntake):
         _record_intake_done(runs_dir, runs_dir.parent / "intake" / "done" / f"{target.task_id}.md")
     return rc
@@ -3485,7 +3500,7 @@ def _route_priority(a: argparse.Namespace) -> int:
         return rc
     ws = Path(profile["workspace_dir"]).expanduser()
     flag = a.set if a.set is not None else ("up" if a.up else "down")
-    return route.set_initiative_priority(ws / "runs", ws, a.initiative, flag)
+    return route.set_initiative_priority(ws / "runs", ws, _initiative_token(ws / "runs", a.initiative), flag)
 
 
 def _run_argv(argv: list[str]) -> tuple[int, str, str]:
@@ -3787,10 +3802,11 @@ def _route_launch(a: argparse.Namespace) -> int:
     if venv_rc is not None:
         return venv_rc
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
+    launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     if a.graph == "epic":
-        _merge_initiative_tickets(Path(a.initiative).expanduser())
+        _merge_initiative_tickets(launch_dir)
         # Only --include-blocked lifts this guard; --force never does.
-        initiative_id = Path(a.initiative).expanduser().name
+        initiative_id = launch_dir.name
         held = route.launch_blockers([
             item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
         ])
@@ -3830,7 +3846,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     if a.graph in ("epic", "rescue"):
-        initiative_dir = Path(a.initiative).expanduser()
+        initiative_dir = launch_dir
         initiative_md = initiative_dir / "initiative.md"
         text = _read_text_or_none(initiative_md)
         if text is None:
@@ -3931,7 +3947,7 @@ def _route_launch(a: argparse.Namespace) -> int:
     env = route.child_env(dict(os.environ), harness_dir=harness_dir, repo=env_repo, trace_dir=str(trace_dir))
 
     if host is not None and a.dry_run:
-        for remote_argv in remote_launch.launch_plan(host, Path(a.initiative).name, run_id, _holder_label(a)):
+        for remote_argv in remote_launch.launch_plan(host, launch_dir.name, run_id, _holder_label(a)):
             print(f"dry-run: {shlex.join(remote_argv)}")
         print(f"host {host.name}")
         return 0
@@ -4093,7 +4109,7 @@ def _route_launch_on_host(
             env_names, {name: _host_env_probe(ssh_argv(host.ssh, env_check_argv(name))) for name in env_names}
         )
     result = remote_launch.launch_on_host(
-        host, Path(a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
+        host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
         preflight=preflight,
     )
     if isinstance(result, remote_launch.LaunchError):
@@ -5137,7 +5153,7 @@ def _dash_detail(kind: str, id_: str | None, runs_dir: Path, work_dir: Path, now
     if kind == "run":
         return dash_detail_run.build(_resolved_run_id(runs_dir, id_), runs_dir, now), 0
     if kind == "initiative":
-        return dash_detail_initiative.build(id_, work_dir, runs_dir, now), 0
+        return dash_detail_initiative.build(_initiative_token(runs_dir, id_), work_dir, runs_dir, now), 0
     if kind == "machine":
         return dash_detail_machine.build(id_, runs_dir, now), 0
     if kind == "spend":
