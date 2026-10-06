@@ -288,6 +288,21 @@ class TuningFacts(TypedDict):
     last_tuned_at: str | None  # ISO of the newest recorded tune_lanes or propose_tiers chair action; None when none
 
 
+class LandWatch(TypedDict):
+    initiative: str
+    phase: str
+    repo: str
+    pr: int
+    commit: str  # the new main commit of the land
+
+
+class LandedMain(LandWatch):
+    ci: Literal["pending", "green", "red"]
+    ci_output: str
+    smoke: Literal["pending", "ok", "failed"]
+    smoke_output: str
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -331,6 +346,9 @@ class Facts(TypedDict):
     phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
     idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
     tuning: NotRequired[TuningFacts]  # filled in later by the facts edge; absent means no tuning inputs
+    landed_main: NotRequired[list[LandedMain]]  # lands whose main commit is being watched; absent means none
+    # Keyed by initiative, oldest first, each entry "reverted" or "held"; absent means {}.
+    land_outcomes: NotRequired[dict[str, list[str]]]
 
 
 ActionKind = Literal[
@@ -360,6 +378,7 @@ ActionKind = Literal[
     "rebase_phase",
     "tune_lanes",
     "propose_tiers",
+    "revert_land",
 ]
 
 
@@ -374,7 +393,8 @@ class Action(TypedDict, total=False):
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
     carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
     tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
-    proposals and body and is propose-only: no action kind applies a tier or model change."""
+    proposals and body and is propose-only: no action kind applies a tier or model change.
+    revert_land carries initiative, phase, repo, pr, commit and reason."""
 
     kind: ActionKind
     epoch: int
@@ -408,6 +428,8 @@ class Action(TypedDict, total=False):
     evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
     proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
     body: str  # a propose_tiers carries the rendered inbox text
+    pr: int  # a revert_land names the pull request whose land turned main red
+    commit: str  # a revert_land names the new main commit of that land
 
 
 class PlanLands(Protocol):
