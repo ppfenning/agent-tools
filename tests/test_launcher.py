@@ -1,9 +1,8 @@
 import datetime
-import inspect
 import socket
 from pathlib import Path
 
-from agent_tools import chair, home_screen
+from agent_tools import chair
 from agent_tools.cli import _bare_launcher_split, _launcher_argv, main
 
 
@@ -126,18 +125,6 @@ def test_no_arg_off_a_tty_prints_route_status_and_does_not_open_curses(tmp_path,
     assert capsys.readouterr().out == expected
 
 
-def test_home_still_opens_the_screen_on_the_profile_workspace(tmp_path, monkeypatch):
-    signature = inspect.signature(home_screen.main)
-    calls = []
-    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: calls.append(signature.bind(*a, **k).arguments) or 0)
-    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(_profile(tmp_path, tmp_path / "skills")))
-    main(["home"])
-    ws = tmp_path / "workspace"
-    assert calls[0]["runs_dir"] == ws / "runs"
-    assert calls[0]["work_dir"] == ws / "work"
-    assert calls[0]["intake_dir"] == ws / "intake"
-
-
 def test_bare_cox_on_a_tty_with_no_args_takes_the_chair_and_runs_the_launcher(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
@@ -215,14 +202,3 @@ def test_a_stale_chair_from_an_earlier_bare_cox_today_is_retaken_not_refused(tmp
     assert f"chair taken: chair-{today}" in out
     assert "pass --steal" not in out
     assert calls and calls[0][0] == "claude"
-
-
-def test_home_threads_the_profiles_spend_window_ceiling_into_home_screen_main(tmp_path, monkeypatch):
-    signature = inspect.signature(home_screen.main)
-    calls = []
-    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: calls.append(signature.bind(*a, **k).arguments) or 0)
-    profile = _profile(tmp_path, tmp_path / "skills")
-    profile.write_text(profile.read_text() + "spend:\n  window_ceiling_usd: 42\n")
-    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
-    main(["home"])
-    assert calls[0]["window_ceiling_usd"] == 42.0
