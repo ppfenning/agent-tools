@@ -1456,6 +1456,8 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
         if step["kind"] == "route_sync":
             return {**step, "item": item_id or step["item"], "workspace": workspace,
                     "profile": profile, "runs_dir": runs_dir}
+        if step["kind"] == "fetch":
+            return {**step, "profile": profile, "runs_dir": runs_dir}
         if step["kind"] == "mark_done":
             marked = {**step, "path": (task_paths or {}).get(step["task"], path)}
             item = item_path or (task_items or {}).get(step["task"])
@@ -1736,10 +1738,63 @@ def _resolve_landed_conflicts(repo: Path, scratch_wt: Path, from_ref: str, branc
     return unresolved
 
 
+def _gather_worktree(repo: Path, step: dict) -> tuple[Path | None, str]:
+    """The pr branch's land worktree for a gather step: made from `from` by the first step, reused by the rest."""
+    wt = _land_worktree(repo, step["onto"])
+    if wt.exists():
+        return wt, ""
+    co = subprocess.run(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
+                        capture_output=True, text=True)
+    if co.returncode != 0:
+        return None, co.stderr.strip() or co.stdout.strip()
+    _link_venv(repo, wt)
+    return wt, ""
+
+
+def _gather_failed(wt: Path, what: str, abort: list[str], result: subprocess.CompletedProcess) -> tuple[bool, str]:
+    """Name the unmerged files, run `abort` in `wt`, and report `what conflicts in: ...` like a squash does."""
+    conflicted = subprocess.run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"],
+                                capture_output=True, text=True).stdout.split()
+    subprocess.run(["git", "-C", str(wt), *abort], capture_output=True, text=True)
+    return False, f"{what} conflicts in: {', '.join(conflicted)}" if conflicted else result.stderr.strip() or result.stdout.strip()
+
+
+def _execute_gather_step(repo: Path, step: dict) -> tuple[bool, str]:
+    """Edge. A gather `cherry_pick` or `patch_apply` step, run on the pr branch's worktree."""
+    wt, why = _gather_worktree(repo, step)
+    if wt is None:
+        return False, why
+    if step["kind"] == "cherry_pick":
+        rev = subprocess.run(["git", "-C", str(repo), "rev-list", "--no-merges", "--cherry-pick", "--right-only",
+                              f"{step['from']}...{step['branch']}"], capture_output=True, text=True)
+        shas = rev.stdout.split()
+        if rev.returncode != 0 or len(shas) != 1:
+            return False, f"expected exactly one commit ahead of {step['from']} on {step['branch']}, found {len(shas)}"
+        cp = subprocess.run(["git", "-C", str(wt), "cherry-pick", shas[0]], capture_output=True, text=True)
+        if cp.returncode != 0:
+            return _gather_failed(wt, f"cherry-pick of {step['branch']}", ["cherry-pick", "--abort"], cp)
+        return True, f"cherry-picked {shas[0][:8]} onto {step['onto']}"
+    applied = subprocess.run(["git", "-C", str(wt), "apply", "--3way", "--index", "-"], input=step["patch"],
+                             capture_output=True, text=True)
+    if applied.returncode != 0:
+        return _gather_failed(wt, f"patch of {step['task']}", ["reset", "--hard"], applied)
+    commit = subprocess.run(["git", "-C", str(wt), "commit", "-qm", step["task"]], capture_output=True, text=True)
+    if commit.returncode != 0:
+        subprocess.run(["git", "-C", str(wt), "reset", "--hard"], capture_output=True, text=True)
+        return False, commit.stderr.strip() or commit.stdout.strip()
+    return True, f"applied patch of {step['task']} onto {step['onto']}"
+
+
 def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tuple[bool, str]:
     kind = step["kind"]
     if kind == "pick_branch":
         return True, f"{step['branch']} ({step['commit_subject']})"
+    if kind == "fetch":
+        # The one fetch path: `cox runs fetch <run>`, read from the profile and runs dir the land enriched in.
+        fetch = argparse.Namespace(run_id=step["run"], all=False, runs_dir=step.get("runs_dir"), profile=step.get("profile"))
+        return (True, f"fetched {step['run']}") if _runs_fetch(fetch) == 0 else (False, f"fetch of {step['run']} failed")
+    if kind == "patch_apply" or (kind == "cherry_pick" and "task" in step):
+        return _execute_gather_step(repo, step)
     if kind == "cherry_pick":
         # The pr branch is built in its own worktree, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])
@@ -2393,7 +2448,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
             return 2, reached, pr
         reached.append(step["kind"])
-        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch"):
+        if step["kind"] in ("cherry_pick", "squash_phase", "reuse_branch", "patch_apply"):
             built.append(step.get("onto") or step["branch"])
         if step["kind"] == "merge":
             # gh and git cannot delete a branch a worktree still holds.
