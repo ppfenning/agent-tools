@@ -489,38 +489,67 @@ def _spend_points(calls_by_run: Mapping[str, Sequence[Mapping]]) -> list[tuple[d
     return [(ts, float(call.get("cost_usd") or 0.0)) for ts, call in stamped if ts is not None]
 
 
+def _short_id(slug: str | None, ids: Mapping[str, str]) -> str | None:
+    """The short id `ids` holds for an initiative slug; None for no slug or a slug `ids` lacks."""
+    return ids.get(slug) if slug else None
+
+
+def _run_slug(run: str) -> str:
+    """The initiative slug of a run key: the key with its trailing `-<digits>` removed."""
+    return re.sub(r"-\d+$", "", run)
+
+
+def _task_slug(target: str, ids: Mapping[str, str]) -> str | None:
+    """The longest slug in `ids` that `target` starts with, followed by `-`; None when none does."""
+    return max((slug for slug in ids if target.startswith(f"{slug}-")), key=len, default=None)
+
+
 def _runs_v1(
     lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
-    calls_by_run: Mapping[str, Sequence[Mapping]] | None = None,
+    calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
 ) -> list[dict]:
     """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
-    Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`."""
+    Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`.
+    Each row gains `short_id` from `short_ids` by its run key's initiative slug."""
     aware = now if now.tzinfo else now.replace(tzinfo=UTC)
     rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
     by_run = calls_by_run or {}
-    return [{**row, "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ())))} for row in rows]
+    ids = short_ids or {}
+    return [
+        {
+            **row,
+            "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ()))),
+            "short_id": _short_id(_run_slug(row["run"]), ids),
+        }
+        for row in rows
+    ]
 
 
-def _queue_v1(row: dict) -> dict:
-    return {**row, "priority": int(row.get("priority") or 0), "current_phase": str(row.get("current_phase") or "")}
+def _queue_v1(row: dict, ids: Mapping[str, str]) -> dict:
+    return {
+        **row, "priority": int(row.get("priority") or 0), "current_phase": str(row.get("current_phase") or ""),
+        "short_id": _short_id(row.get("initiative"), ids),
+    }
 
 
 _REF = re.compile(r"coxswain://([^/]+)/(.*)")
 
 
-def _inbox_v1(entry: dict) -> dict:
-    """A courier entry as the schema-1 inbox row: the reference's kind and id, and the note as the reason."""
+def _inbox_v1(entry: dict, ids: Mapping[str, str]) -> dict:
+    """A courier entry as the schema-1 inbox row: the reference's kind and id, and the note as the reason.
+    A `task` row takes `short_id` by its target's longest slug prefix; courier entries carry no initiative."""
     match = _REF.fullmatch(str(entry.get("ref") or ""))
     kind, target = match.groups() if match else ("", str(entry.get("ref") or ""))
-    return {"kind": kind, "target": target, "reason": str(entry.get("note") or "")}
+    slug = _task_slug(target, ids) if kind == "task" else None
+    return {"kind": kind, "target": target, "reason": str(entry.get("note") or ""), "short_id": _short_id(slug, ids)}
 
 
-def _review_inbox_v1(review_prs: Sequence[ReviewPr]) -> list[dict]:
+def _review_inbox_v1(review_prs: Sequence[ReviewPr], ids: Mapping[str, str]) -> list[dict]:
     """One `review_pr` inbox row per awaiting review PR, whatever its state; `target` is the task id."""
     return [
         {
             "kind": "review_pr", "initiative": pr["initiative"], "target": pr["task_id"], "url": pr["url"],
-            "reason": "awaiting review",
+            "reason": "awaiting review", "short_id": _short_id(pr["initiative"], ids),
         }
         for pr in review_prs
     ]
@@ -639,19 +668,21 @@ def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list,
     return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
 
 
-def _history_v1(rows: Mapping, at: datetime) -> tuple[list[dict], dict]:
-    """`history` and `history_today` from store rows, counting a day in the chair's zone."""
+def _history_v1(rows: Mapping, at: datetime, ids: Mapping[str, str]) -> tuple[list[dict], dict]:
+    """`history` and `history_today` from store rows, counting a day in the chair's zone.
+    Each history row gains `short_id` by its `initiative`."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     args = (rows["runs"], rows["task_records"], rows["node_calls"])
-    return build_history(*args), _history_today(*args, at, timezone(offset))
+    history = [{**row, "short_id": _short_id(row.get("initiative"), ids)} for row in build_history(*args)]
+    return history, _history_today(*args, at, timezone(offset))
 
 
-def _history_edge(runs_dir: Path, at: datetime) -> tuple[list[dict], dict]:
+def _history_edge(runs_dir: Path, at: datetime, ids: Mapping[str, str]) -> tuple[list[dict], dict]:
     """Edge: the feed's history from the store alone. An unreadable store gives no history and zero counts."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     since = local_midnight(at, offset).astimezone(UTC).isoformat()
     try:
-        return _history_v1(read_history_rows(runs_dir, since), at)
+        return _history_v1(read_history_rows(runs_dir, since), at, ids)
     except Exception:  # the history is garnish: a store failure must not take the feed down
         return [], dict(_ZERO_HISTORY_TODAY)
 
@@ -659,7 +690,8 @@ def _history_edge(runs_dir: Path, at: datetime) -> tuple[list[dict], dict]:
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
-    except a machine's `login_ok`, which is null while its login is unchecked. `profile` is the parsed profile
+    except a machine's `login_ok`, which is null while its login is unchecked, and a row's `short_id`, which is
+    null when its initiative has none. `profile` is the parsed profile
     the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
@@ -682,16 +714,17 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         **{run: _run_calls(runs_dir, run) for run in lane_ids},
         **{record["run"]: record["calls"] for record in records},
     }
-    history, today = _history_edge(runs_dir, at)
+    short_ids = run_store.initiative_short_ids(runs_dir)
+    history, today = _history_edge(runs_dir, at, short_ids)
     return snapshot(
         now,
         _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
-        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run),
-        [_queue_v1(row) for row in queue],
+        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run, short_ids),
+        [_queue_v1(row, short_ids) for row in queue],
         queue_total,
-        [*(_inbox_v1(entry) for entry in inbox), *_review_inbox_v1(review_prs)],
+        [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)],
         inbox_total + len(review_prs),
         [],
         _open_decisions(entries, blob),

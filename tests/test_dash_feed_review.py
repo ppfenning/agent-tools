@@ -12,7 +12,7 @@ PR = {
 
 def test_the_inbox_over_one_awaiting_task_carries_the_fixture_entry():
     fixture = json.loads(Path("tests/fixtures/dash_feed_v1.json").read_text(encoding="utf-8"))
-    assert _review_inbox_v1([PR]) == [e for e in fixture["inbox"] if e["kind"] == "review_pr"]
+    assert _review_inbox_v1([PR], {"dash-feed": "I412"}) == [e for e in fixture["inbox"] if e["kind"] == "review_pr"]
 
 
 def test_gather_feed_lists_an_awaiting_pr_with_its_url_and_never_asks_the_forge(monkeypatch, tmp_path):
@@ -29,11 +29,12 @@ def test_gather_feed_lists_an_awaiting_pr_with_its_url_and_never_asks_the_forge(
     monkeypatch.setattr(dash_feed, "_local_login", lambda name: None)
     monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([], 0))
     monkeypatch.setattr(dash_feed, "_courier_blob", lambda work_dir: "")
+    monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
 
     def forbidden(*args, **kwargs):
         raise AssertionError("the feed must not call the forge or a subprocess")
 
     monkeypatch.setattr(dash_feed.subprocess, "run", forbidden)
     feed = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
-    assert feed["inbox"] == [_review_inbox_v1([PR])[0]]
+    assert feed["inbox"] == [_review_inbox_v1([PR], {})[0]]
     assert feed["inbox_total"] == 1

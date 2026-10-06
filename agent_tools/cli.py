@@ -833,15 +833,14 @@ def _steward_draft(a: argparse.Namespace) -> int:
 
 
 def _runs_top(a: argparse.Namespace) -> int:
-    heartbeat_minutes = _leader_heartbeat_minutes()
-    if a.once:
-        chair_state = runs_top_screen.chair_now(a.runs_dir, heartbeat_minutes)
-        print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), 120, chair_state)))
+    """On two terminals with coxtop installed, exec coxtop; otherwise, and always with --once, print the table."""
+    # The seams are passed at call time so a test can stub them; launch's own defaults bind at import.
+    if not a.once and coxtop_launch.launch(shutil.which, os.execv, sys.stdout, sys.stdin):
         return 0
-    if not sys.stdin.isatty():
-        print("runs top: needs a terminal; use --once")
-        return 2
-    return runs_top_screen.main(a.runs_dir, a.interval, heartbeat_minutes)
+    heartbeat_minutes = _leader_heartbeat_minutes()
+    chair_state = runs_top_screen.chair_now(a.runs_dir, heartbeat_minutes)
+    print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), 120, chair_state)))
+    return 0
 
 
 def _runs_bar(a: argparse.Namespace) -> int:
