@@ -35,6 +35,7 @@ __all__ = [
     "initiative_summaries",
     "intake_entries",
     "intake_file",
+    "is_chair_machine",
     "latest_groups_file",
     "launch_blockers",
     "launch_claim",
@@ -60,6 +61,7 @@ __all__ = [
     "run_entries",
     "run_under_claim",
     "set_initiative_priority",
+    "should_export_board",
     "slugify",
     "state_problems",
     "status_entries",
@@ -1301,6 +1303,16 @@ def launch_claim_gate(claim: dict | None, blocker: str | None) -> tuple[int | No
     if blocker == run_store.UNAVAILABLE:
         return None, ["routing: warning, the work-item store is unavailable; launching without a claim"]
     return 2, [f"routing: launch refused, {blocker} already holds this task"]
+
+
+def is_chair_machine(lease_host: str, local_host: str) -> bool:
+    """Pure: a lease held by another machine names that machine the chair; no lease host leaves this one the chair."""
+    return lease_host in ("", local_host)
+
+
+def should_export_board(is_chair: bool) -> bool:
+    """Pure: only the chair machine exports the board, because only the chair commits the files it writes."""
+    return is_chair
 
 
 def run_under_claim[T](

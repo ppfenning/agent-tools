@@ -41,14 +41,32 @@ def _filled(parsed: Row, stored: Row) -> Row | None:
     return {**{k: v for k, v in stored.items() if k not in _CLAIM_KEYS}, **gaps}
 
 
+def intake_state(intake_id: str, initiative_ids: frozenset[str]) -> tuple[str, dict[str, str]]:
+    """An intake whose id names an existing initiative is decomposed and links to it; any other stays queued."""
+    return ("decomposed", {"initiative": intake_id}) if intake_id in initiative_ids else ("queued", {})
+
+
+def initiative_ids(existing: list[Row]) -> frozenset[str]:
+    return frozenset(row["task_id"] for row in existing if row.get("kind") == "initiative")
+
+
+def _linked(row: Row, ids: frozenset[str]) -> Row:
+    """A new queued intake row linked to its initiative, or the row unchanged: a done intake stays done."""
+    if row.get("kind") != "intake" or row.get("state") != "queued":
+        return row
+    state, extra = intake_state(row["task_id"], ids)
+    return {**row, "state": state, "extra": {**(row.get("extra") or {}), **extra}}
+
+
 def plan_fill(parsed: list[Row], existing: list[Row]) -> Plan:
     """Insert a row the store lacks; fill only the missing content of one it has. First row per key wins, so
     `intake/x.md` and `intake/done/x.md` cannot overwrite each other."""
     first_at = {_key(row): i for i, row in reversed(list(enumerate(parsed)))}
     deduped = [row for i, row in enumerate(parsed) if first_at[_key(row)] == i]
     stored = {_key(row): row for row in existing}
+    ids = initiative_ids(existing)
     outcomes = [
-        ("inserted", row) if _key(row) not in stored else ("filled", _filled(row, stored[_key(row)]))
+        ("inserted", _linked(row, ids)) if _key(row) not in stored else ("filled", _filled(row, stored[_key(row)]))
         for row in deduped
     ]
     writes = tuple(write for tag, write in outcomes if write is not None)

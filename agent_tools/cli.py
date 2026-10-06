@@ -4008,14 +4008,14 @@ def _route_launch(a: argparse.Namespace) -> int:
     if a.graph == "epic":
         initiative_id = launch_dir.name
         if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
-            rows_code, rows_lines, _ = route.launch_from_rows(runs_dir, initiative_id, a.repo)
+            # The chair is the machine the chair lease names; a lane host reads rows but never exports, since only the chair commits.
+            lease = chair_read_lease.read_lease(runs_dir, datetime.datetime.now(datetime.UTC))
+            is_chair = route.is_chair_machine(lease["host"], socket.gethostname())
+            rows_code, rows_lines = _launch_rows_then_export(runs_dir, initiative_id, a.repo, is_chair)
+            for line in rows_lines:
+                print(line)
             if rows_code:
-                for line in rows_lines:
-                    print(line)
                 return rows_code
-            skipped = _export_board(runs_dir, runs_dir.parent)
-            if skipped:
-                print(f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}")
         _merge_initiative_tickets(launch_dir)
         # Only --include-blocked lifts this guard; --force never does.
         held = route.launch_blockers([
@@ -4596,6 +4596,22 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
 
     store_fill.fill_workspace(workspace)
     return queue_export.export_files(workspace, run_store.read_queue(runs_dir)).skipped
+
+
+def _launch_rows_then_export(
+    runs_dir: Path, initiative_id: str, repo: str | None, is_chair: bool,
+    read_rows: Callable | None = None, export: Callable[[Path, Path], list[str]] | None = None,
+) -> tuple[int, list[str]]:
+    """Edge. Read the initiative's rows, then export the whole board only when `is_chair`; the exit code and the lines to print.
+
+    A rows error returns before any export. A lane host reads the same rows and prints nothing about the export."""
+    code, lines, _ = (read_rows or route.launch_from_rows)(runs_dir, initiative_id, repo)
+    if code:
+        return code, lines
+    if not route.should_export_board(is_chair):
+        return 0, []
+    skipped = (export or _export_board)(runs_dir, runs_dir.parent)
+    return 0, [f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}"] if skipped else []
 
 
 def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:

@@ -18,6 +18,7 @@ Row = dict[str, Any]
 _TASK_DEFAULT_STATE = "todo"  # route.work_item's default for a file that names no state
 _LIFTED = ("title", "needs", "surfaces")
 _INTAKE_STAMPED_STATE = "done"  # cli._route_file_from_intake writes the stamped intake to intake/done/
+_INITIATIVE_LINE_STATES = ("landed", "decomposed")  # intake states that export to intake/ and carry an initiative
 # initiative.md names no state: route.initiative_states derives done from its tasks. The row holds the default.
 _INITIATIVE_STATE = _TASK_DEFAULT_STATE
 
@@ -91,8 +92,17 @@ def parse_item(kind: str, path_parts: tuple[str, ...], text: str) -> Row | None:
     }
 
 
+def _initiative_line(row: Row) -> str | None:
+    """extra.initiative, else the row's own id when it names an initiative: the row's `initiative` field equals it."""
+    if row["kind"] != "intake" or row["state"] not in _INITIATIVE_LINE_STATES:
+        return None
+    own_id = str(row["extra"].get("id") or row["task_id"])
+    return row["extra"].get("initiative") or (own_id if row["initiative"] == own_id else None)
+
+
 def render_item(row: Row) -> str:
-    """Frontmatter keys in a fixed order: state (tasks only, an intake's state is its path), title, needs, surfaces, then extra sorted."""
+    """Frontmatter keys in a fixed order: state (tasks only, an intake's state is its path), title, needs, surfaces, then extra sorted.
+    A landed or decomposed intake also gets `initiative:`, so route.intake_groups reads it as decomposed."""
     named = {
         **({"state": row["state"]} if row["kind"] == "task" else {}),
         "title": row["title"],
@@ -100,7 +110,9 @@ def render_item(row: Row) -> str:
         "surfaces": row["surfaces"],
     }
     kept = {k: v for k, v in named.items() if k == "state" or v}
-    extra = {k: row["extra"][k] for k in sorted(row["extra"], key=str) if k not in kept}
+    initiative = _initiative_line(row)
+    with_line = {**row["extra"], **({"initiative": initiative} if initiative else {})}
+    extra = {k: with_line[k] for k in sorted(with_line, key=str) if k not in kept}
     fields = {**kept, **extra}
     header = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, width=10**6) if fields else ""
     return f"---\n{header}---\n{row['body']}"
