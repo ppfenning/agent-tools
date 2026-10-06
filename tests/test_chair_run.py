@@ -16,6 +16,7 @@ from agent_tools.chair_run import (
     error_line,
     land_sink,
     next_gate_record,
+    no_landing,
     run,
     tick,
 )
@@ -260,6 +261,22 @@ def test_sigterm_with_a_pending_land_stops_the_worker_and_returns():
     assert lands.submit({"kind": "land", "repo": "/other"}, lambda: None)["status"] == "busy"
     assert rig.released == [True]
     gate.set()
+
+
+def test_landing_lists_a_land_in_progress_and_drops_it_once_it_finishes():
+    release = threading.Event()
+    lands = land_sink(lambda: None, wait=lambda s: release.wait(0.01))
+    action = {"kind": "land_phase", "initiative": "ind", "phase": "p1", "repo": "/repo", "run": "ind-1"}
+    assert lands.submit(action, lambda: release.wait(5) and {"action": action, "status": "ok", "reason": ""})["status"] == "in_progress"
+    assert lands.landing() == [{"initiative": "ind", "phase": "p1", "repo": "/repo"}]
+    release.set()
+    assert lands._handles["/repo"][1].wait(5)
+    assert lands.landing() == []
+    assert len(lands.collect()) == 1 and lands.landing() == []
+
+
+def test_a_chair_with_no_land_worker_reports_no_landing():
+    assert no_landing() == []
 
 
 def test_a_dry_run_installs_no_sigterm_handler():

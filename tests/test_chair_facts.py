@@ -92,6 +92,15 @@ def test_an_absent_schema_deaths_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["schema_deaths"] == {}
 
 
+def test_a_landing_callables_list_appears_under_landing():
+    landing = [{"initiative": "i", "phase": "p1", "repo": "/r"}]
+    assert gather_facts(replace(_deps(), landing=lambda: landing), NOW)["landing"] == landing
+
+
+def test_an_absent_landing_callable_gives_an_empty_list():
+    assert gather_facts(_deps(), NOW)["landing"] == []
+
+
 REVIEW_PR = {
     "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
     "url": "https://example.test/pr/1", "state": "open", "merged_at": None,
