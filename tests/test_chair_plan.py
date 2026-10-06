@@ -1002,6 +1002,13 @@ def test_an_empty_newest_run_host_maps_to_the_local_machine():
     assert initiative_homes({"demo": ""}, {"demo"}) == {"demo": ""}
 
 
+def test_a_run_on_the_chairs_own_host_homes_its_initiative_on_this_machine():
+    """Local runs record the chair's hostname (2026-10-05: bp-macbook), not a blank; homed by name, placement
+    looked for a lane host called bp-macbook and dropped every relaunch homed on the chair's machine."""
+    assert initiative_homes({"demo": "bp-macbook", "other": "jarvis"}, {"demo", "other"}, local_host="bp-macbook") == {
+        "demo": "", "other": "jarvis"}
+
+
 def _remote(**overrides) -> Facts:
     """Initiative a with one live remote run a-3, fetched and not yet exited."""
     live = _stall_candidate(run="a-3", initiative="a", local=False, last_call=None)
