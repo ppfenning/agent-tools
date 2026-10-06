@@ -21,6 +21,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 def _no_real_claude(monkeypatch):
     """`gather_feed` asks `claude auth status`; no test here may start that process."""
     monkeypatch.setattr(dash_feed, "_local_login", lambda local_name: None)
+    monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: {})
 
 
 def _assert_matches_fixture_keys_and_nulls(output, fixture, path="root"):
@@ -92,6 +93,7 @@ def test_snapshot_matches_committed_fixture():
             "verdict": "approve",
             "status": "running",
             "cost_series": [["2026-09-28T23:40:00Z", 0.42, "plan"], ["2026-09-28T23:55:00Z", 0.84, "build"]],
+            "short_id": "I412",
         },
         {
             "run": "dash-feed-0",
@@ -104,6 +106,7 @@ def test_snapshot_matches_committed_fixture():
             "verdict": "approve",
             "status": "landed",
             "cost_series": [],
+            "short_id": "I412",
         },
         {
             "run": "dash-feed-9",
@@ -116,6 +119,7 @@ def test_snapshot_matches_committed_fixture():
             "verdict": "reject",
             "status": "quarantined",
             "cost_series": [],
+            "short_id": None,
         },
     ]
     queue = [
@@ -125,13 +129,23 @@ def test_snapshot_matches_committed_fixture():
             "phases_landed": 0,
             "phases_total": 3,
             "current_phase": "p1-foundations",
-        }
+            "short_id": "I412",
+        },
+        {
+            "initiative": "unnumbered-initiative",
+            "priority": 2,
+            "phases_landed": 0,
+            "phases_total": 1,
+            "current_phase": "p1-foundations",
+            "short_id": None,
+        },
     ]
     inbox = [
         {
             "kind": "needs_chair",
             "target": "some-task",
             "reason": "budget stop after 2 attempts",
+            "short_id": None,
         },
         {
             "kind": "review_pr",
@@ -139,6 +153,7 @@ def test_snapshot_matches_committed_fixture():
             "target": "p2-feed-task",
             "url": "https://github.com/pat/coxswain-tools/pull/42",
             "reason": "awaiting review",
+            "short_id": "I412",
         },
     ]
     watch = []
@@ -158,18 +173,18 @@ def test_snapshot_matches_committed_fixture():
         {
             "run": "dash-feed-0", "machine": "omarchy", "initiative": "dash-feed",
             "ended_at": "2026-09-28T23:50:00Z", "outcome": "landed", "cost_usd": 2.15,
-            "landed": [{"task": "p1-foundations-task", "pr": 41}],
+            "landed": [{"task": "p1-foundations-task", "pr": 41}], "short_id": "I412",
         },
         {
             "run": "dash-feed-9", "machine": "omarchy", "initiative": "dash-feed",
             "ended_at": "2026-09-28T23:40:00Z", "outcome": "quarantined", "cost_usd": 0.42,
-            "landed": [], "cause": "review rejected twice",
+            "landed": [], "cause": "review rejected twice", "short_id": None,
         },
     ]
     history_today = {"lands": 1, "quarantines": 1, "cost_usd": 2.57, "runs": 2}
 
     result = snapshot(
-        at, chair, spend, machines, runs, queue, 1, inbox, 2, watch, decisions, spend_series,
+        at, chair, spend, machines, runs, queue, 2, inbox, 2, watch, decisions, spend_series,
         history=history, history_today=history_today,
     )
 
@@ -346,12 +361,13 @@ def test_the_live_feed_has_the_fixture_s_keys_no_nulls_and_serializes(monkeypatc
     for section in ("machines", "runs", "queue", "inbox"):
         assert set(feed[section][0]) == set(fixture[section][0]), section
     rows = [feed["chair"], feed["spend"], *feed["machines"], *feed["runs"], *feed["queue"], *feed["inbox"]]
-    # `current_action` is null when nothing is running and `tick_age_s` when no tick was read; the only nulls the feed allows.
-    assert all(value is not None for row in rows for key, value in row.items() if key not in ("current_action", "tick_age_s"))
+    # `current_action` is null when nothing is running, `tick_age_s` when no tick was read, `short_id` when its initiative has none.
+    nullable = ("current_action", "tick_age_s", "short_id")
+    assert all(value is not None for row in rows for key, value in row.items() if key not in nullable)
     assert (feed["chair"]["host"], feed["chair"]["epoch"], feed["chair"]["beat_age_s"]) == ("omarchy", 7, 60)
     assert (feed["runs"][0]["machine"], feed["runs"][0]["cost"]) == ("omarchy", 0.5)
     assert feed["machines"][0]["beat_age_s"] == 60
-    assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it"}
+    assert feed["inbox"][0] == {"kind": "task", "target": "t1", "reason": "land it", "short_id": None}
 
     run_raw = {
         **_BASE_RAW,
@@ -643,3 +659,79 @@ def test_the_feed_reads_history_since_eastern_midnight_and_builds_it_from_the_ro
     ]
     assert feed["history"][0]["landed"] == [{"task": "t-1", "pr": 7}]
     assert feed["history_today"] == {"lands": 1, "quarantines": 1, "cost_usd": 2.0, "runs": 2}
+
+
+_IDS = {"dash-feed": "I412", "dash-feed-streams": "I7"}
+
+
+def test_a_run_key_with_a_numeric_suffix_maps_to_its_initiatives_short_id():
+    lane = console_screen.LaneRow("dash-feed-37", None, "", "p1", "build", 1, 4, 0.5, 0, 3)
+    unknown = console_screen.LaneRow("gone-3", None, "", "p1", "build", 1, 4, 0.5, 0, 3)
+    now = datetime(2026, 10, 5, tzinfo=UTC)
+
+    rows = dash_feed._runs_v1([lane, unknown], "omarchy", [], now, None, _IDS)
+
+    assert [r["short_id"] for r in rows] == ["I412", None]
+    assert dash_feed._run_slug("listings-and-the-dash-feed-show-short-ids-and-37") == (
+        "listings-and-the-dash-feed-show-short-ids-and"
+    )
+
+
+def test_a_courier_task_row_maps_by_the_longest_matching_slug_prefix():
+    task = {"ref": "coxswain://task/dash-feed-streams-p2-feed", "note": "n"}
+    shorter = {"ref": "coxswain://task/dash-feed-p2-feed", "note": "n"}
+
+    assert dash_feed._inbox_v1(task, _IDS)["short_id"] == "I7"
+    assert dash_feed._inbox_v1(shorter, _IDS)["short_id"] == "I412"
+
+
+def test_a_review_pr_row_uses_its_initiative():
+    pr = {"initiative": "dash-feed-streams", "phase": "p2", "task_id": "other-task", "repo": "r", "url": "u",
+          "state": "unknown", "merged_at": None}
+
+    assert dash_feed._review_inbox_v1([pr], _IDS)[0]["short_id"] == "I7"
+
+
+def test_an_unknown_slug_and_a_non_task_courier_row_give_null():
+    pr = {"initiative": "gone", "phase": "p2", "task_id": "t", "repo": "r", "url": "u", "state": "unknown",
+          "merged_at": None}
+    non_task = {"ref": "coxswain://needs_chair/dash-feed-p2-feed", "note": "n"}
+    unknown_task = {"ref": "coxswain://task/gone-p2", "note": "n"}
+
+    assert dash_feed._review_inbox_v1([pr], _IDS)[0]["short_id"] is None
+    assert dash_feed._inbox_v1(non_task, _IDS)["short_id"] is None
+    assert dash_feed._inbox_v1(unknown_task, _IDS)["short_id"] is None
+    assert dash_feed._queue_v1({"initiative": "gone"}, _IDS)["short_id"] is None
+
+
+def test_queue_and_history_rows_use_their_initiative_field(monkeypatch):
+    rows = [{"run": "a-1", "initiative": "dash-feed"}, {"run": "b-1", "initiative": "gone"}]
+    monkeypatch.setattr(dash_feed, "build_history", lambda *args: rows)
+    monkeypatch.setattr(dash_feed, "_history_today", lambda *args: {})
+    store_rows = {"runs": [], "task_records": [], "node_calls": []}
+
+    history, _ = dash_feed._history_v1(store_rows, datetime(2026, 10, 5, tzinfo=UTC), _IDS)
+
+    assert [r["short_id"] for r in history] == ["I412", None]
+    assert dash_feed._queue_v1({"initiative": "dash-feed"}, _IDS)["short_id"] == "I412"
+
+
+def test_gather_feed_reads_the_short_ids_once_and_puts_them_on_run_queue_and_inbox_rows(monkeypatch, tmp_path):
+    reads = []
+    sections = {
+        "chair": [], "spend": {}, "hosts": [],
+        "lanes": [console_screen.LaneRow("dash-feed-1", None, "", "p1", "build", 1, 2, 0.1, 0, 2)],
+    }
+    monkeypatch.setattr(dash_feed.run_store, "initiative_short_ids", lambda runs_dir: reads.append(runs_dir) or _IDS)
+    monkeypatch.setattr(dash_feed.console_screen, "gather", lambda *args, **kwargs: sections)
+    monkeypatch.setattr(dash_feed, "_spend", lambda *args: {})
+    monkeypatch.setattr(dash_feed, "_local_identity", lambda runs_dir, profile: ("omarchy", 3))
+    monkeypatch.setattr(dash_feed, "_queue", lambda runs_dir: ([{"initiative": "dash-feed"}], 1))
+    monkeypatch.setattr(dash_feed, "_inbox", lambda entries: ([{"ref": "coxswain://task/dash-feed-p1", "note": "n"}], 1))
+
+    feed = dash_feed.gather_feed(tmp_path, tmp_path, "2026-09-29T21:00:00Z")
+
+    assert reads == [tmp_path]
+    assert feed["runs"][0]["short_id"] == "I412"
+    assert feed["queue"][0]["short_id"] == "I412"
+    assert feed["inbox"][0]["short_id"] == "I412"
