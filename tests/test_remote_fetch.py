@@ -7,6 +7,7 @@ import pytest
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_fetch import (
     FetchError,
+    approved_without_branch,
     chair_repo_path,
     fetch_plan,
     fetch_run,
@@ -173,3 +174,58 @@ def test_fetch_run_maps_repos_inside_the_workspace_and_keeps_those_outside(tmp_p
         ["git", "-C", outside, "fetch", "u@h:/elsewhere/repo", refspec, phase_refspec],
         ["git", "-C", outside, *verify],
     ]
+
+
+def _record(task, approved):
+    verdict = {"verdict": "approve" if approved else "reject"}
+    return {"run": "r1", "task": task, "repo": "/elsewhere/repo", "review": verdict, "adversary": verdict}
+
+
+def test_approved_without_branch_is_empty_when_every_task_is_quarantined():
+    assert approved_without_branch([_record("t1", False), _record("t2", False)], frozenset(), "r1") == []
+
+
+def test_approved_without_branch_names_the_approved_task_whose_branch_is_absent():
+    assert approved_without_branch([_record("t1", False), _record("t2", True)], frozenset(), "r1") == ["t2"]
+
+
+def test_approved_without_branch_is_empty_when_each_approved_task_has_a_branch():
+    branches = frozenset(["agents/r1/t1", "agents/r1/t2"])
+    assert approved_without_branch([_record("t1", True), _record("t2", True)], branches, "r1") == []
+
+
+def _fetch_with(tmp_path, records, branches):
+    """`fetch_run` against a fake `run_cmd` that has exactly `branches`; its `ls-remote` finds one only if any exist."""
+    task_dir = tmp_path / "runs" / "r1" / "tasks" / "p1"
+    task_dir.mkdir(parents=True)
+    for i, record in enumerate(records):
+        (task_dir / f"{i}.json").write_text(record if isinstance(record, str) else json.dumps(record))
+
+    def run_cmd(argv):
+        if "rev-parse" in argv:
+            return 0 if argv[-1].removeprefix("refs/heads/") in branches else 1
+        if "ls-remote" in argv:
+            return 0 if branches else 2
+        return 0
+
+    return fetch_run(LaneHost("h", "u@h", "/w"), "r1", tmp_path / "runs", task_repos, run_cmd, lambda p: p,
+                     lease_released=True, ended_at="t")
+
+
+def test_fetch_run_is_done_when_no_task_was_approved_and_no_branch_arrived(tmp_path):
+    assert _fetch_with(tmp_path, [_record("t1", False)], set()) == ("/elsewhere/repo",)
+
+
+def test_fetch_run_fails_verify_naming_an_approved_task_with_no_branch(tmp_path):
+    result = _fetch_with(tmp_path, [_record("t1", False), _record("t2", True)], set())
+    assert isinstance(result, FetchError) and result.step == "verify" and "t2" in result.message
+
+
+def test_fetch_run_is_done_when_every_approved_task_has_its_branch(tmp_path):
+    branches = {"agents/r1/t1", "agents/r1/t2"}
+    assert _fetch_with(tmp_path, [_record("t1", True), _record("t2", True)], branches) == ("/elsewhere/repo",)
+
+
+def test_fetch_run_lets_the_branch_check_decide_when_a_record_is_unreadable(tmp_path):
+    result = _fetch_with(tmp_path, [_record("t1", False), "not json"], set())
+    assert isinstance(result, FetchError) and result.step == "verify"
