@@ -705,6 +705,89 @@ def test_phase_plan_of_only_done_and_dropped_items_is_a_no_op_that_records_done(
     assert steps == [{"kind": "note", "reason": "phase seams done: every item is done or dropped, nothing to land"}]
 
 
+def _gather_record(task, run, **extra):
+    return {"task": task, "run": run, "phase": "seams", "status": "approved",
+            "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+            "build": {"files_touched": [f"{task}.py"], "patch": f"diff --git a/{task}.py b/{task}.py"},
+            "change_facts": {"fix_loop_attempts": 0, "files_touched": [f"{task}.py"]}, **extra}
+
+
+def _gather_plan(records, branches, **kw):
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    items = [{"id": r["task"], "status": "approved"} for r in records]
+    return land.land_plan(phase_record, branches, "main", items=items, task_records=records, **kw)
+
+
+_EMPTY_PHASE = {"epic/x/seams": []}
+
+
+def test_phase_plan_gathers_a_cherry_pick_per_record_in_task_order_for_an_empty_phase_branch():
+    records = [_gather_record("seams-a", "epic-x-1"), _gather_record("seams-b", "epic-x-2")]
+    branches = {**_EMPTY_PHASE, "agents/epic-x-1/seams-a": ["add a"], "agents/epic-x-2/seams-b": ["add b"]}
+    steps = _gather_plan(records, branches, repo="/r")
+    assert [s["kind"] for s in steps] == ["cherry_pick", "cherry_pick", "checks", "push", "pr_create", "wait_checks",
+                                          "merge", "clean_phase", "mark_done", "mark_done"]
+    assert steps[0] == {"kind": "cherry_pick", "branch": "agents/epic-x-1/seams-a", "commit_subject": "add a",
+                        "onto": "pr/x--seams", "from": "main", "repo": "/r", "task": "seams-a",
+                        "files_touched": ["seams-a.py"]}
+    assert (steps[1]["branch"], steps[1]["files_touched"]) == ("agents/epic-x-2/seams-b", ["seams-b.py"])
+
+
+def test_phase_plan_gathers_a_patch_apply_for_a_record_whose_branch_is_gone_everywhere():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r")
+    assert steps[0] == {"kind": "patch_apply", "branch": "agents/epic-x-1/seams-a",
+                        "patch": "diff --git a/seams-a.py b/seams-a.py", "onto": "pr/x--seams", "from": "main",
+                        "repo": "/r", "task": "seams-a", "files_touched": ["seams-a.py"]}
+    assert steps[1]["kind"] == "checks"
+
+
+def test_phase_plan_gathers_fetch_then_cherry_pick_for_a_branch_only_on_a_host():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r",
+                         run_hosts={"epic-x-1": "box"})
+    assert steps[0] == {"kind": "fetch", "run": "epic-x-1", "repo": "/r", "initiative": "x", "epoch": None, "host": "box"}
+    assert (steps[1]["kind"], steps[1]["branch"]) == ("cherry_pick", "agents/epic-x-1/seams-a")
+
+
+def test_phase_plan_gathers_a_patch_apply_when_the_fetch_found_nothing():
+    steps = _gather_plan([_gather_record("seams-a", "epic-x-1")], _EMPTY_PHASE, repo="/r",
+                         run_hosts={"epic-x-1": "box"}, fetched_missing={"seams-a"})
+    assert [s["kind"] for s in steps[:2]] == ["patch_apply", "checks"]
+
+
+def test_phase_plan_gather_takes_every_steps_repo_from_the_land_never_the_record():
+    records = [_gather_record("seams-a", "epic-x-1"), _gather_record("seams-b", "epic-x-2", repo="/elsewhere"),
+               _gather_record("seams-c", "epic-x-3", repo="/elsewhere")]
+    branches = {**_EMPTY_PHASE, "agents/epic-x-1/seams-a": ["a"]}
+    steps = _gather_plan(records, branches, repo="/r", run_hosts={"epic-x-2": "box"})
+    gathered = steps[:4]
+    assert [s["kind"] for s in gathered] == ["cherry_pick", "fetch", "cherry_pick", "patch_apply"]
+    assert {s["repo"] for s in gathered} == {"/r"}
+
+
+def test_phase_plan_gather_refuses_a_record_with_no_branch_and_no_patch():
+    record = _gather_record("seams-a", "epic-x-1", build={"files_touched": ["a.py"]})
+    steps = _gather_plan([record], _EMPTY_PHASE, repo="/r")
+    assert steps == [{"kind": "refuse",
+                      "reason": "seams-a: agents/epic-x-1/seams-a is gone and the record holds no build.patch to apply"}]
+
+
+def test_phase_plan_with_commits_on_the_phase_branch_keeps_the_squash():
+    records = [_gather_record("seams-a", "epic-x-1")]
+    steps = _gather_plan(records, {"epic/x/seams": ["add a"], "agents/epic-x-1/seams-a": ["add a"]}, repo="/r")
+    assert [s["kind"] for s in steps[:2]] == ["pick_branch", "squash_phase"]
+    assert steps[1] == {"kind": "squash_phase", "branch": "epic/x/seams", "onto": "pr/x--seams", "from": "main",
+                        "subject": "epic x: seams", "approved_files": [{"task": "seams-a", "files_touched": ["seams-a.py"]}]}
+
+
+def test_phase_plan_with_an_empty_phase_branch_and_no_approved_records_keeps_the_squash_path():
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
+    done = [{"task": "seams-a", "run": "epic-x-1", "phase": "seams", "status": "done",
+             "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"}}]
+    steps = land.land_plan(phase_record, _EMPTY_PHASE, "main", items=[{"id": "seams-a", "status": "done"}],
+                           task_records=done)
+    assert [s["kind"] for s in steps[:2]] == ["pick_branch", "squash_phase"]
+
+
 def test_phase_plan_refuses_on_an_unlandable_item():
     phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x"}
     items = [{"id": "seams-task", "status": "in_progress"}]
