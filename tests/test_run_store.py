@@ -1255,3 +1255,9 @@ def test_an_unresolvable_store_url_reads_as_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(run_store, "_store_url", broken)
     assert run_store.read_queue(tmp_path) == []
     assert calls == []
+
+
+def test_runs_started_reads_every_launched_at_in_one_map(tmp_path):
+    runs_table(tmp_path, RUN)
+    assert run_store.runs_started(tmp_path) == {"storage-sqlite-run-records-14": "2026-09-25T04:30:00.123456+00:00"}
+    assert run_store.runs_started(tmp_path / "missing") == {}
