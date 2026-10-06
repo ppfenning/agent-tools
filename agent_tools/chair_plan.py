@@ -23,6 +23,7 @@ from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
+from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_types import (
     Action,
@@ -588,6 +589,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
+    tune = plan_tune(facts, now) if now is not None else []
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
     idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
@@ -603,6 +605,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *lands,
             *fetch_exits,
             *stale,
+            *tune,
             *stall,
             *idle_stall,
             *carries,
@@ -642,6 +645,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *lands,
         *fetch_exits,
         *stale,
+        *tune,
         *stall,
         *idle_stall,
         *carries,

@@ -1553,3 +1553,82 @@ def test_draft_apply_plan_approve_moves_the_written_stale_task_from_todo_to_read
     ticket_text = (tmp_path / "work" / "demo" / "phase-1" / "t1.md").read_text(encoding="utf-8")
     plan = plan_approve(initiative_text, {"t1": ticket_text}, None, "pat", datetime(2026, 9, 27, tzinfo=UTC))
     assert plan.moves == (("t1", "todo", "ready"),)
+
+
+def _tune(to_lanes: int = 3, epoch: int = 1) -> dict:
+    return {
+        "kind": "tune_lanes", "host": "hostA", "from_lanes": 2, "to_lanes": to_lanes, "epoch": epoch,
+        "reason": "ahead of pace", "evidence": {"min_lanes": 1, "max_lanes": 4},
+    }
+
+
+def _propose(epoch: int = 1) -> dict:
+    return {"kind": "propose_tiers", "proposals": [], "body": "cox settings set profile:tier.build opus", "epoch": epoch}
+
+
+def _lane_only_writer(calls: list):
+    def write(key: str, value: int) -> int:
+        if not key.endswith(".capacity"):
+            raise AssertionError(f"not a lane key: {key}")
+        calls.append(("write", key, value))
+        return 0
+
+    return write
+
+
+def _tune_deps(calls: list, tmp_path) -> Deps:
+    write = _lane_only_writer(calls)
+    return replace(
+        _deps(calls), work_dir=tmp_path, runs_dir=tmp_path, set_lanes=lambda host, n: write(f"{host}.capacity", n),
+    )
+
+
+def test_a_tune_lanes_calls_the_lane_writer_once_and_records_one_action(tmp_path) -> None:
+    calls: list = []
+    results = perform([_tune()], _tune_deps(calls, tmp_path), lambda: 1, False)
+    assert [r["status"] for r in results] == ["done"]
+    assert calls == [("write", "hostA.capacity", 3), ("record", "tune_lanes")]
+
+
+def test_a_tune_lanes_outside_min_or_max_writes_nothing(tmp_path) -> None:
+    calls: list = []
+    results = perform([_tune(0), _tune(5)], _tune_deps(calls, tmp_path), lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "refused"]
+    assert _touched(calls) == []
+
+
+def test_a_propose_tiers_sends_one_inbox_item_with_the_body_and_records_one_action(tmp_path) -> None:
+    calls: list = []
+    results = perform([_propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
+    assert [r["status"] for r in results] == ["done"]
+    [entry] = courier.entries((tmp_path / "courier.jsonl").read_text(encoding="utf-8"))
+    assert (entry["to"], entry["note"]) == ("chair", "cox settings set profile:tier.build opus")
+    assert calls == [("record", "propose_tiers")]
+
+
+def test_a_propose_tiers_calls_the_settings_writer_zero_times(tmp_path) -> None:
+    calls: list = []
+    perform([_propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
+    assert _touched(calls) == []
+
+
+def test_a_writer_that_raises_on_a_non_lane_key_is_never_tripped_by_either_action(tmp_path) -> None:
+    calls: list = []
+    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 1, False)
+    assert [r["status"] for r in results] == ["done", "done"]
+
+
+def test_a_fenced_tune_lanes_and_propose_tiers_call_nothing(tmp_path) -> None:
+    calls: list = []
+    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 2, False)
+    assert [r["status"] for r in results] == ["fenced", "fenced"]
+    assert _touched(calls) == []
+    assert not (tmp_path / "courier.jsonl").exists()
+
+
+def test_a_dry_run_of_tune_lanes_and_propose_tiers_performs_nothing(tmp_path) -> None:
+    calls: list = []
+    results = perform([_tune(), _propose()], _tune_deps(calls, tmp_path), lambda: 1, True)
+    assert [r["status"] for r in results] == ["dry_run", "dry_run"]
+    assert calls == []
+    assert not (tmp_path / "courier.jsonl").exists()
