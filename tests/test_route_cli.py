@@ -396,6 +396,19 @@ def test_status_json_returns_every_row_without_all(tmp_path, capsys):
     assert [r["id"] for r in rows] == ["run1", "run2", "run3"]
 
 
+def test_status_text_and_json_carry_the_short_id_of_a_run_slug(tmp_path, capsys, monkeypatch):
+    profile, ws = _write_runs_workspace(tmp_path)
+    (ws / "runs" / "my-slug-3.pid").write_text(str(os.getpid()))
+    monkeypatch.setattr(run_store, "initiative_short_ids", lambda _runs_dir: {"my-slug": "I412"})
+
+    assert main(["route", "status", "--profile", str(profile), "--all"]) == 0
+    assert "my-slug-3 [I412]" in capsys.readouterr().out
+
+    assert main(["route", "status", "--profile", str(profile), "--json"]) == 0
+    short_ids = {row["id"]: row["short_id"] for row in json.loads(capsys.readouterr().out)}
+    assert short_ids == {"my-slug-3": "I412", "run1": None, "run2": None, "run3": None}
+
+
 def test_status_json_treats_pid_zero_as_not_alive_and_survives_an_oversized_pidfile(tmp_path, capsys):
     ws = tmp_path / "workspace"
     (ws / "runs").mkdir(parents=True)

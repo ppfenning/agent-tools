@@ -1062,3 +1062,21 @@ def test_chair_decisions_refuses_open_with_answered(tmp_path):
     with pytest.raises(SystemExit) as raised:
         _chair(profile, "decisions", "--open", "--answered")
     assert raised.value.code == 2
+
+
+@pytest.mark.parametrize("run_key, slug", [("a-b-12", "a-b"), ("a-b", "a-b"), ("a-12-b-3", "a-12-b")])
+def test_run_slug_strips_one_trailing_digit_group(run_key, slug):
+    assert cli._run_slug(run_key) == slug
+
+
+def test_runs_top_once_prints_the_short_id_for_a_run_whose_slug_has_one(tmp_path, monkeypatch, capsys):
+    from agent_tools import run_store, runs_top, runs_top_screen
+
+    rows = [runs_top.row("my-slug-3", True, [], [], []), runs_top.row("other-1", True, [], [], [])]
+    monkeypatch.setattr(runs_top_screen, "rows_now", lambda *_a, **_k: rows)
+    monkeypatch.setattr(run_store, "initiative_short_ids", lambda _runs_dir: {"my-slug": "I412"})
+
+    assert cli.main(["runs", "top", "--runs-dir", str(tmp_path), "--once"]) == 0
+    out = capsys.readouterr().out
+    assert "I412" in out and "my-slug-3" not in out
+    assert "other-1" in out
