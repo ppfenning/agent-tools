@@ -1708,17 +1708,32 @@ def _parse_list(raw: str) -> list:
 
 
 def _block_list(header_lines: list, start: int) -> tuple:
-    """Items under a block-list key, from `header_lines[start]` to the first
-    zero-indent line or the end of `header_lines`: `(items, next_index)`. Each
-    `- item` line is stripped the same way a flow item is — no quote handling,
-    since neither form ever quotes an individual item.
+    """Items under a block-list key, from `header_lines[start]` to the first line
+    that is neither indented nor a `- item` line, or the end of `header_lines`:
+    `(items, next_index)`. Items may be indented (`  - x`, this module's own
+    writer) or at column zero (`- x`, yaml.safe_dump, which the store's export uses
+    through `queue_rows.render_item`); a quote yaml adds around an item is removed.
+    Reading only the indented form made every exported ticket's needs and surfaces
+    parse as [] (2026-10-06), so the chair treated waiting tasks as buildable.
     """
     items = []
     index = start
-    while index < len(header_lines) and header_lines[index][:1].isspace():
-        items.append(header_lines[index].strip()[2:].strip())
+    while index < len(header_lines):
+        line = header_lines[index]
+        if not (line[:1].isspace() or line.startswith("- ") or line.rstrip() == "-"):
+            break
+        items.append(_unquote_item(line.strip()[2:].strip()))
         index += 1
     return items, index
+
+
+def _unquote_item(item: str) -> str:
+    """A yaml-quoted scalar back to its text: '...' with '' for a quote inside, or "..."; anything else unchanged."""
+    if len(item) >= 2 and item[0] == item[-1] == "'":
+        return item[1:-1].replace("''", "'")
+    if len(item) >= 2 and item[0] == item[-1] == '"':
+        return item[1:-1].replace('\\"', '"')
+    return item
 
 
 def _parse_field(line: str):
