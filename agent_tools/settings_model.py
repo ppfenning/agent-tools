@@ -22,7 +22,7 @@ Keys by section, in section order:
 - spend and pacing: profile `window_ceiling_usd`, `weekly_ceiling_usd`,
   `node_cap_usd`, `weekly_reset`; cartridge `policy.pacing.hard_stop_fraction`,
   `policy.pacing.weekly_hard_stop_fraction`, `policy.pacing.min_elapsed_fraction`.
-- builds and budgets: cartridge `policy.build_budget_usd_max`.
+- builds and budgets: cartridge `policy.build_budget_usd_max`, `epic_threshold`.
 - models and tiers (all pat_only): cartridge `policy.review_tier`,
   `policy.plan_competition.min_tier`, `policy.pacing.tier_ladder`,
   `policy.pacing.effort_ladder`.
@@ -90,7 +90,7 @@ REGISTRY: tuple[Setting, ...] = (
     *_in("spend and pacing", "cartridge", CARTRIDGE_FILE,
          ("policy.pacing.hard_stop_fraction", "policy.pacing.weekly_hard_stop_fraction",
           "policy.pacing.min_elapsed_fraction")),
-    *_in("builds and budgets", "cartridge", CARTRIDGE_FILE, ("policy.build_budget_usd_max",)),
+    *_in("builds and budgets", "cartridge", CARTRIDGE_FILE, ("policy.build_budget_usd_max", "epic_threshold")),
     *_in("models and tiers", "cartridge", CARTRIDGE_FILE,
          ("policy.review_tier", "policy.plan_competition.min_tier",
           "policy.pacing.tier_ladder", "policy.pacing.effort_ladder"), pat_only=True),

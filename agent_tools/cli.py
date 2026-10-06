@@ -5609,7 +5609,7 @@ SETTINGS_GROUP = commands.Group(
 )
 SETTINGS_COMMANDS = [
     commands.Command(
-        "get", "settings", "print every setting present, grouped by section",
+        "get", "settings", "print every setting, grouped by section; unset keys appear as built-in defaults, which set can override",
         (commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--profile",))),
         _settings_get, False, (),
     ),

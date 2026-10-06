@@ -21,6 +21,7 @@ from agent_tools.settings_hosts import host_rows
 from agent_tools.settings_housekeeping import housekeeping_rows
 from agent_tools.settings_model import SettingRow
 from agent_tools.settings_model_rows import model_tier_rows
+from agent_tools.settings_sections.defaults import default_rows
 
 Row = SettingRow | dict
 Grouped = dict[str, list[Row]]
@@ -113,6 +114,15 @@ def sections(cartridge: dict, profile: dict, hosts: dict[str, object], tracked: 
     return {name: _first_per_key([*found, *extra.get(name, [])]) for name, found in base.items()}
 
 
+def with_defaults(grouped: Grouped) -> Grouped:
+    """`grouped` with each built-in default row after its section's own rows; a set key gets none."""
+    defaults = default_rows([row for rows in grouped.values() for row in rows])
+    return {
+        name: [*rows, *(d for d in defaults if d["section"] == name)]
+        for name, rows in grouped.items()
+    }
+
+
 def git_tracked(path: Path) -> bool:
     """Edge. True only when `git ls-files --error-unmatch` exits 0 for `path` from its own directory;
     a missing file, a directory outside a repository and a missing git binary are all False."""
@@ -146,7 +156,7 @@ def run_get(profile_path: Path, as_json: bool) -> int:
     }
     workspace = profile.get("workspace_dir")
     hosts = host_capacities(run_store.hosts(Path(workspace).expanduser() / "runs")) if workspace else {}
-    grouped = sections(cartridge, profile, hosts, tracked)
+    grouped = with_defaults(sections(cartridge, profile, hosts, tracked))
     print(json.dumps(to_json(grouped), default=str, indent=2) if as_json else render_text(grouped))
     return 0
 
