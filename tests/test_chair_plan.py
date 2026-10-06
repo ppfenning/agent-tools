@@ -260,9 +260,9 @@ def test_a_rescue_past_the_cap_is_dropped_even_with_a_free_lane_host(monkeypatch
     assert plan_tick(facts) == []
 
 
-def test_a_home_with_a_free_lane_gets_the_relaunch_directly(monkeypatch):
+def test_a_home_with_a_free_lane_gets_the_relaunch_on_a_tie_and_its_clear_stays_local(monkeypatch):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
-    # friday outweighs jarvis, so _place_on_hosts ranking would pick friday; home names jarvis instead.
+    # friday outweighs jarvis, so _place_on_hosts ranking would pick friday; the tie goes to home, jarvis.
     dispatch = {
         "max_in_flight": 1,
         "live_runs": 1,
@@ -270,7 +270,7 @@ def test_a_home_with_a_free_lane_gets_the_relaunch_directly(monkeypatch):
     }
     facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"})
     assert plan_tick(facts) == [
-        {"kind": "clear_branches", "initiative": "a", "host": "jarvis", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
         {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
     ]
 
@@ -406,7 +406,8 @@ def test_a_chair_homed_relaunch_moves_to_a_lane_host_when_local_lanes_are_decomp
     ]
 
 
-@pytest.mark.parametrize("dispatch_extra", [{}, {"local_lanes": "any"}])
+# The chair is freest here (no live run of its own), so the freest-host rule also keeps it local: a tie goes to the home.
+@pytest.mark.parametrize("dispatch_extra", [{"live_runs": 0}, {"live_runs": 0, "local_lanes": "any"}])
 def test_a_chair_homed_relaunch_stays_local_when_the_setting_is_absent_or_not_decompose(monkeypatch, dispatch_extra):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
     assert plan_tick(_chair_homed_facts(**dispatch_extra)) == [
@@ -415,7 +416,18 @@ def test_a_chair_homed_relaunch_stays_local_when_the_setting_is_absent_or_not_de
     ]
 
 
-def test_a_busy_but_live_home_does_not_move(monkeypatch):
+def test_a_busy_but_live_home_with_no_run_to_fetch_stays_pinned_and_plans_nothing(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    dispatch = {
+        "max_in_flight": 1,
+        "live_runs": 1,
+        "hosts": [{"name": "jarvis", "live_runs": 1, "capacity": 1}, {"name": "friday", "live_runs": 0}],
+    }
+    facts = _facts(dispatch=dispatch, run_exited={"a": True}, home={"a": "jarvis"}, approved=[_home_approved("")])
+    assert plan_tick(facts) == []
+
+
+def test_a_busy_but_live_home_moves_the_relaunch_to_the_freest_host_with_a_fetch(monkeypatch):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
     dispatch = {
         "max_in_flight": 1,
@@ -429,7 +441,76 @@ def test_a_busy_but_live_home_does_not_move(monkeypatch):
         approved=[_home_approved("a-3")],
         login_hosts=[_login_host("jarvis")],
     )
-    assert plan_tick(facts) == []
+    assert plan_tick(facts) == [
+        {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "friday", "epoch": 7},
+    ]
+
+
+def _freest_dispatch(local_free: int, **host_free: int) -> dict:
+    return {
+        "max_in_flight": 5,
+        "live_runs": 5 - local_free,
+        "hosts": [{"name": name, "live_runs": 0, "capacity": free} for name, free in host_free.items()],
+    }
+
+
+def _relaunch(initiative: str) -> list[dict]:
+    return [{"kind": "clear_branches", "initiative": initiative}, {"kind": "relaunch", "initiative": initiative}]
+
+
+def test_a_local_last_host_with_two_free_lanes_loses_the_relaunch_to_a_lane_host_with_five(monkeypatch):
+    _recovering(monkeypatch, _relaunch("a"))
+    facts = _facts(dispatch=_freest_dispatch(2, lane=5), run_exited={"a": True}, home={"a": ""})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "lane", "epoch": 7},
+    ]
+
+
+def test_two_relaunches_split_one_each_when_local_and_a_host_each_have_one_free_lane(monkeypatch):
+    _recovering(monkeypatch, [*_relaunch("a"), *_relaunch("b")])
+    facts = _facts(dispatch=_freest_dispatch(1, lane=1), run_exited={"a": True, "b": True}, home={"a": "", "b": ""})
+    assert plan_tick(facts) == [
+        {"kind": "clear_branches", "initiative": "a", "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "b", "epoch": 7},
+        {"kind": "relaunch", "initiative": "b", "host": "lane", "epoch": 7},
+    ]
+
+
+def test_a_tie_in_free_lanes_goes_to_the_last_host(monkeypatch):
+    _recovering(monkeypatch, _relaunch("a"))
+    facts = _facts(dispatch=_freest_dispatch(2, lane=2), run_exited={"a": True}, home={"a": ""})
+    assert plan_tick(facts)[-1] == {"kind": "relaunch", "initiative": "a", "epoch": 7}
+
+
+def test_a_tie_in_free_lanes_goes_to_a_remote_last_host_over_this_machine(monkeypatch):
+    _recovering(monkeypatch, _relaunch("a"))
+    facts = _facts(dispatch=_freest_dispatch(2, lane=2), run_exited={"a": True}, home={"a": "lane"}, approved=[_home_approved("a-3")])
+    assert plan_tick(facts)[-1] == {"kind": "relaunch", "initiative": "a", "host": "lane", "epoch": 7}
+
+
+def test_a_host_missing_a_required_capability_is_skipped(monkeypatch):
+    _recovering(monkeypatch, _relaunch("a"))
+    needing = {"id": "a", "started": True, "ready_tasks": [{"id": "a-t", "needs": [], "requires": ["gpu"]}], "landed": set()}
+    dispatch = {
+        "max_in_flight": 5,
+        "live_runs": 3,
+        "hosts": [
+            {"name": "plain", "live_runs": 0, "capacity": 5},
+            {"name": "gpu", "live_runs": 0, "capacity": 3, "capabilities": ["gpu"]},
+        ],
+    }
+    facts = _facts(dispatch=dispatch, initiatives=[needing], run_exited={"a": True}, home={"a": ""})
+    assert plan_tick(facts)[-1] == {"kind": "relaunch", "initiative": "a", "host": "gpu", "epoch": 7}
+
+
+def test_a_rescue_keeps_its_local_slot_while_a_lane_host_has_more_free_lanes(monkeypatch):
+    _recovering(monkeypatch, [_RESCUE])
+    facts = _facts(dispatch=_freest_dispatch(2, lane=5))
+    assert plan_tick(facts) == [{**_RESCUE, "epoch": 7}]
 
 
 _STALLED_LAST_CALL = {"role": "builder", "task": "t1", "ts": "2026-09-27T11:29:00Z"}
