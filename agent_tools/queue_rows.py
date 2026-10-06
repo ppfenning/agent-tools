@@ -17,6 +17,9 @@ Row = dict[str, Any]
 
 _TASK_DEFAULT_STATE = "todo"  # route.work_item's default for a file that names no state
 _LIFTED = ("title", "needs", "surfaces")
+_INTAKE_STAMPED_STATE = "done"  # cli._route_file_from_intake writes the stamped intake to intake/done/
+# initiative.md names no state: route.initiative_states derives done from its tasks. The row holds the default.
+_INITIATIVE_STATE = _TASK_DEFAULT_STATE
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str] | None:
@@ -52,10 +55,13 @@ def row_requires(row: Row) -> list[str]:
 
 
 def _identity(kind: str, path_parts: tuple[str, ...]) -> tuple[str, str, str, str | None] | None:
-    """(initiative, phase, task_id, state from the path or None). Tasks: (initiative, phase, file). Intake: (file,) or ("done", file)."""
+    """(initiative, phase, task_id, state from the path or None). Tasks: (initiative, phase, file). Intake: (file,) or ("done", file).
+    Initiative: (id, "initiative.md"), keyed by its id."""
     stem = path_parts[-1].removesuffix(".md") if path_parts else ""
     if kind == "task" and len(path_parts) == 3:
         return path_parts[0], path_parts[1], stem, None
+    if kind == "initiative" and len(path_parts) == 2 and path_parts[1] == "initiative.md":
+        return path_parts[0], "", path_parts[0], _INITIATIVE_STATE
     if kind == "intake" and len(path_parts) == 1:
         return "intake", "", stem, "queued"
     if kind == "intake" and len(path_parts) == 2 and path_parts[0] == "done":
@@ -100,7 +106,58 @@ def render_item(row: Row) -> str:
     return f"---\n{header}---\n{row['body']}"
 
 
+def _task_state(needs: list[str]) -> str:
+    """Decompose's rule: `ready` with no needs, `todo` otherwise."""
+    return _TASK_DEFAULT_STATE if needs else "ready"
+
+
+def plan_to_rows(plan: Mapping[str, Any], intake_id: str) -> list[Row]:
+    """The rows parse_item gives for the plan's initiative.md, then its task files, in plan order."""
+    # A ticket's needs_json and surfaces_json are the `needs` and `surfaces` lists below: this row shape has no _json keys.
+    initiative = plan["id"]
+    head: Row = {
+        "kind": "initiative",
+        "initiative": initiative,
+        "task_id": initiative,
+        "phase": "",
+        "state": _INITIATIVE_STATE,
+        "needs": [],
+        "title": str(plan["title"]),
+        "surfaces": [],
+        "body": plan["body"],
+        "extra": {
+            "id": initiative,
+            "intake": f"intake/{intake_id}.md",  # route.link_intake's form: the intake path, not its id
+            "phases": [{"id": p["id"], "goal": p["goal"]} for p in plan["phases"]],
+        },
+    }
+    tasks = [
+        {
+            "kind": "task",
+            "initiative": initiative,
+            "task_id": t["id"],
+            "phase": t["phase"],
+            "state": _task_state(_strs(t.get("needs"))),
+            "needs": _strs(t.get("needs")),
+            "title": str(t["title"]),
+            "surfaces": _strs(t.get("surfaces")),
+            "body": t["body"],
+            "extra": {"id": t["id"], "phase": t["phase"]},  # frontmatter keys decompose writes, which parse_item leaves in extra
+        }
+        for t in plan["tasks"]
+    ]
+    return [head, *tasks]
+
+
+def intake_stamp(intake_row: Row, initiative_id: str) -> Row:
+    """The stamped file's row: `initiative:` goes in `extra` as parse_item reads it; top-level `initiative` stays the key `intake`."""
+    extra = {**intake_row["extra"], "initiative": initiative_id}
+    return {**intake_row, "state": _INTAKE_STAMPED_STATE, "extra": extra}
+
+
 def row_path(row: Row) -> str:
     if row["kind"] == "task":
         return f"work/{row['initiative']}/{row['phase']}/{row['task_id']}.md"
+    if row["kind"] == "initiative":
+        return f"work/{row['initiative']}/initiative.md"
     return f"intake/done/{row['task_id']}.md" if row["state"] == "done" else f"intake/{row['task_id']}.md"
