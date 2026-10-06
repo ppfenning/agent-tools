@@ -1803,7 +1803,9 @@ def intake_entries(files: dict) -> list:
     ]
 
 
-STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped", "approved"})
+# `quarantined` is a store state since graphs #699: a quarantine on a lane host reaches the store. It is neither
+# ready nor done, so a quarantined task's siblings still show and its dependents wait.
+STATES = frozenset({"todo", "ready", "in_progress", "blocked", "done", "dropped", "approved", "quarantined"})
 TERMINAL = frozenset({"done", "dropped"})
 
 

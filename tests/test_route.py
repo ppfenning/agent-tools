@@ -1339,6 +1339,17 @@ def test_initiative_summaries_an_unknown_state_makes_the_initiative_unlaunchable
     assert route.initiative_summaries(items) == [{"id": "epsilon", "phase": None, "ready": 0}]
 
 
+def test_initiative_summaries_a_quarantined_item_is_known_and_holds_only_its_dependents():
+    # The store writes `quarantined` (graphs #699): its sibling stays ready, its dependent waits.
+    items = [
+        {"id": "q0", "initiative": "quebec", "phase": "build", "state": "quarantined", "needs": []},
+        {"id": "q1", "initiative": "quebec", "phase": "build", "state": "ready", "needs": []},
+        {"id": "q2", "initiative": "quebec", "phase": "wire", "state": "ready", "needs": ["q0"]},
+    ]
+    assert route.state_problems([{**i, "file": f"{i['id']}.md"} for i in items]) == []
+    assert route.initiative_summaries(items) == [{"id": "quebec", "phase": "build", "ready": 1}]
+
+
 def test_initiative_summaries_an_approved_item_is_awaiting_merge_not_ready():
     items = [
         {"id": "f0", "initiative": "foxtrot", "phase": "build", "state": "approved", "needs": []},
