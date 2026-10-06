@@ -1,3 +1,4 @@
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -99,6 +100,210 @@ def test_github_read_checks_rev_parses_the_given_ref(monkeypatch, tmp_path):
     calls = _recording(monkeypatch, [(1, "bad ref")])
     assert forge_github._read_checks(tmp_path, "pr/t") == (False, "bad ref")
     assert calls == [["git", "-C", str(tmp_path), "rev-parse", "pr/t"]]
+
+
+# --- required checks and the one rerun ---
+
+RULESET = '[{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "test"}, {"context": "lint"}]}}, {"type": "deletion"}]'
+PROTECTION = '{"contexts": ["test"], "checks": [{"context": "test", "app_id": 1}, {"context": "build", "app_id": 2}]}'
+RUN_URL = "https://github.com/o/r/actions/runs/{}/job/9"
+
+
+def _runs(*rows, first_id=1):
+    """A check-runs body; a rerun gives its check runs new ids, so a later attempt passes a new `first_id`."""
+    return json.dumps({"total_count": len(rows), "check_runs": [
+        {"id": first_id + i, "name": n, "status": "completed", "conclusion": c, "details_url": u}
+        for i, (n, c, u) in enumerate(rows)]})
+
+
+NO_STATUS = (0, '{"total_count": 0, "state": "pending", "statuses": []}')
+BASE_MAIN = (0, '{"baseRefName": "main"}')
+EMPTY_PROTECTION = (0, '{"contexts": [], "checks": []}')
+
+
+def _scripted(monkeypatch, replies):
+    """Record argv; `replies` maps a substring of the joined argv to `(code, stdout)` answers, the last repeating."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        line = " ".join(argv)
+        for key, queue in replies.items():
+            if key in line:
+                code, out = queue.pop(0) if len(queue) > 1 else queue[0]
+                return SimpleNamespace(returncode=code, stdout=out, stderr=out)
+        return SimpleNamespace(returncode=1, stdout="", stderr="unscripted")
+
+    monkeypatch.setattr(forge_github.subprocess, "run", run)
+    return calls
+
+
+def _wait(monkeypatch, tmp_path, check_runs, status=NO_STATUS, required=((0, "[]"), EMPTY_PROTECTION), rerun=((0, ""),)):
+    """`rerun` is a list of answers for every `gh run rerun`, or a dict of answers keyed by a substring of the argv."""
+    calls = _scripted(monkeypatch, {
+        "pr view": [BASE_MAIN], "rules/branches": [required[0]], "protection/required": [required[1]],
+        "rev-parse": [(0, "abc\n")], "check-runs": [(0, body) for body in check_runs], "/status": [status],
+        **(rerun if isinstance(rerun, dict) else {"run rerun": list(rerun)})})
+    result = forge_github.wait_checks(tmp_path, 60, sleep=lambda s: None, now=lambda: 0.0)
+    return result, [c for c in calls if c[:3] == ["gh", "run", "rerun"]], calls
+
+
+def test_parse_ruleset_contexts_reads_each_required_status_checks_rule():
+    assert forge_github.parse_ruleset_contexts(RULESET) == ("test", "lint")
+
+
+def test_parse_ruleset_contexts_is_empty_for_no_rules_and_none_for_garbage():
+    assert forge_github.parse_ruleset_contexts("[]") == ()
+    assert forge_github.parse_ruleset_contexts("not json") is None
+    assert forge_github.parse_ruleset_contexts('{"message": "Not Found"}') is None
+
+
+def test_parse_protection_contexts_unions_contexts_and_checks():
+    assert forge_github.parse_protection_contexts(PROTECTION) == ("test", "build")
+    assert forge_github.parse_protection_contexts("") is None
+
+
+def test_read_required_uses_the_ruleset_when_it_names_contexts(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(0, RULESET)]})
+    assert forge_github._read_required(tmp_path, "pr/t") == ("test", "lint")
+    assert calls[1] == ["gh", "api", "repos/{owner}/{repo}/rules/branches/main"]
+    assert len(calls) == 2
+
+
+def test_read_required_falls_back_to_protection_when_the_ruleset_is_empty(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(0, "[]")], "protection/required": [(0, PROTECTION)]})
+    assert forge_github._read_required(tmp_path, "pr/t") == ("test", "build")
+    assert calls[2] == ["gh", "api", "repos/{owner}/{repo}/branches/main/protection/required_status_checks"]
+
+
+def test_read_required_is_empty_only_when_both_endpoints_read_nothing(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(0, "[]")], "protection/required": [EMPTY_PROTECTION]})
+    assert forge_github._read_required(tmp_path, "pr/t") == ()
+
+
+def test_read_required_is_none_when_both_endpoints_are_unreadable(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(1, "boom")], "protection/required": [(0, "<html>")]})
+    assert forge_github._read_required(tmp_path, "pr/t") is None
+
+
+def test_read_required_is_none_when_the_ruleset_is_unreadable_even_if_protection_names_contexts(monkeypatch, tmp_path):
+    calls = _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(1, "502")], "protection/required": [(0, PROTECTION)]})
+    assert forge_github._read_required(tmp_path, "pr/t") is None
+    assert len(calls) == 2
+
+
+def test_read_required_is_none_when_the_ruleset_is_empty_and_protection_is_unreadable(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"pr view": [BASE_MAIN], "rules/branches": [(0, "[]")], "protection/required": [(1, "502")]})
+    assert forge_github._read_required(tmp_path, "pr/t") is None
+
+
+def test_read_required_is_none_when_the_base_cannot_be_read(monkeypatch, tmp_path):
+    _scripted(monkeypatch, {"pr view": [(1, "no pull requests found")]})
+    assert forge_github._read_required(tmp_path, "pr/t") is None
+
+
+def test_rerun_run_ids_dedupes_and_skips_failures_without_a_run_url():
+    body = json.loads(_runs(("a", "failure", RUN_URL.format(7)), ("b", "failure", RUN_URL.format(7)),
+                            ("c", "cancelled", RUN_URL.format(8)), ("d", "success", RUN_URL.format(9)),
+                            ("e", "failure", "https://example.com/build/1")))
+    assert forge_github.rerun_run_ids(body) == ("7", "8")
+
+
+def test_wait_checks_follows_the_old_rule_when_required_is_unreadable(monkeypatch, tmp_path):
+    green = _runs(("test", "success", RUN_URL.format(1)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [green], required=((1, "boom"), (1, "boom")))
+    assert result == (True, "green")
+    assert reruns == []
+
+
+def test_wait_checks_reruns_a_failed_run_once_and_keeps_polling(monkeypatch, tmp_path):
+    failed, green = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "success", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, green])
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_wait_checks_returns_the_failure_after_the_rerun_without_a_second_rerun(monkeypatch, tmp_path):
+    failed, failed_again = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "failure", RUN_URL.format(123)), first_id=10)
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, failed_again])
+    assert result == (False, "failing checks: test")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]]
+
+
+def test_wait_checks_keeps_polling_while_the_failure_is_the_one_already_rerun(monkeypatch, tmp_path):
+    failed, failed_again = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "failure", RUN_URL.format(123)), first_id=10)
+    result, reruns, calls = _wait(monkeypatch, tmp_path, [failed, failed, failed_again])
+    assert result == (False, "failing checks: test")
+    assert len(reruns) == 1
+    assert sum(any("check-runs" in a for a in c) for c in calls) == 3
+
+
+def test_wait_checks_ends_a_stale_failure_after_the_poll_error_limit(monkeypatch, tmp_path):
+    failed = _runs(("test", "failure", RUN_URL.format(123)))
+    result, reruns, calls = _wait(monkeypatch, tmp_path, [failed])
+    assert result == (False, "failing checks: test")
+    assert len(reruns) == 1
+    assert sum(any("check-runs" in a for a in c) for c in calls) == 2 + forge_github.land.POLL_ERROR_LIMIT
+
+
+def test_wait_checks_retries_a_refused_rerun_and_counts_the_accepted_one(monkeypatch, tmp_path):
+    failed, green = _runs(("test", "failure", RUN_URL.format(123))), _runs(("test", "success", RUN_URL.format(123)), first_id=10)
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, failed, green], rerun=[(1, "run 123 cannot be rerun; it is in progress"), (0, "")])
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "123", "--failed"]] * 2
+
+
+def test_wait_checks_fails_when_every_rerun_is_refused_up_to_the_limit(monkeypatch, tmp_path):
+    failed = _runs(("test", "failure", RUN_URL.format(123)))
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed], rerun=[(1, "cannot be rerun")])
+    assert result == (False, "failing checks: test")
+    assert len(reruns) == forge_github.land.POLL_ERROR_LIMIT
+
+
+def test_wait_checks_never_reruns_an_accepted_run_again_after_a_partial_refusal(monkeypatch, tmp_path):
+    failed = _runs(("unit", "failure", RUN_URL.format(5)), ("lint", "failure", RUN_URL.format(6)))
+    green = _runs(("unit", "success", RUN_URL.format(5)), ("lint", "success", RUN_URL.format(6)), first_id=10)
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [failed, failed, green],
+                              rerun={"run rerun 5 ": [(0, "")], "run rerun 6 ": [(1, "in progress"), (0, "")]})
+    assert result == (True, "green")
+    assert reruns == [["gh", "run", "rerun", "5", "--failed"], ["gh", "run", "rerun", "6", "--failed"],
+                      ["gh", "run", "rerun", "6", "--failed"]]
+
+
+def test_wait_checks_passes_none_to_the_poll_when_required_is_unreadable(monkeypatch, tmp_path):
+    status = (0, '{"total_count": 1, "state": "failure", "statuses": [{"context": "ci", "state": "failure"}]}')
+    note = "required checks could not be read"
+    unreadable, _, _ = _wait(monkeypatch, tmp_path, [_runs()], status=status, required=((1, "boom"), (1, "boom")))
+    nothing, _, _ = _wait(monkeypatch, tmp_path, [_runs()], status=status)
+    assert unreadable[0] is False and note in unreadable[1]
+    assert note not in nothing[1]
+
+
+def test_base_ref_argv_leaves_head_to_gh():
+    assert forge_github.base_ref_argv("HEAD") == ["gh", "pr", "view", "--json", "baseRefName"]
+    assert forge_github.base_ref_argv("pr/t") == ["gh", "pr", "view", "pr/t", "--json", "baseRefName"]
+
+
+def test_wait_checks_reruns_two_failed_checks_of_one_run_once(monkeypatch, tmp_path):
+    failed = _runs(("unit", "failure", RUN_URL.format(5)), ("lint", "failure", RUN_URL.format(5)))
+    _, reruns, _ = _wait(monkeypatch, tmp_path, [failed])
+    assert reruns == [["gh", "run", "rerun", "5", "--failed"]]
+
+
+def test_wait_checks_does_not_rerun_a_failed_commit_status(monkeypatch, tmp_path):
+    status = (0, '{"total_count": 1, "state": "failure", "statuses": [{"context": "ci", "state": "failure"}]}')
+    result, reruns, _ = _wait(monkeypatch, tmp_path, [_runs()], status=status)
+    assert result == (False, "failing checks: ci")
+    assert reruns == []
+
+
+def test_wait_checks_waits_for_a_required_check_not_yet_reported(monkeypatch, tmp_path):
+    ruleset = (0, '[{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "deploy"}]}}]')
+    seen, green = _runs(("test", "success", RUN_URL.format(1))), _runs(("test", "success", RUN_URL.format(1)), ("deploy", "success", RUN_URL.format(2)))
+    result, _, calls = _wait(monkeypatch, tmp_path, [seen, green], required=(ruleset, EMPTY_PROTECTION))
+    assert result == (True, "green")
+    assert sum(c[:2] == ["gh", "pr"] for c in calls) == 1
+    assert sum(any("check-runs" in a for a in c) for c in calls) == 2
 
 
 # --- forge_github.merge against real git; only `gh` is faked, as the host merging pr/t into main ---
