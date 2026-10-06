@@ -1454,6 +1454,23 @@ def parquet_readable(traces_root: TracesRoot, harness: Path | None) -> ParquetCh
     return ParquetCheck(True, "ok") if reachable else ParquetCheck(False, "root unreachable")
 
 
+def runs_started(runs_dir: Path) -> dict[str, str]:
+    """Run id to the `launched_at` of every store `runs` row that has one, read in one query; {} for no store or a
+    failed read. Callers that need many runs' start times use this instead of `run_started` per run, which opened one
+    connection each (445 of them made `cox route context` take 24 s over the tailnet, 2026-10-06)."""
+    opened = _open(Path(runs_dir))
+    if opened is None:
+        return {}
+    conn, p = opened
+    try:
+        rows = conn.execute(_sql("SELECT run_id, launched_at FROM runs WHERE launched_at IS NOT NULL", p)).fetchall()
+    except _db_errors():
+        return {}
+    finally:
+        conn.close()
+    return {row["run_id"]: row["launched_at"] for row in rows}
+
+
 def run_started(runs_dir: Path, run_id: str) -> str | None:
     """The `launched_at` of the store's `runs` row, else None."""
     opened = _open(Path(runs_dir))

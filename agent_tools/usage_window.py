@@ -169,9 +169,9 @@ def _usage_started(usage: Mapping[str, Any], mtime: datetime) -> datetime:
         return mtime
 
 
-def _store_started(runs_dir: Path, run_id: str) -> datetime | None:
-    """The store run's `launched_at` as a datetime; None when absent or unparseable."""
-    launched_at = run_store.run_started(runs_dir, run_id)
+def _store_started(started: Mapping[str, str], run_id: str) -> datetime | None:
+    """The run's `launched_at` from `started` (run_store.runs_started's map) as a datetime; None when absent or unparseable."""
+    launched_at = started.get(run_id)
     try:
         return datetime.fromisoformat(launched_at) if launched_at else None
     except ValueError:
@@ -201,12 +201,12 @@ def _read_usage_files(
             continue
         usage_files.append((_usage_started(usage, mtime), usage))
         file_runs.add(run_id)
+    stored = run_store.store_usages(root, exclude=file_runs, since=since.isoformat() if since else None)
+    started_at = run_store.runs_started(root) if stored else {}  # one query, not one connection per run
     store_only = [
         (started, usage)
-        for run_id, usage in run_store.store_usages(
-            root, exclude=file_runs, since=since.isoformat() if since else None,
-        ).items()
-        if (started := _store_started(root, run_id)) is not None
+        for run_id, usage in stored.items()
+        if (started := _store_started(started_at, run_id)) is not None
     ]
     return usage_files + store_only
 
