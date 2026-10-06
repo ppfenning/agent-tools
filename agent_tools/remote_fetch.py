@@ -39,12 +39,14 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from agent_tools.land import _approved as land_approved
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import git_fetch_argv, rsync_pull_argv
 
 __all__ = [
-    "FetchError", "FetchPlan", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "probe_argv",
+    "FetchError", "FetchPlan", "approved_without_branch", "chair_repo_path", "fetch_plan", "fetch_run", "host_repo_path", "probe_argv",
     "pull_argvs", "refuse_unended", "task_repos",
 ]
 
@@ -134,6 +136,33 @@ def task_repos(run_dir: Path) -> list[str]:
     return list(dict.fromkeys(r for r in found if r is not None))
 
 
+def approved_without_branch(records: Sequence[dict[str, Any]], branches: frozenset[str], run: str) -> list[str]:
+    """Ids (`task` key) of records `land` calls approved whose `agents/<run>/<task>` is not in `branches`."""
+    return [
+        str(r["task"]) for r in records
+        if land_approved(r) is None and f"agents/{run}/{r['task']}" not in branches
+    ]
+
+
+def _task_records(run_dir: Path) -> list[dict[str, Any]] | None:
+    """The run's task records, or None when any is unreadable, has no `task` id, or none exist."""
+    records: list[dict[str, Any]] = []
+    for path in sorted(run_dir.glob("tasks/*/*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or not isinstance(record.get("task"), str):
+            return None
+        records.append(record)
+    return records or None
+
+
+def _records_in(records: list[dict[str, Any]], repo: str, chair_ws: str, host_ws: str) -> list[dict[str, Any]]:
+    """The records that name `repo`, or name no repo."""
+    return [r for r in records if not r.get("repo") or chair_repo_path(chair_ws, host_ws, str(r["repo"])) == repo]
+
+
 def fetch_run(
     host: LaneHost,
     run: str,
@@ -171,6 +200,7 @@ def fetch_run(
     repos = tuple(dict.fromkeys(chair_repo_path(chair_ws, host_ws, r) for r in repo_paths(chair_runs_dir / run)))
     if not repos:
         return FetchError("repos", f"no task record under {chair_runs_dir / run}/tasks names a repo")
+    records = _task_records(chair_runs_dir / run)
     for repo in repos:
         # git_fetch_argv has no repo selector, so `-C` goes in after its leading "git".
         # git runs its own ssh transport, so no 30s bound from this file applies to this call.
@@ -178,6 +208,19 @@ def fetch_run(
         code = run_cmd(["git", "-C", repo, *fetch[1:]])
         if code != 0:
             return FetchError("git", f"fetching {run} into {repo} exited {code}")
+        scoped = _records_in(records, repo, chair_ws, host_ws) if records is not None else []
+        if scoped:
+            # Readable records decide: a run with no approved task has no branch by design.
+            # run_cmd returns only an exit code, so each task's branch is probed on its own.
+            arrived = frozenset(
+                name for name in (f"agents/{run}/{r['task']}" for r in scoped)
+                if run_cmd(["git", "-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"]) == 0
+            )
+            missing = approved_without_branch(scoped, arrived, run)
+            if missing:
+                names = ", ".join(missing)
+                return FetchError("verify", f"approved task(s) {names} have no refs/heads/agents/{run}/<task> in {repo} after the fetch")
+            continue
         found = run_cmd(["git", "-C", repo, "ls-remote", "--exit-code", ".", f"refs/heads/agents/{run}/*"])
         if found != 0:
             return FetchError("verify", f"no refs/heads/agents/{run}/* in {repo} after the fetch")
