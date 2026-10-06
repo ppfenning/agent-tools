@@ -117,6 +117,22 @@ def _text_or_none(path: Path) -> str | None:
         return None
 
 
+def fill_workspace(ws: Path) -> str:
+    """Edge. Insert or fill the store's rows from `ws`'s files and return the summary line. Raises RuntimeError when the
+    store cannot be read or refuses a row, so a caller about to export (and delete files with no row) stops instead."""
+    runs_dir = ws / "runs"
+    existing = _read_store(runs_dir)
+    if existing is None:
+        raise RuntimeError(_UNREADABLE)
+    parsed, skipped = parse_workspace(_workspace_files(ws))
+    plan = plan_fill(parsed, existing)
+    for row in plan.writes:
+        detail = run_store.upsert_row_detail(runs_dir, row)
+        if detail:
+            raise RuntimeError(f"store-fill: store refused {row['initiative']}/{row['task_id']}: {detail}")
+    return format_summary(plan, skipped)
+
+
 def main(a: argparse.Namespace) -> int:
     """Exits 2 without writing when the store cannot be read, and the moment a row fails to upsert."""
     from agent_tools import cli  # lazy: cli's table names this module as a handler

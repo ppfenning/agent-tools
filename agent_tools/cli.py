@@ -4597,6 +4597,12 @@ def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
 
     A git failure raises, so the tick reports it as an export failure."""
     workspace = runs_dir.parent
+    # Fill first: a decompose writes its tickets as files, and the export deletes every work/ file with no row, so
+    # without this a fresh decompose's tickets vanished on the next tick (2026-10-06). A failed fill raises before
+    # the export runs, so nothing is deleted on a store that could not be read.
+    from agent_tools import store_fill  # imported here: cli loads a command module only when it runs
+
+    store_fill.fill_workspace(workspace)
     skipped = _export_board(runs_dir, workspace)
     git = ["git", "-C", str(workspace)]
     paths = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing

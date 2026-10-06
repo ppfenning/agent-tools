@@ -2,6 +2,8 @@ import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
+
 from agent_tools import chair_exec, chair_report, cli
 from agent_tools.chair_run import RunDeps, changed_row_ids, tick
 
@@ -112,7 +114,34 @@ def test_the_cli_hook_commits_the_exported_files_with_the_row_count(tmp_path, mo
         return ["x1"]
 
     monkeypatch.setattr(cli, "_export_board", export)
+    from agent_tools import store_fill
+    monkeypatch.setattr(store_fill, "fill_workspace", lambda ws: "inserted 0, filled 0, unchanged 0, skipped 0")
     assert cli._chair_export_hook(runs, ("t1", "t2")) == "export: committed 2 row(s); skipped 1 contentless row(s): x1"
     assert _git(tmp_path, "log", "-1", "--format=%s") == "chair: export 2 changed row(s)"
     assert cli._chair_export_hook(runs, ("t1",)) == "export: no file changes; skipped 1 contentless row(s): x1"
     assert _git(tmp_path, "rev-list", "--count", "HEAD") == "1"
+
+
+def test_the_cli_hook_fills_the_store_from_files_before_it_exports(tmp_path, monkeypatch):
+    from agent_tools import store_fill
+    order = []
+    monkeypatch.setattr(store_fill, "fill_workspace", lambda ws: order.append(("fill", ws)) or "")
+    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: order.append(("export", ws)) or [])
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "runs").mkdir()
+    cli._chair_export_hook(tmp_path / "runs", ("t1",))
+    assert order == [("fill", tmp_path), ("export", tmp_path)]
+
+
+def test_a_failed_fill_stops_the_hook_before_any_export(tmp_path, monkeypatch):
+    from agent_tools import store_fill
+
+    def unreadable(ws):
+        raise RuntimeError("store-fill: the store could not be read; nothing written")
+
+    exported = []
+    monkeypatch.setattr(store_fill, "fill_workspace", unreadable)
+    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: exported.append(ws) or [])
+    with pytest.raises(RuntimeError, match="could not be read"):
+        cli._chair_export_hook(tmp_path / "runs", ("t1",))
+    assert exported == []
