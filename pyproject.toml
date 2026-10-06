@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "coxswain-tools"
 # Version is set by hand ahead of each release tag; `cox release` bumps the
 # coxswain manifest, not this file. 0.1.0b1 is the PEP 440 form of v0.1.0-beta.1.
-version = "0.33.0"
+version = "0.34.0"
 description = "The coxswain's operator tools behind the `cox` command; `agent-tools` is a deprecated alias for one release."
 readme = "README.md"
 license = { file = "LICENSE" }
