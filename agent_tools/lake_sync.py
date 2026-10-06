@@ -9,19 +9,27 @@ Store timestamps are ISO UTC text with one format, so text order is time order."
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pyarrow as pa
 from pyiceberg.catalog import Catalog
 from pyiceberg.types import BooleanType, StringType, TimestamptzType
 
 from agent_tools.lake_tables import HWM_PROPERTY, NAMESPACE, TABLES, TableDef
 from agent_tools.store_dialect import connect_readonly_url, placeholder
+
+if TYPE_CHECKING:
+    import pyarrow as pa
+
+# A missing pyarrow must still fail this import: `cox lake sync` imports the module outside its lease and refuses
+# with exit 2, while an ImportError raised later inside the lease becomes a quiet "sync skipped". find_spec loads nothing.
+if importlib.util.find_spec("pyarrow") is None:
+    raise ModuleNotFoundError("No module named 'pyarrow'", name="pyarrow")
 
 __all__ = ["SyncResult", "next_hwm", "rows_after", "sync", "to_arrow"]
 
@@ -65,6 +73,8 @@ def _cell(kind: object, value: Any) -> Any:
 
 def to_arrow(table_def: TableDef, rows: Sequence[Row]) -> pa.Table:
     """An Arrow table in the lake schema: ISO text becomes a UTC timestamp, 0/1 becomes a bool."""
+    import pyarrow as pa
+
     arrow_schema = table_def.schema.as_arrow()
     arrays = [
         pa.array([_cell(field.field_type, r[field.name]) for r in rows], type=arrow_schema.field(field.name).type)

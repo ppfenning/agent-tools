@@ -21,12 +21,15 @@ from typing import Any
 
 from agent_tools import run_store
 
-try:
-    import psycopg
 
-    _DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.DatabaseError, psycopg.Error)
-except ImportError:
-    _DB_ERRORS = (sqlite3.DatabaseError,)
+def _db_errors() -> tuple[type[BaseException], ...]:
+    """Store errors to catch; psycopg's join them only when it is installed. Imported here so the module loads lazily."""
+    try:
+        import psycopg
+    except ImportError:
+        return (sqlite3.DatabaseError,)
+    return (sqlite3.DatabaseError, psycopg.Error)
+
 
 __all__ = ["build", "build_machine_detail"]
 
@@ -105,7 +108,7 @@ def _host_runs(conn: Any, host_name: str) -> list[dict]:
         if "host" not in _run_columns(conn):
             return []
         rows = conn.execute("SELECT run_id, launched_at, ended_at, host FROM runs ORDER BY launched_at").fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     return [dict(row) for row in rows if row["host"] == host_name]
 

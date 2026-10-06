@@ -29,12 +29,22 @@ from agent_tools.lake_config import _LITERAL_SECRETS, _from_env
 from agent_tools.store_dialect import connect_readonly_url, is_postgres, placeholder
 from agent_tools.store_url import TracesRoot, profile_traces_root, read_provider_profile, resolve_store_url
 
-try:
-    import psycopg
 
-    _DB_ERRORS: tuple[type[BaseException], ...] = (sqlite3.DatabaseError, psycopg.Error)
-except ImportError:
-    _DB_ERRORS = (sqlite3.DatabaseError,)
+def _db_errors() -> tuple[type[BaseException], ...]:
+    """Store errors to catch; psycopg's join them only when it is installed. Imported here so the module loads lazily."""
+    try:
+        import psycopg
+    except ImportError:
+        return (sqlite3.DatabaseError,)
+    return (sqlite3.DatabaseError, psycopg.Error)
+
+
+def __getattr__(name: str) -> tuple[type[BaseException], ...]:
+    """Keep `run_store._DB_ERRORS` for other modules and cli.py, computed on first access instead of at import."""
+    if name == "_DB_ERRORS":
+        return _db_errors()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "Lane", "ParquetCheck", "TracesUnavailable", "all_phase_manifests", "attempt_causes", "attempt_causes_for", "build_counts",
@@ -210,7 +220,7 @@ def _lease_table(runs_dir: str, _window: int) -> dict[str, tuple[str, str, str]]
     conn, _ = opened
     try:
         rows = conn.execute("SELECT name, holder, expires_at, heartbeat_at FROM leases").fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -259,7 +269,7 @@ def live_lanes(runs_dir: Path, now: str) -> list[Lane]:
     try:
         host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
         joined = [(_newest_run(conn, token, name, host_expr), beat) for name, beat in live]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -277,7 +287,7 @@ def newest_run_hosts(runs_dir: Path, initiatives: Collection[str]) -> dict[str, 
     try:
         host_expr = "host" if "host" in _runs_columns(conn, token) else "NULL AS host"
         rows = {i: _newest_run(conn, token, f"runs:{i}", host_expr) for i in initiatives}
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -288,14 +298,14 @@ def hosts(runs_dir: Path) -> list[dict]:
     """Edge. The `hosts` table's rows by name; empty with no store, no table, or an unreadable store. Read every chair tick, so it never raises."""
     try:
         opened = _open(runs_dir)
-    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return []
     if opened is None:
         return []
     conn, _ = opened
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY name").fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -314,7 +324,7 @@ def run_ids(runs_dir: Path) -> set[str]:
     conn, _ = opened
     try:
         return {row["run_id"] for row in conn.execute("SELECT run_id FROM runs")}
-    except _DB_ERRORS:
+    except _db_errors():
         return set()
     finally:
         conn.close()
@@ -381,7 +391,7 @@ def task_verdict_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]
     try:
         cursor = conn.execute(_sql("SELECT run_id, task_id, record_json FROM task_records" + where, p), params)
         rows = [(r["run_id"], r["task_id"], _record_of(r["record_json"])) for r in cursor.fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -398,7 +408,7 @@ def gate_call_rows(runs_dir: Path, since: str | None) -> list[dict[str, Any]]:
     try:
         rows = conn.execute(_sql("SELECT role, run_id, task_id, cost_usd FROM node_calls" + where, p), params).fetchall()
         return [{c: r[c] for c in ("role", "run_id", "task_id", "cost_usd")} for r in rows]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -414,7 +424,7 @@ def cost_since(runs_dir: Path, since: str, until: str | None = None) -> float | 
     try:
         row = conn.execute(_sql("SELECT SUM(cost_usd) AS total FROM node_calls WHERE ts >= {p}" + bound, p), params).fetchone()
         return float(row["total"] or 0.0)
-    except _DB_ERRORS:
+    except _db_errors():
         return None
     finally:
         conn.close()
@@ -424,7 +434,7 @@ def latest_chair_meter(runs_dir: Path) -> dict | None:
     """Edge. The newest `meter` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
         opened = _open(runs_dir)
-    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
@@ -432,7 +442,7 @@ def latest_chair_meter(runs_dir: Path) -> dict | None:
     try:
         sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("meter",)).fetchone()
-    except _DB_ERRORS:
+    except _db_errors():
         return None
     finally:
         conn.close()
@@ -445,7 +455,7 @@ def latest_chair_status(runs_dir: Path) -> dict | None:
     """Edge. The newest `status` row's `action_json` as a dict; None for no store, no row, a store error, or a non-object."""
     try:
         opened = _open(runs_dir)
-    except (*_DB_ERRORS, RuntimeError):  # an unreachable Postgres, or psycopg not installed
+    except (*_db_errors(), RuntimeError):  # an unreachable Postgres, or psycopg not installed
         return None
     if opened is None:
         return None
@@ -453,7 +463,7 @@ def latest_chair_status(runs_dir: Path) -> dict | None:
     try:
         sql = _sql("SELECT action_json FROM chair_actions WHERE kind = {p} ORDER BY ts DESC LIMIT 1", token)
         row = conn.execute(sql, ("status",)).fetchone()
-    except _DB_ERRORS:
+    except _db_errors():
         return None
     finally:
         conn.close()
@@ -472,7 +482,7 @@ def last_call_at(runs_dir: Path, run_ids: Sequence[str]) -> dict[str, str]:
         marks = ", ".join(["{p}"] * len(run_ids))
         sql = _sql(f"SELECT run_id, MAX(ts) AS last FROM node_calls WHERE run_id IN ({marks}) GROUP BY run_id", p)
         return {r["run_id"]: r["last"] for r in conn.execute(sql, tuple(run_ids)).fetchall()}
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -490,7 +500,7 @@ def build_counts(runs_dir: Path, task_ids: Collection[str], runs: Collection[str
     try:
         sql = _sql(f"SELECT task_id, COUNT(*) AS n FROM node_calls WHERE role = 'build' AND ({match}) GROUP BY task_id", p)
         return {r["task_id"]: int(r["n"]) for r in conn.execute(sql, (*ids, *likes)).fetchall()}
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -517,7 +527,7 @@ def efficiency_rows(runs_dir: Path, since: str) -> dict[str, list[dict[str, Any]
     try:
         calls = [dict(r) for r in conn.execute(_sql(_EFFICIENCY_CALLS, token), (since,)).fetchall()]
         tasks = [dict(r) for r in conn.execute(_EFFICIENCY_TASKS).fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return {"calls": [], "tasks": []}
     finally:
         conn.close()
@@ -546,7 +556,7 @@ def attempt_causes(runs_dir: Path, since: str) -> list[dict[str, Any]]:
         sql = _sql(f"SELECT kind, {cols}, reason, ts FROM attempts WHERE ts >= {{p}} ORDER BY ts", p)
         keys = ("kind", "cause", "cause_why", "reason", "ts")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, (since,)).fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -566,7 +576,7 @@ def attempt_causes_for(runs_dir: Path, run_ids: Sequence[str]) -> list[dict[str,
         sql = _sql(f"SELECT run_id, task_id, seq, {cols} FROM attempts WHERE run_id IN ({marks}) ORDER BY run_id, seq", p)
         keys = ("run_id", "task_id", "seq", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, tuple(run_ids)).fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -585,7 +595,7 @@ def rescue_failures(runs_dir: Path) -> list[dict[str, Any]]:
         sql = _sql(f"SELECT run_id, task_id, phase_id, ts, {cols} FROM attempts WHERE kind = {{p}} ORDER BY ts", p)
         keys = ("run_id", "task_id", "phase_id", "ts", "cause")
         return [{k: r[k] for k in keys} for r in conn.execute(sql, ("rescue_failed",)).fetchall()]
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -604,7 +614,7 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
     def last_call(run_id: str) -> str | None:
         try:
             return conn.execute(_sql("SELECT MAX(ts) AS last FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchone()["last"]
-        except _DB_ERRORS:
+        except _db_errors():
             return None
 
     spans = []
@@ -624,7 +634,7 @@ def run_spans(runs_dir: Path, since: str) -> list[tuple[str, str, str | None]]:
                 if ended_at < since:
                     continue
             spans.append((run_id, launched_at, ended_at))
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -665,7 +675,7 @@ def _read_calls(runs_dir: Path, run_id: str) -> list[dict]:
             ),
             (run_id,),
         ).fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -705,7 +715,7 @@ def _store_runs(runs_dir: Path, exclude: Collection[str] = (), since: str | None
             ),
             params,
         ).fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -764,7 +774,7 @@ def _store_manifests(runs_dir: Path) -> dict[str, list[dict]]:
     conn, _ = opened
     try:
         rows = conn.execute("SELECT run_id, record_json FROM phases ORDER BY run_id, ts").fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -795,7 +805,7 @@ def _store_phase_names(runs_dir: Path, run_id: str) -> list[str]:
     conn, p = opened
     try:
         rows = conn.execute(_sql("SELECT phase_id FROM phases WHERE run_id = {p} ORDER BY ts", p), (run_id,)).fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return []
     finally:
         conn.close()
@@ -1364,7 +1374,7 @@ def _store_ids_by_trace(runs_dir: str, run_id: str) -> dict[str, str]:
     conn, p = opened
     try:
         rows = conn.execute(_sql("SELECT call_id, detail_json FROM node_calls WHERE run_id = {p}", p), (run_id,)).fetchall()
-    except _DB_ERRORS:
+    except _db_errors():
         return {}
     finally:
         conn.close()
@@ -1452,7 +1462,7 @@ def run_started(runs_dir: Path, run_id: str) -> str | None:
     conn, p = opened
     try:
         row = conn.execute(_sql("SELECT launched_at FROM runs WHERE run_id = {p}", p), (run_id,)).fetchone()
-    except _DB_ERRORS:
+    except _db_errors():
         return None
     finally:
         conn.close()

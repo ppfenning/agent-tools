@@ -11,7 +11,6 @@ from collections.abc import Iterable, Sequence
 from datetime import date, datetime, time
 from typing import Any
 
-import duckdb
 from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import NoSuchTableError
 
@@ -58,6 +57,8 @@ def query(catalog: Catalog, sql: str) -> tuple[list[str], list[tuple]]:
     """Edge. Register the lake tables `sql` names, lock the connection to memory, run it and return (columns, rows).
 
     A table the lake lacks is left unregistered, so DuckDB reports it missing in its own words."""
+    import duckdb
+
     con = duckdb.connect(":memory:")
     try:
         for name in tables_named(sql, TABLES):
