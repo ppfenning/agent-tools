@@ -1,4 +1,5 @@
 from agent_tools.settings_model import REGISTRY, SECTIONS, SettingRow, rows, setting_for
+from agent_tools.settings_sections.defaults import DEFAULT_KEYS
 
 TRACKED = {"cartridge.yaml": True, "profile.yaml": False}
 
@@ -90,3 +91,9 @@ def test_setting_for_resolves_registry_and_crew_keys():
     assert setting_for("cartridge", "crew.builder.enabled").section == "crew seats"
     assert setting_for("cartridge", "nope") is None
     assert setting_for("profile", "policy.review_tier") is None
+
+
+def test_every_defaults_table_key_resolves_in_the_registry():
+    found = [(spec, setting_for(spec.scope, spec.key)) for spec in DEFAULT_KEYS]
+    assert all(setting is not None for _, setting in found)
+    assert [(s.section, s.pat_only) for _, s in found] == [(spec.section, spec.pat_only) for spec, _ in found]

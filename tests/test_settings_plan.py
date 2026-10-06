@@ -85,3 +85,38 @@ def test_chair_reads_covers_every_chair_cap_reader():
 def test_pat_only_flag_is_carried():
     result = plan_set("cartridge", "policy.review_tier", "3", "policy:\n  review_tier: 2\n", _valid)
     assert isinstance(result, Plan) and result.pat_only is True
+
+
+def test_absent_default_key_is_inserted_at_its_path():
+    result = plan_set("cartridge", "epic_threshold", "3", OLD, _valid)
+    assert result == Plan(
+        OLD + "epic_threshold: 3\n",
+        "--- a/cartridge.yaml\n"
+        "+++ b/cartridge.yaml\n"
+        "@@ -1,3 +1,4 @@\n"
+        " policy:\n"
+        "   dispatch:\n"
+        "     max_in_flight: 2\n"
+        "+epic_threshold: 3\n",
+        False,
+    )
+
+
+def test_absent_role_model_key_is_inserted_and_flagged_pat_only():
+    result = plan_set("cartridge", "policy.review_tier", "3", OLD, _valid)
+    assert result == Plan(
+        OLD + "  review_tier: 3\n",
+        "--- a/cartridge.yaml\n"
+        "+++ b/cartridge.yaml\n"
+        "@@ -1,3 +1,4 @@\n"
+        " policy:\n"
+        "   dispatch:\n"
+        "     max_in_flight: 2\n"
+        "+  review_tier: 3\n",
+        True,
+    )
+
+
+def test_invalid_value_for_an_absent_default_key_is_refused():
+    result = plan_set("profile", "chair.stale_days", "abc", "team: pat\n")
+    assert result == PlanError("line 3:   stale_days: abc")
