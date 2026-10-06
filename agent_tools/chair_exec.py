@@ -28,6 +28,7 @@ from agent_tools import (
     chair_login_watch,
     chair_plan_prune,
     courier,
+    cox_settings,
     forge_auto,
     host_cmd,
     remote_fetch,
@@ -59,6 +60,7 @@ __all__ = [
     "land_commit",
     "land_refusal",
     "landed",
+    "lane_writer",
     "perform",
     "smoke_targets",
     "tail",
@@ -138,6 +140,7 @@ class Deps:
     lands: LandSink | None = None  # None runs a land in line, as before; a sink runs it behind the tick
     carry_ports: Callable[[Action], tuple[GitPort, ForgePort, StorePort]] | None = None  # a carry_phase's ports; None refuses it
     rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
+    set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -617,15 +620,50 @@ def _housekeeping(action: Action, deps: Deps) -> Result:
     return _result(action, status, reason)
 
 
-def _send_stale_draft_note(deps: Deps, initiative: str, reason: str) -> None:
-    """Edge. One `coxswain://initiative/<id>` courier line appended to `work_dir/courier.jsonl`, addressed to
-    `deps.note_to`, quoting `reason` verbatim."""
-    ref = courier.Reference("initiative", initiative)
+def _send_note(deps: Deps, ref: courier.Reference, text: str) -> None:
+    """Edge. One courier line for `ref` appended to `work_dir/courier.jsonl`, addressed to `deps.note_to`."""
     sender = (chair.read(deps.runs_dir) or {}).get("session") or "chair"
-    entry = courier.send(ref, sender, deps.note_to, reason, uuid.uuid4().hex)
+    entry = courier.send(ref, sender, deps.note_to, text, uuid.uuid4().hex)
     path = deps.work_dir / "courier.jsonl"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     path.write_text(courier.append_line(existing, entry), encoding="utf-8")
+
+
+def _send_stale_draft_note(deps: Deps, initiative: str, reason: str) -> None:
+    """Edge. One `coxswain://initiative/<id>` courier line to `deps.note_to`, quoting `reason` verbatim."""
+    _send_note(deps, courier.Reference("initiative", initiative), reason)
+
+
+def lane_writer(profile_path: Path) -> Callable[[str, int], int]:
+    """The `Deps.set_lanes` that writes through `cox settings set host <host>.capacity <n>`, the one lane write path."""
+    return lambda host, n: cox_settings.run_set(profile_path, "host", f"{host}.capacity", str(n), False)
+
+
+def _tune_lanes(action: Action, deps: Deps) -> Result:
+    """Edge. Sets the host's lane count through `deps.set_lanes`. The bounds are `min_lanes` and `max_lanes` in
+    the action's evidence; a missing bound or a count outside it is refused with nothing written."""
+    host = action.get("host", "")
+    to_lanes = action.get("to_lanes")
+    evidence = action.get("evidence", {})
+    low, high = evidence.get("min_lanes"), evidence.get("max_lanes")
+    if not host or not isinstance(to_lanes, int) or isinstance(to_lanes, bool) or deps.set_lanes is None:
+        return _result(action, "refused", "tune_lanes needs a host, an integer to_lanes and a wired lane writer")
+    if not isinstance(low, int) or not isinstance(high, int):
+        return _result(action, "refused", "tune_lanes needs min_lanes and max_lanes in its evidence")
+    if not low <= to_lanes <= high:
+        return _result(action, "refused", f"{host}: {to_lanes} lanes is outside {low} to {high}")
+    if deps.set_lanes(host, to_lanes) != 0:
+        return _result(action, "failed", f"{host}: setting {to_lanes} lanes failed")
+    return _result(action, "done", f"{host}: lanes {action.get('from_lanes', '?')} to {to_lanes}: {action.get('reason', '')}")
+
+
+def _propose_tiers(action: Action, deps: Deps) -> Result:
+    """Edge. One courier line carrying the action's rendered body. Propose-only: no settings writer is called."""
+    body = action.get("body", "")
+    if not body:
+        return _result(action, "refused", "propose_tiers needs a body")
+    _send_note(deps, courier.Reference("proposal", "tiers"), body)
+    return _result(action, "done", "proposed tiers to the inbox")
 
 
 def _stale_to_draft(action: Action, deps: Deps) -> Result:
@@ -781,6 +819,10 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _housekeeping(action, deps)
     if kind == "stale_to_draft":
         return _stale_to_draft(action, deps)
+    if kind == "tune_lanes":
+        return _tune_lanes(action, deps)
+    if kind == "propose_tiers":
+        return _propose_tiers(action, deps)
     if kind == "stalled_usr1":
         return _stalled(action, deps, signal.SIGUSR1)
     if kind == "stalled_stop":

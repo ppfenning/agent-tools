@@ -88,6 +88,17 @@ def test_a_remote_unfetched_callables_mapping_appears_under_remote_unfetched():
     assert gather_facts(deps, NOW)["remote_unfetched"] == {"i": "i-1"}
 
 
+def test_gather_facts_carries_a_tuning_entry_with_the_meter_and_the_last_tuned_time():
+    deps = replace(_deps(weekly_spent=25.0), tuning=lambda now: ([], "2026-09-24T00:00:00Z"), lane_bounds=lambda: {"": (1, 4)})
+    tuning = gather_facts(deps, NOW)["tuning"]
+    assert tuning["last_tuned_at"] == "2026-09-24T00:00:00Z"
+    assert tuning["meter"] == {"weekly_fraction_used": 0.25, "week_elapsed_fraction": 1 / 168}
+    assert tuning["hosts"] == {"": {"lanes": 2, "min_lanes": 1, "max_lanes": 4}}
+    assert gather_facts(_deps(), NOW)["tuning"] == {
+        "stats": [], "meter": {"weekly_fraction_used": 0.1, "week_elapsed_fraction": 1 / 168}, "hosts": {}, "last_tuned_at": None,
+    }
+
+
 def test_an_absent_remote_unfetched_callable_gives_an_empty_mapping():
     assert gather_facts(_deps(), NOW)["remote_unfetched"] == {}
 
@@ -443,9 +454,8 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
-    # tuning is declared on Facts but not yet filled: a later task fills it in gather_facts.
     # landed_main and land_outcomes are declared on Facts but not yet filled: a later task fills them.
-    unfilled = {"tuning", "landed_main", "land_outcomes"}
+    unfilled = {"landed_main", "land_outcomes"}
     assert set(facts) == (set(Facts.__annotations__) - unfilled) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}

@@ -206,6 +206,21 @@ def test_a_rescue_is_dropped_at_the_hard_stop_while_needs_chair_passes(monkeypat
     assert plan_tick(facts) == [{**_NEEDS_CHAIR_BARE, "epoch": 7}]
 
 
+_TUNE = {"kind": "tune_lanes", "host": "h1", "from_lanes": 4, "to_lanes": 3, "reason": "over pace", "evidence": {}}
+_RELAUNCH = {"kind": "relaunch", "initiative": "a"}
+
+
+def test_a_tune_lanes_is_kept_at_the_hard_stop_and_is_not_counted_against_the_launch_cap(monkeypatch):
+    _recovering(monkeypatch, [_RELAUNCH, _RETRY])
+    monkeypatch.setattr("agent_tools.chair_plan.plan_tune", lambda facts, now: [_TUNE])
+    stopped = _facts(limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
+    held = [a for a in plan_tick(stopped, _NOW) if a["kind"] != "housekeeping"]
+    assert held == [{**_TUNE, "epoch": 7}]
+    capped = _facts(limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
+    kinds = [a["kind"] for a in plan_tick(capped, _NOW)]
+    assert (kinds.count("tune_lanes"), kinds.count("relaunch") + kinds.count("retry")) == (1, 1)
+
+
 def test_a_kept_rescue_is_stamped_with_the_lease_epoch(monkeypatch):
     _recovering(monkeypatch, [_RESCUE])
     facts = _facts(lease={"holder": "a", "host": "h", "epoch": 42, "mine": True, "released": False, "stale": False})

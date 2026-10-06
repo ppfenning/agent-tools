@@ -21,6 +21,7 @@ from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
+from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_types import (
     EASTERN,
     ApprovedTask,
@@ -191,6 +192,8 @@ class FactsDeps:
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
     landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
+    tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
+    lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -699,4 +702,10 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
         "idle_stall": deps.idle_stall(now),
+        "tuning": tuning_facts(
+            *deps.tuning(now),
+            weekly_fraction(weekly),
+            pacing._elapsed_fraction(weekly, now) if weekly is not None else 0.0,
+            current_lanes(dispatch), dict(deps.lane_bounds()),
+        ),
     }
