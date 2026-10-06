@@ -1537,22 +1537,52 @@ def test_merge_pages_joins_back_to_back_pages_and_refuses_garbage():
 
 def test_check_poll_result_maps_green_failed_pending_and_empty():
     green_status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
-    assert land.check_poll_result({"check_runs": [_run_row("a"), _run_row("b", conclusion="skipped")]}, green_status) == (0, "")
+    assert land.check_poll_result({"check_runs": [_run_row("a"), _run_row("b", conclusion="skipped")]}, green_status, ()) == (0, "")
     mixed = {"check_runs": [_run_row("a", conclusion="failure"), _run_row("b", "in_progress", None)]}
-    assert land.check_poll_result(mixed, {"statuses": []}) == (1, "failing checks: a")
-    assert land.check_poll_result({"check_runs": []}, {"statuses": [{"context": "ci", "state": "error"}]}) == (1, "failing checks: ci")
+    assert land.check_poll_result(mixed, {"statuses": []}, ()) == (1, "failing checks: a")
+    assert land.check_poll_result({"check_runs": []}, {"statuses": [{"context": "ci", "state": "error"}]}, ()) == (1, "failing checks: ci")
     queued = {"check_runs": [_run_row("a", "queued", None)]}
-    assert land.check_poll_result(queued, {"state": "pending", "statuses": []}) == (land.PENDING_RC, "checks pending: a")
-    assert land.check_poll_result({"check_runs": []}, {"state": "pending", "statuses": []}) == (1, "no checks reported")
+    assert land.check_poll_result(queued, {"state": "pending", "statuses": []}, ()) == (land.PENDING_RC, "checks pending: a")
+    assert land.check_poll_result({"check_runs": []}, {"state": "pending", "statuses": []}, ()) == (1, "no checks reported")
 
 
 def test_check_poll_result_is_never_green_when_fewer_rows_than_total_count_were_read():
     hundred_green = {"total_count": 101, "check_runs": [_run_row(f"r{i}") for i in range(100)]}
-    assert land.check_poll_result(hundred_green, {"statuses": []}) == (land.PENDING_RC, "checks pending: 100 of 101 check runs read")
+    assert land.check_poll_result(hundred_green, {"statuses": []}, ()) == (land.PENDING_RC, "checks pending: 100 of 101 check runs read")
     statuses = {"total_count": 2, "state": "success", "statuses": [{"context": "ci", "state": "success"}]}
-    assert land.check_poll_result({"check_runs": []}, statuses)[0] == land.PENDING_RC
+    assert land.check_poll_result({"check_runs": []}, statuses, ())[0] == land.PENDING_RC
     combined_failure = {"total_count": 101, "state": "failure", "statuses": [{"context": "ci", "state": "success"}]}
-    assert land.check_poll_result({"check_runs": []}, combined_failure) == (1, "failing checks: combined status")
+    assert land.check_poll_result({"check_runs": []}, combined_failure, ()) == (1, "failing checks: combined status")
+
+
+def test_check_poll_result_holds_a_required_name_absent_from_runs_and_statuses_as_pending():
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ("test",)) == (land.PENDING_RC, "checks pending: test")
+
+
+def test_check_poll_result_is_green_when_every_required_name_is_a_passing_run_or_status():
+    status = {"state": "success", "statuses": [{"context": "ci", "state": "success"}]}
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, status, ("lint", "ci")) == (0, "")
+
+
+def test_check_poll_result_keeps_a_failing_required_check_a_failure_and_beats_a_missing_one():
+    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test",)) == (1, "failing checks: test")
+    assert land.check_poll_result({"check_runs": [_run_row("test", conclusion="failure")]}, {"statuses": []}, ("test", "lint")) == (1, "failing checks: test")
+
+
+def test_check_poll_result_with_unreadable_required_follows_the_old_rule_and_says_so():
+    note = land._REQUIRED_UNREADABLE
+    green = {"check_runs": [_run_row("lint")]}
+    assert land.check_poll_result(green, {"statuses": []}) == (0, note)
+    assert land.check_poll_result(green, {"statuses": []}, None) == (0, note)
+    failing = {"check_runs": [_run_row("a", conclusion="failure")]}
+    assert land.check_poll_result(failing, {"statuses": []}) == (1, f"failing checks: a\n{note}")
+    queued = {"check_runs": [_run_row("a", "queued", None)]}
+    assert land.check_poll_result(queued, {"statuses": []}) == (land.PENDING_RC, f"checks pending: a\n{note}")
+    assert land.wait_decision(*land.check_poll_result({"check_runs": []}, {"statuses": []}), 5, 300) == "retry"
+
+
+def test_check_poll_result_with_an_empty_required_tuple_is_green_without_the_note():
+    assert land.check_poll_result({"check_runs": [_run_row("lint")]}, {"statuses": []}, ()) == (0, "")
 
 
 def test_wait_decision_retries_pending_by_returncode_alone_and_reads_no_phrase():
@@ -1592,7 +1622,7 @@ _RATE_LIMITED = sp.CompletedProcess([], 1, "", "HTTP 403: secondary rate limit")
 
 @pytest.mark.parametrize("answers, expected", [
     ([_GREEN], (True, "green")),
-    ([{"total_count": 1, "check_runs": [_run_row("a", conclusion="failure")]}], (False, "failing checks: a")),
+    ([{"total_count": 1, "check_runs": [_run_row("a", conclusion="failure")]}], (False, f"failing checks: a\n{land._REQUIRED_UNREADABLE}")),
     ([{"total_count": 1, "check_runs": [_run_row("a", "queued", None)]}, _GREEN], (True, "green")),
     ([_RATE_LIMITED, _RATE_LIMITED, _GREEN], (True, "green")),
     ([_RATE_LIMITED] * 5, (False, "checks unreadable 5 polls in a row: HTTP 403: secondary rate limit")),
