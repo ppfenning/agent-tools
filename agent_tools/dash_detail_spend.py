@@ -35,17 +35,18 @@ plain data out, no clock and no filesystem. `_rows_since` and `build` are the th
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent_tools import dash_feed, run_store, usage_meter, usage_window
+from agent_tools import dash_feed, route, run_store, usage_meter, usage_window
 from agent_tools.dash_spend_series import spend_series
 
 __all__ = ["build", "group_spend", "project_to_hard_stop", "schema1_keys"]
 
 TOP_N_DEFAULT = 5
 _WEEKLY_SPAN = timedelta(days=7)
+_FIVE_HOURS = timedelta(hours=5)
 
 
 def _initiative_map(runs_dir: Path) -> dict[str, str | None]:
@@ -177,8 +178,22 @@ def _window_v1(fraction: float | None, ceiling_usd: float, resets_at: str | None
     }
 
 
-def _share(cumulative_usd: float, ceiling_usd: float) -> float:
-    return cumulative_usd / ceiling_usd if ceiling_usd > 0 else 0.0
+def _share(spend_usd: float, ceiling_usd: float) -> float:
+    return spend_usd / ceiling_usd if ceiling_usd > 0 else 0.0
+
+
+def _parse_ts(text: Any) -> datetime | None:
+    """Pure. An ISO timestamp as an aware datetime, a naive one read as UTC; `None` when it is not one."""
+    try:
+        parsed = datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _spend_between(dated: list[tuple[datetime, float]], start: datetime, end: datetime) -> float:
+    """Pure. Summed cost of the rows with `start <= ts <= end`, at full precision."""
+    return sum(cost for ts, cost in dated if start <= ts <= end)
 
 
 def schema1_keys(
@@ -188,17 +203,25 @@ def schema1_keys(
     window_ceiling_usd: float | None,
     weekly_ceiling_usd: float | None,
     now: str,
+    reset: usage_window.WeeklyReset | None = None,
 ) -> dict[str, Any]:
     """Pure. The schema-1 keys coxtop parses. `spend` is the feed's spend block and `series`
-    its `[at, cumulative_usd]` pairs; each `history` point is the cumulative spend as a
-    fraction of each ceiling, 0.0 when that ceiling is unknown. `rows` carry `ts` and
-    `cost_usd`; `daily` sums them per `ts[:10]` day, rounded once, days ascending."""
+    its `[at, cumulative_usd]` pairs, read only for their timestamps. `rows` carry `ts` and
+    `cost_usd`. The week starts at the latest `reset` at or before `now` (a rolling 7 days
+    with no reset; unbounded when `now` does not parse). A `history` point's `weekly` is the
+    spend from the week's start to the point and its `five_hour` the spend in the five hours
+    before it, each over its ceiling, 0.0 when that ceiling is unknown. `daily` sums the
+    week's rows per `ts[:10]` day, rounded once, days ascending."""
     five_hour_ceiling = float(window_ceiling_usd or 0.0)
     weekly_ceiling = float(weekly_ceiling_usd or 0.0)
-    per_day = _totals_by(
-        [{"day": str(row["ts"])[:10], "cost_usd": row.get("cost_usd")} for row in rows if row.get("ts")],
-        "day",
-    )
+    now_dt = _parse_ts(now)
+    week_start = datetime.min.replace(tzinfo=UTC) if now_dt is None else usage_window.weekly_window_start(now_dt, reset)
+    in_week = [
+        (ts, row) for row in rows if (ts := _parse_ts(row.get("ts"))) is not None and ts >= week_start
+    ]
+    dated = [(ts, float(row.get("cost_usd") or 0.0)) for ts, row in in_week]
+    per_day = _totals_by([{"day": str(row["ts"])[:10], "cost_usd": row.get("cost_usd")} for _, row in in_week], "day")
+    points = [(at, _parse_ts(at)) for at, _ in series]
     return {
         "schema": 1,
         "kind": "spend",
@@ -208,23 +231,37 @@ def schema1_keys(
         "history": [
             {
                 "at": at,
-                "five_hour": _share(float(cumulative), five_hour_ceiling),
-                "weekly": _share(float(cumulative), weekly_ceiling),
+                "five_hour": _share(_spend_between(dated, point - _FIVE_HOURS, point), five_hour_ceiling)
+                if point is not None else 0.0,
+                "weekly": _share(_spend_between(dated, week_start, point), weekly_ceiling)
+                if point is not None else 0.0,
             }
-            for at, cumulative in series
+            for at, point in points
         ],
         "daily": [{"day": day, "cost": per_day[day]} for day in sorted(per_day)],
     }
 
 
-def _schema1_edge(runs_dir: Path, now: str, since_week: datetime) -> dict[str, Any]:
+def _profile_weekly_reset() -> usage_window.WeeklyReset | None:
+    """Edge. The routing profile's `weekly_reset`, parsed as the chair parses it; `None` when
+    the profile is missing, unreadable or unparseable, or sets no reset."""
+    try:
+        profile = route.parse_profile(dash_feed._profile_path().read_text(encoding="utf-8"))
+    except (OSError, route.ProfileError):
+        return None
+    return usage_window.parse_weekly_reset(profile.get("weekly_reset"))
+
+
+def _schema1_edge(
+    runs_dir: Path, now: str, since_week: datetime, reset: usage_window.WeeklyReset | None,
+) -> dict[str, Any]:
     """Edge. Reads the feed's own spend block, profile ceilings and spend series, and the
     week's ledger rows, and hands them to `schema1_keys`."""
     rows = _rows_since(runs_dir, since_week.isoformat())
     window_ceiling, weekly_ceiling = dash_feed._profile_ceilings()
     series = spend_series(dash_feed._spend_points({"week": rows}), dash_feed._parse_now(now))
     spend = dash_feed._spend_v1(dash_feed._spend(runs_dir, now))
-    return schema1_keys(spend, series, rows, window_ceiling, weekly_ceiling, now)
+    return schema1_keys(spend, series, rows, window_ceiling, weekly_ceiling, now, reset)
 
 
 def build(runs_dir: Path, now: str) -> dict[str, Any]:
@@ -232,9 +269,10 @@ def build(runs_dir: Path, now: str) -> dict[str, Any]:
     this week's spend, each broken down by initiative, role and model with the costliest
     tasks, and a projection to the weekly hard stop."""
     now_dt = datetime.fromisoformat(now)
-    since_week = usage_window.weekly_window_start(now_dt, reset=None)
+    reset = _profile_weekly_reset()
+    since_week = usage_window.weekly_window_start(now_dt, reset)
     return {
-        **_schema1_edge(runs_dir, now, since_week),
+        **_schema1_edge(runs_dir, now, since_week, reset),
         "today": _spend_window(runs_dir, _midnight(now_dt), TOP_N_DEFAULT),
         "week": _spend_window(runs_dir, since_week, TOP_N_DEFAULT),
         "projection": _projection(now_dt),

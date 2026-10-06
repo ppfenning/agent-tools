@@ -3,7 +3,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_tools import cli, run_store, usage_meter
+from agent_tools import cli, run_store, usage_meter, usage_window
 from agent_tools.dash_detail_spend import _rows_since, build, group_spend, project_to_hard_stop, schema1_keys
 from agent_tools.usage_meter import Meter, MeterEntry
 
@@ -233,6 +233,14 @@ SNAPSHOT_SPEND = {
 }
 
 
+SUNDAY_4AM_NEW_YORK = usage_window.WeeklyReset(6, 4, 0, "America/New_York")
+MONDAY = "2026-10-05T14:30:00+00:00"  # the week began Sunday 2026-10-04T08:00Z
+
+
+def ledger(ts, cost_usd):
+    return {"ts": ts, "cost_usd": cost_usd}
+
+
 def snapshot_from_literals():
     return schema1_keys(
         SNAPSHOT_SPEND,
@@ -244,7 +252,8 @@ def snapshot_from_literals():
         ],
         20.0,
         200.0,
-        "2026-10-05T14:30:00+00:00",
+        MONDAY,
+        SUNDAY_4AM_NEW_YORK,
     )
 
 
@@ -263,10 +272,50 @@ def test_schema1_keys_derive_used_usd_history_and_daily_from_the_literals():
     }
     assert got["weekly"]["used_usd"] == 50.0
     assert got["history"] == [
-        {"at": "2026-10-05T14:10:00Z", "five_hour": 0.2, "weekly": 0.02},
-        {"at": "2026-10-05T14:20:00Z", "five_hour": 0.5, "weekly": 0.05},
+        {"at": "2026-10-05T14:10:00Z", "five_hour": 0.2, "weekly": 0.03},
+        {"at": "2026-10-05T14:20:00Z", "five_hour": 0.2, "weekly": 0.03},
     ]
-    assert got["daily"] == [{"day": "2026-10-04", "cost": 3.5}, {"day": "2026-10-05", "cost": 4.0}]
+    assert got["daily"] == [{"day": "2026-10-04", "cost": 2.0}, {"day": "2026-10-05", "cost": 4.0}]
+
+
+def test_schema1_keys_week_reset_on_sunday_excludes_saturdays_rows_from_daily():
+    rows = [ledger("2026-10-03T15:00:00+00:00", 3.0), ledger("2026-10-04T09:00:00+00:00", 2.0)]
+    got = schema1_keys({}, [], rows, 20.0, 200.0, MONDAY, SUNDAY_4AM_NEW_YORK)
+    assert got["daily"] == [{"day": "2026-10-04", "cost": 2.0}]
+
+
+def test_schema1_keys_weekly_share_includes_spend_from_earlier_days_of_the_week():
+    rows = [ledger("2026-10-04T09:00:00+00:00", 8.0), ledger("2026-10-05T14:00:00+00:00", 2.0)]
+    got = schema1_keys({}, [["2026-10-05T14:20:00Z", 0.0]], rows, 20.0, 200.0, MONDAY, SUNDAY_4AM_NEW_YORK)
+    assert got["history"][0]["weekly"] == 0.05
+
+
+def test_schema1_keys_five_hour_share_excludes_spend_older_than_five_hours():
+    rows = [ledger("2026-10-05T08:00:00+00:00", 5.0), ledger("2026-10-05T13:20:00+00:00", 1.0)]
+    got = schema1_keys({}, [["2026-10-05T14:20:00Z", 0.0]], rows, 20.0, 200.0, MONDAY, SUNDAY_4AM_NEW_YORK)
+    assert got["history"][0]["five_hour"] == 0.05
+    assert got["history"][0]["weekly"] == 0.03
+
+
+def test_build_reads_weekly_reset_from_the_profile_so_daily_starts_at_the_reset(tmp_path: Path, monkeypatch):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("spend:\n  weekly_reset: Sun 04:00 America/New_York\n")
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
+    _usage_file(
+        tmp_path,
+        "r1",
+        [
+            {"role": "build", "model": "sonnet", "task_id": "t1", "cost_usd": 2.0, "ts": "2026-10-03T15:00:00+00:00"},
+            {"role": "build", "model": "sonnet", "task_id": "t2", "cost_usd": 3.0, "ts": "2026-10-04T09:00:00+00:00"},
+        ],
+    )
+    monkeypatch.setattr(run_store, "work_items", lambda *a, **k: [])
+    monkeypatch.setattr(usage_meter, "read", lambda: None)
+
+    got = build(tmp_path, MONDAY)
+
+    assert got["daily"] == [{"day": "2026-10-04", "cost": 3.0}]
+    assert got["week"]["since"] == "2026-10-04T08:00:00+00:00"
 
 
 def test_schema1_keys_with_no_ceiling_or_reset_have_no_nulls():
