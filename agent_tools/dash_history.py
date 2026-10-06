@@ -77,9 +77,34 @@ def first_cause(run_tasks: Iterable[Row]) -> str:
     return causes[0] if causes else ""
 
 
+RECORDED_OUTCOMES = ("blocked", "refused", "waiting")
+
+
+def _recorded(run: Row) -> Mapping[str, Any]:
+    """The run's `record_json["outcome"]` as a dict; empty when the record, the key or a mapping value is missing."""
+    outcome = _record(run.get("record_json")).get("outcome")
+    return outcome if isinstance(outcome, Mapping) else {}
+
+
+def outcome_cause(run: Row) -> tuple[str, str]:
+    """(label, cause) from the recorded outcome: `blocked` and `waiting` are lists whose first item is the cause, `refused` is the refusal line.
+    Checked in that order; ("", "") when none is set."""
+    outcome = _recorded(run)
+    label = next((name for name in RECORDED_OUTCOMES if outcome.get(name)), "")
+    value = outcome.get(label)
+    return (label, str(value[0]) if isinstance(value, (list, tuple)) else str(value)) if label else ("", "")
+
+
+def _cause(outcome: str, run: Row, run_tasks: Sequence[Row]) -> str:
+    """The row's `cause` for `outcome`: the first quarantine cause, or the recorded cause when it is the label's own; else empty."""
+    label, cause = outcome_cause(run)
+    return first_cause(run_tasks) if outcome == "quarantined" else (cause if label == outcome else "")
+
+
 def run_outcome(run: Row, run_tasks: Sequence[Row]) -> str:
     """The one outcome rule. A store status of landed, approved or quarantined wins; then what the records built: landed, approved,
-    a quarantine cause; then stopped; crashed for an error status, or a missing/unknown one with no records; else idle."""
+    a quarantine cause; then the recorded blocked, refused or waiting outcome; then stopped; crashed for an error status, or a
+    missing/unknown one with no records; else idle."""
     status = run.get("status")
     if status in ("landed", "approved", "quarantined"):
         return str(status)
@@ -89,6 +114,8 @@ def run_outcome(run: Row, run_tasks: Sequence[Row]) -> str:
         return "approved"
     if first_cause(run_tasks):
         return "quarantined"
+    if label := outcome_cause(run)[0]:
+        return label
     if status in STOPPED_STATUSES:
         return "stopped"
     if status in CRASHED_STATUSES or (status != "ok" and not run_tasks):
@@ -137,7 +164,7 @@ def _ended_runs(runs: Iterable[Row]) -> list[tuple[datetime, Row]]:
 
 
 def build_history(runs: Sequence[Row], task_records: Sequence[Row], node_calls: Sequence[Row], limit: int = LIMIT) -> list[dict[str, Any]]:
-    """Up to `limit` rows for ended runs, newest ended first. Only a quarantined row carries `cause`."""
+    """Up to `limit` rows for ended runs, newest ended first. Only a quarantined, blocked, refused or waiting row carries `cause`."""
     tasks, calls = _by_run(task_records), _by_run(node_calls)
     rows = []
     for _, run in _ended_runs(runs)[:limit]:
@@ -152,7 +179,7 @@ def build_history(runs: Sequence[Row], task_records: Sequence[Row], node_calls: 
             "outcome": outcome,
             "cost_usd": _cost(calls.get(run_id, [])),
             "landed": landed_tasks(run_tasks),
-            **({"cause": first_cause(run_tasks)} if outcome == "quarantined" else {}),
+            **({"cause": _cause(outcome, run, run_tasks)} if outcome in ("quarantined", *RECORDED_OUTCOMES) else {}),
         })
     return rows
 

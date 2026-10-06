@@ -100,3 +100,30 @@ def test_an_unbuilt_run_is_crashed_quarantined_or_stopped_by_its_status_and_caus
 def test_a_run_with_no_records_takes_its_initiative_from_the_run_id():
     runs = [_run("chair-carries-a-split-phase-12", "2026-10-04T10:00:00Z", status="ok")]
     assert build_history(runs, [], [])[0]["initiative"] == "chair-carries-a-split-phase"
+
+
+def _recorded_row(status, **outcome):
+    run = {**_run("acme-4", "2026-10-04T10:00:00Z", status=status), "record_json": json.dumps({"outcome": outcome})}
+    return build_history([run], [], [])[0]
+
+
+def test_a_blocked_run_is_blocked_and_carries_its_first_reason():
+    row = _recorded_row("ok", blocked=["phase-block: p2", "second"])
+    assert (row["outcome"], row["cause"]) == ("blocked", "phase-block: p2")
+
+
+def test_a_refused_run_is_refused_and_carries_the_refusal_line():
+    row = _recorded_row("error", refused="ticket lint: missing surfaces")
+    assert (row["outcome"], row["cause"]) == ("refused", "ticket lint: missing surfaces")
+
+
+def test_a_waiting_run_is_waiting_and_carries_its_first_phase():
+    row = _recorded_row("ok", waiting=["p3", "p4"])
+    assert (row["outcome"], row["cause"]) == ("waiting", "p3")
+
+
+def test_a_run_with_no_recorded_outcome_keeps_its_label_from_status():
+    runs = [_run("acme-4", "2026-10-04T10:00:00Z", status="ok"), {**_run("acme-5", "2026-10-04T09:00:00Z", status="error"), "record_json": "{}"}]
+    rows = build_history(runs, [], [])
+    assert [row["outcome"] for row in rows] == ["idle", "crashed"] and all("cause" not in row for row in rows)
+    assert _recorded_row("ok", blocked=[])["outcome"] == "idle"
