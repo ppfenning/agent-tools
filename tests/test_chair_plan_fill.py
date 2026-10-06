@@ -107,6 +107,33 @@ def test_three_free_local_lanes_launch_three_decomposes_oldest_first():
     assert plan_fill(facts, 3) == [{"kind": "launch_decompose", "intake_ids": [i]} for i in ("i1", "i2", "i3")]
 
 
+def test_hosted_decompose_places_two_intakes_one_locally_and_one_on_the_host():
+    facts = _hosted(2, intake=["i1", "i2"])
+    assert plan_fill(facts, 1, hosted_decompose=True) == [
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "jarvis"},
+    ]
+
+
+def test_hosted_decompose_takes_the_host_lane_before_an_epic_in_the_same_pass():
+    facts = _hosted(1, initiatives=[_init("a"), _init("b")], intake=["i1", "i2"])
+    assert plan_fill(facts, 1, hosted_decompose=True) == [
+        {"kind": "launch_epic", "initiative": "a"},
+        {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "jarvis"},
+    ]
+
+
+def test_hosted_decompose_with_no_free_host_and_no_free_local_lane_places_nothing():
+    assert plan_fill(_hosted(0, intake=["i1", "i2"]), 0, hosted_decompose=True) == []
+
+
+def test_hosted_decompose_places_on_a_host_whatever_its_capabilities():
+    dispatch = {"max_in_flight": 4, "live_runs": 0, "hosts": [{"name": "gpu", "live_runs": 3, "capabilities": ["cuda"]}]}
+    assert plan_fill(_facts(dispatch=dispatch, intake=["i1"]), 0, hosted_decompose=True) == [
+        {"kind": "launch_decompose", "intake_ids": ["i1"], "host": "gpu"},
+    ]
+
+
 def test_pull_is_planned_when_the_store_is_empty_and_sources_exist():
     assert plan_fill(_facts(sources_configured=True), 2) == [{"kind": "pull"}]
 
@@ -232,6 +259,14 @@ def test_reserved_single_local_lane_takes_one_decompose_even_with_a_host_free():
     assert plan_fill(facts, 1) == [
         {"kind": "launch_epic", "initiative": "a", "host": "jarvis"},
         {"kind": "launch_decompose", "intake_ids": ["i1"]},
+    ]
+
+
+def test_reserved_hosted_decompose_takes_the_only_host_lane_and_the_epic_waits():
+    facts = _reserved(1, initiatives=[_init("a")], intake=["i1", "i2"])
+    assert plan_fill(facts, 1, hosted_decompose=True) == [
+        {"kind": "launch_decompose", "intake_ids": ["i1"]},
+        {"kind": "launch_decompose", "intake_ids": ["i2"], "host": "jarvis"},
     ]
 
 
