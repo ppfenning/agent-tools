@@ -38,6 +38,32 @@ PRS = [
 APPROVAL_ID = item_id("approval", "init-a")
 PR_ID = item_id("pr", "https://github.com/o/r/pull/7")
 DRAFT_ID = item_id("draft", "d1")
+NEEDS_CHAIR = [
+    {
+        "kind": "needs_chair",
+        "ts": "2026-10-01T00:00:00+00:00",
+        "task_id": "T-9",
+        "run": "run-1",
+        "repo": "o/r",
+        "cause": "ticket",
+        "reason": "arbitrated: scope unclear",
+        "command": ["cox", "chair", "answer", "T-9", "--yes"],
+    }
+]
+REFUSED = [
+    {
+        "kind": "land",
+        "status": "refused",
+        "ts": "2026-10-02T12:00:00+00:00",
+        "run": "run-2",
+        "task_id": "T-4",
+        "repo": "o/r",
+        "reason": "tests failed",
+    }
+]
+NEEDS_CHAIR_ID = item_id("needs-chair", "T-9")
+REFUSED_ID = item_id("refused-command", "run-2\0T-4")
+DROP_ARGV = ("python", "-m", "harness.store_cli", "set-state", "run-2", "T-4", "dropped", "--by", "chair")
 
 
 class FakeRun:
@@ -49,9 +75,29 @@ class FakeRun:
         return self.code
 
 
-def invoke(argv, run, tz=UTC) -> int:
+def invoke(argv, run, tz=UTC, needs_chair=(), refused=()) -> int:
     return run_inbox(
-        argv, load_drafts=lambda: DRAFTS, load_approvals=lambda: APPROVALS, load_prs=lambda: PRS, run=run, tz=tz
+        argv,
+        load_drafts=lambda: DRAFTS,
+        load_approvals=lambda: APPROVALS,
+        load_prs=lambda: PRS,
+        load_needs_chair=lambda: needs_chair,
+        load_refused=lambda: refused,
+        run=run,
+        tz=tz,
+    )
+
+
+def invoke_new_sources(argv, run=None) -> int:
+    return run_inbox(
+        argv,
+        load_drafts=lambda: [],
+        load_approvals=lambda: [],
+        load_prs=lambda: [],
+        load_needs_chair=lambda: NEEDS_CHAIR,
+        load_refused=lambda: REFUSED,
+        run=run or FakeRun(),
+        tz=UTC,
     )
 
 
@@ -99,7 +145,14 @@ def test_unknown_id_exits_nonzero_and_runs_nothing(capsys):
 def test_unreadable_pr_is_reported_and_exits_nonzero(capsys):
     broken = [{"url": "https://github.com/o/r/pull/9", "pr": {"error": "gh auth login required"}}]
     code = run_inbox(
-        [], load_drafts=lambda: [], load_approvals=lambda: [], load_prs=lambda: broken, run=FakeRun(), tz=UTC
+        [],
+        load_drafts=lambda: [],
+        load_approvals=lambda: [],
+        load_prs=lambda: broken,
+        load_needs_chair=lambda: [],
+        load_refused=lambda: [],
+        run=FakeRun(),
+        tz=UTC,
     )
     captured = capsys.readouterr()
     assert code == 1
@@ -111,14 +164,87 @@ def test_bad_arguments_exit_2_before_any_loader_runs(capsys):
     def boom():
         raise AssertionError("loader ran")
 
-    code = run_inbox(["bogus"], load_drafts=boom, load_approvals=boom, load_prs=boom, run=FakeRun(), tz=UTC)
+    code = run_inbox(
+        ["bogus"],
+        load_drafts=boom,
+        load_approvals=boom,
+        load_prs=boom,
+        load_needs_chair=boom,
+        load_refused=boom,
+        run=FakeRun(),
+        tz=UTC,
+    )
     assert code == 2
     assert capsys.readouterr().err == f"{USAGE}\n"
 
 
 def test_draft_and_approval_for_one_initiative_list_once():
-    items = gather(DRAFTS, [{"id": "d1", "proposed_at": "2026-10-01T00:00:00+00:00"}], [])
+    items = gather(DRAFTS, [{"id": "d1", "proposed_at": "2026-10-01T00:00:00+00:00"}], [], [], [])
     assert [(i.id, i.kind) for i in items] == [(DRAFT_ID, "draft")]
+
+
+def test_text_lists_needs_chair_and_refused_rows_with_their_reasons(capsys):
+    assert invoke_new_sources([]) == 0
+    assert capsys.readouterr().out == (
+        f"{NEEDS_CHAIR_ID}  needs-chair  2026-10-01 00:00  T-9: ticket\n"
+        "    arbitrated: scope unclear\n"
+        f"{REFUSED_ID}  refused-command  2026-10-02 12:00  land of T-4 in run-2 was refused\n"
+        "    tests failed\n"
+    )
+
+
+def test_json_carries_both_new_kinds_among_the_old_ones(capsys):
+    assert invoke(["--json"], FakeRun(), needs_chair=NEEDS_CHAIR, refused=REFUSED) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [(r["id"], r["kind"]) for r in rows] == [
+        (NEEDS_CHAIR_ID, "needs-chair"),
+        (APPROVAL_ID, "approval"),
+        (REFUSED_ID, "refused-command"),
+        (PR_ID, "pr"),
+        (DRAFT_ID, "draft"),
+    ]
+
+
+def test_accept_on_a_needs_chair_id_prints_then_runs_its_stored_command(capsys):
+    printed_before_run = []
+
+    def run(argv) -> int:
+        printed_before_run.append((capsys.readouterr().out, tuple(argv)))
+        return 0
+
+    assert invoke_new_sources(["accept", NEEDS_CHAIR_ID], run) == 0
+    assert printed_before_run == [("cox chair answer T-9 --yes\n", ("cox", "chair", "answer", "T-9", "--yes"))]
+
+
+def test_needs_chair_rows_without_task_or_command_all_list_and_resolve(capsys):
+    hosts = [
+        {"kind": "needs_chair", "ts": "2026-10-01T00:00:00+00:00", "host": "h1", "cause": "login"},
+        {"kind": "needs_chair", "ts": "2026-10-01T01:00:00+00:00", "host": "h2", "cause": "login"},
+        {"kind": "needs_chair", "ts": "2026-10-01T02:00:00+00:00", "initiative": "init-z", "cause": "ticket"},
+    ]
+    ids = [item_id("needs-chair", key) for key in ("host/h1", "host/h2", "init-z")]
+    assert [i.id for i in gather([], [], [], hosts, [])] == ids
+    for item in ids:
+        run = FakeRun()
+        code = run_inbox(
+            ["deny", item],
+            load_drafts=lambda: [],
+            load_approvals=lambda: [],
+            load_prs=lambda: [],
+            load_needs_chair=lambda: hosts,
+            load_refused=lambda: [],
+            run=run,
+            tz=UTC,
+        )
+        assert (code, len(run.calls)) == (0, 1)
+    assert capsys.readouterr().err == ""
+
+
+def test_deny_on_a_refused_id_runs_its_drop_argv(capsys):
+    run = FakeRun(0)
+    assert invoke_new_sources(["deny", REFUSED_ID], run) == 0
+    assert run.calls == [DROP_ARGV]
+    assert capsys.readouterr().out == "python -m harness.store_cli set-state run-2 T-4 dropped --by chair\n"
 
 
 @pytest.fixture
