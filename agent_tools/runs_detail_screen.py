@@ -1,8 +1,7 @@
-"""Curses edge for `cox runs detail`: gathers what `runs_detail.detail` takes and draws the result."""
+"""Edge for `cox runs detail`: gathers what `runs_detail.detail` takes."""
 
 from __future__ import annotations
 
-import contextlib
 import datetime
 import json
 from collections.abc import Callable
@@ -11,7 +10,7 @@ from pathlib import Path
 from agent_tools import run_store, runs_top_screen
 from agent_tools.records import load_trace
 
-__all__ = ["draw", "facts_for"]
+__all__ = ["facts_for"]
 
 
 def _record(root: Path, run: str) -> dict:
@@ -86,17 +85,3 @@ def facts_for(runs_dir, run: str, now_alive=None, *, live_runs: Callable[[], set
         "record": _record(root, run),
         "tail": _tail(root, run),
     }
-
-
-def draw(stdscr, detail) -> None:
-    import curses
-
-    from agent_tools import runs_detail
-
-    stdscr.clear()
-    height, width = stdscr.getmaxyx()
-    lines = [*runs_detail.render(detail, width), "", "-- static; press q to return --"[:width]]
-    for i, line in enumerate(lines[:height]):
-        with contextlib.suppress(curses.error):
-            stdscr.addnstr(i, 0, line, width)
-    stdscr.refresh()
