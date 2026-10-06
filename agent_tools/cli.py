@@ -5577,7 +5577,7 @@ def _settings_get(a: argparse.Namespace) -> int:
 
 def _settings_set(a: argparse.Namespace) -> int:
     from agent_tools import cox_settings
-    return cox_settings.run_set(_profile_path(a), a.scope, a.key, a.value, a.dry_run)
+    return cox_settings.run_set(_profile_path(a), a.scope, a.key, a.value, a.dry_run, a.commit)
 
 
 SETTINGS_GROUP = commands.Group(
@@ -5592,12 +5592,13 @@ SETTINGS_COMMANDS = [
         _settings_get, False, (),
     ),
     commands.Command(
-        "set", "settings", "change one setting: print the diff, write the file, commit it when git tracks it",
+        "set", "settings", "change one setting: print the diff and write the file; --commit also commits a git-tracked cartridge",
         (
             commands.Arg(("scope",), {"choices": ("cartridge", "profile", "host")}),
             commands.Arg(("key",)),
             commands.Arg(("value",)),
             commands.Arg(("--dry-run",), {"action": "store_true"}),
+            commands.Arg(("--commit",), {"action": "store_true", "help": "commit the changed cartridge file in git; profile files are never committed"}),
             commands.Arg(("--profile",)),
         ),
         _settings_set, False, (),
