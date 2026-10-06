@@ -75,9 +75,33 @@ def test_merge_gate_behind_updates_then_merges():
     assert cli.merge_gate("BEHIND") == ("update_then_merge", "")
 
 
-def test_merge_gate_any_other_state_stops_with_its_name():
-    assert cli.merge_gate("DIRTY") == ("stop", "DIRTY")
-    assert cli.merge_gate("BLOCKED") == ("stop", "BLOCKED")
+def test_merge_gate_stops_only_on_a_state_that_can_never_merge():
+    for state in ("DIRTY", "BLOCKED", "DRAFT"):
+        assert cli.merge_gate(state) == ("stop", state)
+    for state in ("UNSTABLE", "HAS_HOOKS", "UNKNOWN"):
+        assert cli.merge_gate(state) == ("merge", "")
+
+
+def test_settled_merge_state_rereads_unknown_until_it_settles():
+    reads, naps = iter(["UNKNOWN", "UNKNOWN", "CLEAN"]), []
+    assert cli._settled_merge_state(lambda: next(reads), naps.append) == "CLEAN"
+    assert naps == [cli._UNKNOWN_WAIT_S, cli._UNKNOWN_WAIT_S]
+
+
+def test_settled_merge_state_gives_up_as_unknown_after_its_reads():
+    naps = []
+    assert cli._settled_merge_state(lambda: "UNKNOWN", naps.append) == "UNKNOWN"
+    assert len(naps) == cli._UNKNOWN_READS - 1
+
+
+def test_unknown_that_settles_clean_merges(tmp_path, monkeypatch):
+    forge = FakeForge("UNKNOWN")
+    states = iter(["UNKNOWN", "CLEAN"])
+    forge.merge_state = lambda pr, *, repo=None: (forge.calls.append("merge_state"), next(states))[1]
+    monkeypatch.setattr(cli.time, "sleep", lambda s: None)
+    rc, _, _ = _walk(tmp_path, monkeypatch, forge)
+    assert rc == 0
+    assert forge.calls == ["wait_checks", "merge_state", "merge_state", "merge"]
 
 
 def test_pr_number_prefers_the_wait_checks_pr_then_the_url():
