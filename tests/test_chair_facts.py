@@ -444,7 +444,9 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning is declared on Facts but not yet filled: a later task fills it in gather_facts.
-    assert set(facts) == (set(Facts.__annotations__) - {"tuning"}) | {"login_hosts"}
+    # landed_main and land_outcomes are declared on Facts but not yet filled: a later task fills them.
+    unfilled = {"tuning", "landed_main", "land_outcomes"}
+    assert set(facts) == (set(Facts.__annotations__) - unfilled) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
