@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from agent_tools import land
+from agent_tools.forge import ForgeError
 
 
 def find_open_prs(repo: Path, branch: str) -> list[int] | str:
@@ -85,6 +86,43 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
     if r.returncode != 0:
         return False, merged
     return True, "\n".join(filter(None, [merged, _update_local_default(repo, step["default_branch"])]))
+
+
+def parse_merge_state(stdout: str) -> str:
+    """The `mergeStateStatus` of `gh pr view --json mergeStateStatus` output, unchanged; ForgeError when absent."""
+    data = _loads(stdout)
+    state = data.get("mergeStateStatus") if isinstance(data, dict) else None
+    if not isinstance(state, str) or not state:
+        raise ForgeError(f"could not read mergeStateStatus: {stdout.strip()}")
+    return state
+
+
+def merge_state_argv(pr: int) -> list[str]:
+    return ["gh", "pr", "view", str(pr), "--json", "mergeStateStatus"]
+
+
+def update_branch_argv(pr: int) -> list[str]:
+    return ["gh", "pr", "update-branch", str(pr)]
+
+
+def _gh_run(argv: list[str], cwd: Path | str | None = None) -> subprocess.CompletedProcess:
+    """`argv` run through gh in `cwd` (the repository, so gh finds its GitHub remote); ForgeError with gh's stderr
+    when it cannot run or exits nonzero."""
+    try:
+        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    except OSError as exc:
+        raise ForgeError(f"{' '.join(argv)}: {exc}") from exc
+    if r.returncode != 0:
+        raise ForgeError((r.stderr or r.stdout or "").strip() or f"{' '.join(argv)} exited {r.returncode}")
+    return r
+
+
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
+    return parse_merge_state(_gh_run(merge_state_argv(pr), repo).stdout or "")
+
+
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
+    _gh_run(update_branch_argv(pr), repo)
 
 
 def _read_checks(repo: Path, ref: str = "HEAD"):

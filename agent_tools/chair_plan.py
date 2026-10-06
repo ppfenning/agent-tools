@@ -23,7 +23,9 @@ from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
+from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_rebase import plan_rebase
+from agent_tools.chair_revert import revert_check
 from agent_tools.chair_types import (
     Action,
     ApprovedTask,
@@ -179,7 +181,8 @@ def _cap_launches(
     actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot], home: Mapping[str, str],
     facts: Facts,
 ) -> tuple[list[Action], dict[str, int]]:
-    """A relaunch or retry goes to the machine with the most free lanes, this one included (_place_freest): a
+    """A relaunch or retry goes to the machine with the most free lanes, this one included unless its local lanes are
+    decompose-only (_place_freest): a
     tie goes to the initiative's home, then to this machine, then to the host _best_host ranks first. A host
     lacking the initiative's capabilities is skipped. A placement here carries no host, one elsewhere carries
     host, and a paired clear_branches always runs locally. A move off a remote home plans a fetch of its newest
@@ -236,7 +239,10 @@ def _cap_launches(
         taken_so_far[host] = taken_so_far.get(host, 0) + 1
     # A move off a remote home needs a fetch of its branches; with none to fetch the initiative stays pinned there.
     free_fetches = {i: _home_fetch(i, facts["approved"]) for i in freest_initiatives if home.get(i)}
-    local_left = max(0, cap - local_used - min(len(unhomed_at), max(0, cap - local_used)))
+    # Decompose-only local lanes take no relaunch or retry: the freest machine is then always a lane host (2026-10-06,
+    # chair-widens and each-release were placed on the decompose-only Mac).
+    decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
+    local_left = 0 if decompose_only else max(0, cap - local_used - min(len(unhomed_at), max(0, cap - local_used)))
     freest = _place_freest(
         [
             (
@@ -575,6 +581,7 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
 
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
+    reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     lands = _without_carried_lands(plan_lands(facts), carries)
     fetch_exits = _fetch_exit_actions(facts)
@@ -584,6 +591,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
+    tune = plan_tune(facts, now) if now is not None else []
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
     idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
@@ -596,9 +604,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)], held)
     if facts["limits"]["hard_stop"]:
         return [
+            *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *lands,
             *fetch_exits,
             *stale,
+            *tune,
             *stall,
             *idle_stall,
             *carries,
@@ -635,9 +645,11 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
     return [
+        *reverts,
         *lands,
         *fetch_exits,
         *stale,
+        *tune,
         *stall,
         *idle_stall,
         *carries,

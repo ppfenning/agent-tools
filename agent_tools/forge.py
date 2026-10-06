@@ -26,6 +26,17 @@ A forge is a module that defines these five functions. Each returns
         through this module's `pr_state(module, url)`, which answers `unknown`
         for a forge without a pull-request host or without this function.
 
+    merge_state(pr: int, *, repo=None) -> str
+        GitHub's `mergeStateStatus` for PR `pr`, unchanged and upper case: CLEAN,
+        BEHIND, DIRTY, BLOCKED, UNSTABLE and the rest. Raises `ForgeError` when it
+        cannot be read. `repo` is the repository the call runs in, so the host's tool finds its remote.
+    update_branch(pr: int, *, repo=None) -> None
+        Merge the base branch into the head of PR `pr`. Raises `ForgeError`, with
+        the host's message, on failure.
+
+    A forge with no pull-request host raises `ForgeNotSupported` from `merge_state`
+    and `update_branch`.
+
 `open_pr` and `wait_checks` must accept the keywords above; `missing_refs`
 names a forge that predates them, so a land can refuse before its first step.
 
@@ -44,6 +55,14 @@ from collections.abc import Mapping
 
 DEFAULT = "local"
 ENTRY_POINT_GROUP = "coxswain.forges"
+
+
+class ForgeError(Exception):
+    """A forge operation that returns a value or nothing failed; the message is the host's own."""
+
+
+class ForgeNotSupported(ForgeError):
+    """The forge has no pull-request host, so the operation has no meaning for it."""
 
 
 def forge_name(profile: Mapping) -> str:

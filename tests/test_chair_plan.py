@@ -206,6 +206,21 @@ def test_a_rescue_is_dropped_at_the_hard_stop_while_needs_chair_passes(monkeypat
     assert plan_tick(facts) == [{**_NEEDS_CHAIR_BARE, "epoch": 7}]
 
 
+_TUNE = {"kind": "tune_lanes", "host": "h1", "from_lanes": 4, "to_lanes": 3, "reason": "over pace", "evidence": {}}
+_RELAUNCH = {"kind": "relaunch", "initiative": "a"}
+
+
+def test_a_tune_lanes_is_kept_at_the_hard_stop_and_is_not_counted_against_the_launch_cap(monkeypatch):
+    _recovering(monkeypatch, [_RELAUNCH, _RETRY])
+    monkeypatch.setattr("agent_tools.chair_plan.plan_tune", lambda facts, now: [_TUNE])
+    stopped = _facts(limits={"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
+    held = [a for a in plan_tick(stopped, _NOW) if a["kind"] != "housekeeping"]
+    assert held == [{**_TUNE, "epoch": 7}]
+    capped = _facts(limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False})
+    kinds = [a["kind"] for a in plan_tick(capped, _NOW)]
+    assert (kinds.count("tune_lanes"), kinds.count("relaunch") + kinds.count("retry")) == (1, 1)
+
+
 def test_a_kept_rescue_is_stamped_with_the_lease_epoch(monkeypatch):
     _recovering(monkeypatch, [_RESCUE])
     facts = _facts(lease={"holder": "a", "host": "h", "epoch": 42, "mine": True, "released": False, "stale": False})
@@ -407,6 +422,17 @@ def test_a_chair_homed_relaunch_moves_to_a_lane_host_when_local_lanes_are_decomp
 
 
 # The chair is freest here (no live run of its own), so the freest-host rule also keeps it local: a tie goes to the home.
+def test_an_unhomed_relaunch_never_takes_a_decompose_only_local_lane_even_when_the_chair_is_freest(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(
+        dispatch={**_two_host_dispatch(), "max_in_flight": 3, "live_runs": 0, "local_lanes": "decompose"},
+        run_exited={"a": True},
+    )
+    planned = plan_tick(facts)
+    relaunch = [a for a in planned if a["kind"] == "relaunch"]
+    assert relaunch and relaunch[0].get("host") in ("jarvis", "friday")
+
+
 @pytest.mark.parametrize("dispatch_extra", [{"live_runs": 0}, {"live_runs": 0, "local_lanes": "any"}])
 def test_a_chair_homed_relaunch_stays_local_when_the_setting_is_absent_or_not_decompose(monkeypatch, dispatch_extra):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])

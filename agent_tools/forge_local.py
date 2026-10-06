@@ -12,7 +12,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-__all__ = ["find_open_prs", "merge", "open_pr", "push", "wait_checks"]
+from agent_tools.forge import ForgeNotSupported
+
+__all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 
 def _git(repo: Path | str, *args: str) -> tuple[int, str]:
@@ -34,6 +36,14 @@ def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None,
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
     return True, "local forge: the land's own checks are the gate"
+
+
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
+    raise ForgeNotSupported("local forge: no pull requests, so no merge state")
+
+
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
+    raise ForgeNotSupported("local forge: no pull requests, so no branch to update")
 
 
 def merge(repo: Path | str, step: Mapping[str, Any]) -> tuple[bool, str]:

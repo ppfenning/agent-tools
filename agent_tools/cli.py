@@ -2078,6 +2078,82 @@ def _landed_pr(kind: str, ok: bool, detail: str, prior: str) -> str:
     return (_pr_url(detail) or "") if kind == "pr_create" and ok else prior
 
 
+# A conflict, a missing review or a draft can never merge; UNKNOWN is GitHub still computing, so it is re-read, and
+# merges if it stays UNKNOWN (gh's own merge then refuses what cannot merge). UNSTABLE (only optional checks red) and
+# HAS_HOOKS merge, as every land did before this gate (2026-10-06: #1426 and #1430 stopped on UNKNOWN with green checks).
+_MERGE_STOPS = frozenset({"DIRTY", "BLOCKED", "DRAFT"})
+_UNKNOWN_READS = 6
+_UNKNOWN_WAIT_S = 5.0
+
+
+def merge_gate(state: str) -> tuple[str, str]:
+    """`(decision, state)` from a PR's mergeStateStatus: BEHIND is updated first, DIRTY, BLOCKED and DRAFT stop, and
+    anything else merges."""
+    if state == "BEHIND":
+        return "update_then_merge", ""
+    if state in _MERGE_STOPS:
+        return "stop", state
+    return "merge", ""
+
+
+def _settled_merge_state(read: Callable[[], str], sleep: Callable[[float], None] | None = None) -> str:
+    """The first state other than UNKNOWN in up to `_UNKNOWN_READS` reads, `_UNKNOWN_WAIT_S` apart; UNKNOWN if it never settles."""
+    state = read()
+    for _ in range(_UNKNOWN_READS - 1):
+        if state != "UNKNOWN":
+            return state
+        (sleep or time.sleep)(_UNKNOWN_WAIT_S)
+        state = read()
+    return state
+
+
+def _pr_number(steps: Sequence[dict], i: int, pr_url: str) -> int | None:
+    """The PR a `merge` at `steps[i]` lands: the `pr` of the last earlier `wait_checks` that has one, else the number ending the `pr_create` URL."""
+    pinned = [s["pr"] for s in steps[:i] if s["kind"] == "wait_checks" and s.get("pr") is not None]
+    found = re.search(r"(\d+)/?$", str(pinned[-1] if pinned else pr_url))
+    return int(found.group(1)) if found else None
+
+
+def _fetch_branch(repo: Path, branch: str) -> str | None:
+    """Edge. Fetch `origin/<branch>`; the failure text, or None when it landed."""
+    r = subprocess.run(["git", "-C", str(repo), "fetch", "origin", branch], capture_output=True, text=True)
+    return None if r.returncode == 0 else (r.stderr.strip() or r.stdout.strip() or f"git fetch origin {branch} failed")
+
+
+def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, forge_module) -> str | None:
+    """Edge. Read the PR state before the `merge` at `steps[i]`; update a BEHIND branch and wait for its checks again.
+
+    Returns the line to print when the land must stop, None when the merge may run. No PR number, or a forge with no PRs, merges as before."""
+    number = _pr_number(steps, i, pr_url)
+    if number is None:
+        return None
+    # Imported here: `agent_tools.cli` must not import a command module before one is dispatched.
+    from agent_tools.forge import ForgeError, ForgeNotSupported
+
+    try:
+        decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
+    except ForgeNotSupported:
+        return None
+    except ForgeError as exc:
+        return f"merge: cannot read the state of pull request #{number}: {exc}"
+    if decision == "merge":
+        return None
+    if decision == "stop":
+        return f"merge: pull request #{number} is {state}; not merging"
+    branch = steps[i]["branch"]
+    try:
+        forge_module.update_branch(number, repo=repo)
+    except ForgeError as exc:
+        return f"merge: cannot update pull request #{number}: {exc}"
+    print(f"land: pull request #{number} was BEHIND; updated its branch, waiting for checks again")
+    failed = _fetch_branch(repo, branch)
+    if failed is not None:
+        return f"merge: cannot fetch the updated {branch}: {failed}"
+    wait = next((s for s in reversed(steps[:i]) if s["kind"] == "wait_checks"), {"kind": "wait_checks"})
+    ok, detail = _execute_land_step(repo, {**wait, "branch": f"origin/{branch}"}, forge_module)
+    return None if ok else f"wait_checks: {detail}"
+
+
 def _resolved_tracker(profile: dict, runs_dir: Path) -> str:
     """The policy file wins, then the profile's `tracker`, then `none`."""
     return tracker.tracker_name(profile, runs_dir)
@@ -2503,6 +2579,11 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # gh and git cannot delete a branch a worktree still holds.
             for branch in built:
                 _remove_land_worktree(repo, branch)
+            halt = _merge_preflight(repo, steps, i, pr, forge_module)
+            if halt is not None:
+                print(halt)
+                print("stopped; remaining: " + ", ".join(s["kind"] for s in steps[i:]))
+                return 1, reached, pr
         if step["kind"] == "mark_done":
             if record is not None and not Path(step["path"]).exists():
                 # The store copy is written out as the record file, so the path-derived run, phase and runs_dir below keep working.

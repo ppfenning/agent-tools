@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import forge_github, forge_local
+from agent_tools.forge import ForgeNotSupported
 
-__all__ = ["find_open_prs", "forge_of", "merge", "open_pr", "push", "wait_checks"]
+__all__ = ["find_open_prs", "forge_of", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 
 def forge_of(repo: Path | str):
@@ -39,6 +40,18 @@ def open_pr(repo: Path | str, title: str, body: str, *, head: str | None = None,
 
 def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tuple[bool, str]:
     return forge_of(repo).wait_checks(Path(repo), timeout_s, ref=ref)
+
+
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
+    if repo is None:
+        raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+    return forge_of(repo).merge_state(pr, repo=repo)
+
+
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
+    if repo is None:
+        raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+    forge_of(repo).update_branch(pr, repo=repo)
 
 
 def merge(repo: Path | str, step: Mapping[str, Any]) -> tuple[bool, str]:

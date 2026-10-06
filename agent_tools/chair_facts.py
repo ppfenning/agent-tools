@@ -21,6 +21,7 @@ from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_read_intake import intake_from_rows
 from agent_tools.chair_read_quarantined import quarantined_from_rows
 from agent_tools.chair_read_stranded import stranded_from_rows
+from agent_tools.chair_read_tuning import current_lanes, tuning_facts
 from agent_tools.chair_types import (
     EASTERN,
     ApprovedTask,
@@ -28,10 +29,13 @@ from agent_tools.chair_types import (
     DispatchFacts,
     EmptyDecomposeFacts,
     Facts,
+    HoldRecord,
     HostCheck,
     IdleStallInputs,
     InitiativeFacts,
+    LandedMain,
     LandWait,
+    LandWatch,
     LeaseFacts,
     LimitsFacts,
     PhaseBranch,
@@ -139,6 +143,11 @@ class FactsDeps:
         counted against main by the git reader. Optional, and absent means no phase branch.
     landing: the lands in progress on the land worker, keys initiative, phase, repo (`WorkerLands.landing`).
         Optional, and absent means an empty list.
+    land_watches: the lands not yet resolved, as `LandWatch` rows. Defaults to a callable returning [].
+    read_main_ci: (repo, commit) to (state, output) of main's first CI run for that commit, state pending, green
+        or red. Defaults to a callable returning pending.
+    land_hold: the smoke hold, `chair_smoke.read_hold`'s result. Defaults to a callable returning None.
+    land_outcomes: initiative to its resolved land outcomes, oldest first. Defaults to a callable returning {}.
     """
 
     lease: Callable[[], Row]
@@ -191,6 +200,12 @@ class FactsDeps:
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
     landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
+    tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
+    lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
+    land_watches: Callable[[], Sequence[LandWatch]] = lambda: []  # unresolved lands; absent means landed_main is []
+    read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)
+    land_hold: Callable[[], HoldRecord | None] = lambda: None  # chair_smoke.read_hold's result; absent means no hold
+    land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -622,6 +637,28 @@ def idle_stall_inputs(
     }
 
 
+def _smoke_of(watch: LandWatch, hold: HoldRecord | None) -> tuple[str, str]:
+    """Smoke is failed when the hold names this commit, else ok; pending is never produced because no input says a smoke has not run."""
+    if hold is not None and hold["land"]["commit"] == watch["commit"]:
+        return "failed", hold["tail"]
+    return "ok", ""
+
+
+def landed_main_facts(
+    watches: Sequence[LandWatch],
+    read_main_ci: Callable[[str, str], tuple[str, str]],
+    hold: HoldRecord | None,
+) -> list[LandedMain]:
+    """One LandedMain per watch, carrying main's first CI state and output for its commit and the smoke verdict."""
+
+    def build(watch: LandWatch) -> LandedMain:
+        ci, ci_output = read_main_ci(watch["repo"], watch["commit"])
+        smoke, smoke_output = _smoke_of(watch, hold)
+        return {**watch, "ci": ci, "ci_output": ci_output, "smoke": smoke, "smoke_output": smoke_output}  # type: ignore[typeddict-item]
+
+    return [build(w) for w in watches]
+
+
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     policy = deps.policy()
     weekly = deps.weekly()
@@ -699,4 +736,12 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
         "idle_stall": deps.idle_stall(now),
+        "tuning": tuning_facts(
+            *deps.tuning(now),
+            weekly_fraction(weekly),
+            pacing._elapsed_fraction(weekly, now) if weekly is not None else 0.0,
+            current_lanes(dispatch), dict(deps.lane_bounds()),
+        ),
+        "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold()),
+        "land_outcomes": dict(deps.land_outcomes()),
     }
