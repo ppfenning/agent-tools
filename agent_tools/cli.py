@@ -1364,6 +1364,20 @@ def _open_prs_for(repo: Path, branch: str, forge_module=forge_github) -> list[in
     return forge_module.find_open_prs(repo, branch)
 
 
+def _phase_pr_facts(repo: Path, pr_branch: str, forge_module=forge_github) -> dict | str:
+    """Edge. The plain facts `land.phase_resume` decides on, or the reason the open PRs could not be listed.
+    The PR head is read as the fetched `origin/<pr_branch>` tip: the forge call returns PR numbers only,
+    and a PR from this repo's own branch has exactly that head."""
+    local = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{pr_branch}")
+    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", f"+refs/heads/{pr_branch}:refs/remotes/origin/{pr_branch}"],
+                             capture_output=True, text=True).returncode == 0
+    remote = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{pr_branch}") if fetched else None
+    prs = _open_prs_for(repo, pr_branch, forge_module)
+    if isinstance(prs, str):
+        return prs
+    return {"local_tip": local, "remote_tip": remote, "pr": prs[0] if prs else None, "pr_head": remote if prs else None}
+
+
 def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> dict:
     """`land.resume_decision` for the `pr/<task>` branch a `cherry_pick` step
     would create. The expected tree is what cherry-picking the one commit onto
@@ -1736,7 +1750,9 @@ def _execute_land_step(repo: Path, step: dict, forge_module=forge_github) -> tup
         # Built in its own worktree from `from`, exactly like `cherry_pick`, so `repo`'s HEAD never moves.
         wt = _land_worktree(repo, step["onto"])
         _remove_land_worktree(repo, step["onto"])
-        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", step["onto"], str(wt), step["from"]], capture_output=True, text=True)
+        # `-B` (set by a plan that found a stale local pr branch) resets that branch instead of refusing on it.
+        co = subprocess.run(["git", "-C", str(repo), "worktree", "add", step.get("worktree_flag", "-b"), step["onto"], str(wt), step["from"]],
+                            capture_output=True, text=True)
         if co.returncode != 0:
             return False, co.stderr.strip() or co.stdout.strip()
         _link_venv(repo, wt)
@@ -2176,9 +2192,15 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: no work items at {items_path}, expected the phase's tickets")
             return 2
         initiative_title = _initiative_title(runs_dir.parent / "work", initiative)
+        phase_pr, pr_forge = None, forge.forge_for(forge.forge_name(profile)) if a.apply else None
+        if pr_forge is not None:
+            phase_pr = _phase_pr_facts(repo, f"pr/{initiative}--{phase}", pr_forge)
+            if isinstance(phase_pr, str):
+                print(f"land: refusing, {phase_pr}")
+                return 2
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
-            repo_facts, items=items, task_records=task_records,
+            repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))

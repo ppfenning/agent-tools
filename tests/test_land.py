@@ -645,6 +645,34 @@ def test_phase_plan_squash_phase_step_for_a_two_task_phase():
     }
 
 
+def _resume_plan(phase_pr):
+    phase_record = {"run": "epic-x-5", "phase": "seams", "initiative": "x", "phase_verdict": {"reasoning": "solid"}}
+    task_records = [{
+        "task": "seams-task", "run": "epic-x-5", "phase": "seams", "status": "done",
+        "review": {"verdict": "approve"}, "arbitration": {"verdict": "approve"},
+        "change_facts": {"fix_loop_attempts": 0, "files_touched": ["a.py"]},
+    }]
+    return land.land_plan(phase_record, {}, "main", items=[{"id": "seams-task", "status": "done"}],
+                          task_records=task_records, phase_pr=phase_pr)
+
+
+def test_phase_plan_with_an_open_pr_starts_at_wait_checks():
+    steps = _resume_plan({"local_tip": None, "remote_tip": "abc", "pr": 7, "pr_head": "abc"})
+    assert [s["kind"] for s in steps] == ["wait_checks", "merge", "clean_phase", "mark_done"]
+    assert steps[0] == {"kind": "wait_checks", "branch": "origin/pr/x--seams", "pr": 7}
+
+
+def test_phase_plan_with_a_stale_local_branch_and_no_pr_recreates_it_with_worktree_add_dash_b():
+    steps = _resume_plan({"local_tip": "abc", "remote_tip": None, "pr": None, "pr_head": None})
+    assert next(s for s in steps if s["kind"] == "squash_phase")["worktree_flag"] == "-B"
+
+
+def test_phase_plan_refuses_a_local_branch_that_diverges_from_the_open_pr_head():
+    steps = _resume_plan({"local_tip": "def", "remote_tip": "abc", "pr": 7, "pr_head": "abc"})
+    assert steps == [{"kind": "refuse",
+                      "reason": "local branch pr/x--seams at def differs from open pull request #7 head abc"}]
+
+
 def test_phase_pr_title_renders_id_phase_and_title():
     assert land.phase_pr_title("I412", "t1", "Widget") == "epic I412: t1 - Widget"
 

@@ -219,14 +219,34 @@ def _phase_approved_files(items: list[dict[str, Any]], records: dict[str, dict[s
     return [{"task": task, "files_touched": files} for task, files in files_by_task if files]
 
 
+def phase_resume(facts: dict[str, Any] | None, pr_branch: str) -> dict[str, Any]:
+    """What a phase land does about an existing `pr_branch`. `facts` carries
+    `local_tip`, `remote_tip`, `pr` and `pr_head`, each None when absent.
+    `wait` resumes at the open PR, `recreate` rebuilds a stale local branch
+    nothing else holds, `refuse` names a divergence, else `fresh`."""
+    f = facts or {}
+    local, remote, pr, head = f.get("local_tip"), f.get("remote_tip"), f.get("pr"), f.get("pr_head")
+    if pr is not None:
+        if head is None or head != remote:
+            return {"kind": "refuse", "reason": f"open pull request #{pr} head {head} differs from origin/{pr_branch} at {remote}"}
+        if local is not None and local != head:
+            return {"kind": "refuse", "reason": f"local branch {pr_branch} at {local} differs from open pull request #{pr} head {head}"}
+        return {"kind": "wait", "pr": pr}
+    if local is not None and remote is None:
+        return {"kind": "recreate"}
+    return {"kind": "fresh"}
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
-                repo_facts: dict[str, Any] | None, default_branch: str = "main") -> list[dict[str, Any]]:
+                repo_facts: dict[str, Any] | None, default_branch: str = "main",
+                pr_facts: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     phase branch is squashed onto a fresh `default_branch` in its own PR
     branch, the way a task land builds its PR, since a coxswain repo requires
     an up-to-date branch to merge and a phase branch cut from an older main
     cannot land as it is; `checks` and everything after run off that PR
-    branch, not the phase branch itself."""
+    branch, not the phase branch itself. `pr_facts` (see `phase_resume`) lets
+    a rerun pick up an open PR or rebuild a stale local branch."""
     records = {r.get("task"): r for r in task_records}
     refusal = phase_landable(items, records)
     if refusal is not None:
@@ -243,6 +263,20 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     approved_files = _phase_approved_files(items, records)
     if approved_files:
         squash_step = {**squash_step, "approved_files": approved_files}
+    decision = phase_resume(pr_facts, pr_branch)
+    if decision["kind"] == "refuse":
+        return [{"kind": "refuse", "reason": decision["reason"]}]
+    if decision["kind"] == "recreate":
+        squash_step = {**squash_step, "worktree_flag": "-B"}
+    after_pr = [
+        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
+         "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
+        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
+        *[{"kind": "mark_done", "task": t} for t in landed_tasks],
+    ]
+    if decision["kind"] == "wait":
+        # `origin/` ref: the local branch may be absent, and its tip is the PR head when present.
+        return [{"kind": "wait_checks", "branch": f"origin/{pr_branch}", "pr": decision["pr"]}, *after_pr]
     return [
         {"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"},
         squash_step,
@@ -251,10 +285,7 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
          "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
-        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
-         "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
-        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
-        *[{"kind": "mark_done", "task": t} for t in landed_tasks],
+        *after_pr,
     ]
 
 
@@ -266,7 +297,8 @@ def gate_steps(steps: Sequence[dict[str, Any]], level: str) -> list[dict[str, An
     if level in ("phase", "epic"):
         idx = next((i for i, s in enumerate(steps) if s["kind"] == "merge" and "target" not in s), None)
         return steps if idx is None else steps[:idx]
-    idx = next((i for i, s in enumerate(steps) if s["kind"] == "pr_create"), None)
+    # A phase land resumed at an open PR has no `pr_create`; its `wait_checks` carries the PR number.
+    idx = next((i for i, s in enumerate(steps) if s["kind"] == "pr_create" or (s["kind"] == "wait_checks" and "pr" in s)), None)
     note = {"kind": "note", "reason": "gate: ticket — the pull request is open and waits for a person"}
     return steps if idx is None else steps[: idx + 1] + [note]
 
@@ -283,14 +315,14 @@ def gate_stop(planned: Sequence[dict[str, Any]], gated: Sequence[dict[str, Any]]
 def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_branch: str,
               repo_facts: dict[str, Any] | None = None, *, items: list[dict[str, Any]] | None = None,
               task_records: list[dict[str, Any]] | None = None, tracker: str | None = None,
-              issue: str | None = None) -> list[dict[str, Any]]:
+              issue: str | None = None, phase_pr: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`. Phase mode
     (`items` given) lands the whole phase off its own branch instead of one
-    task's commit. Task mode only: `tracker` other than None or `none` adds a
+    task's commit; `phase_pr` there is `phase_resume`'s facts. Task mode only: `tracker` other than None or `none` adds a
     closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
     plans neither and says so in a note."""
     if items is not None:
-        return _phase_plan(record, items, task_records or [], repo_facts, default_branch)
+        return _phase_plan(record, items, task_records or [], repo_facts, default_branch, phase_pr)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)
