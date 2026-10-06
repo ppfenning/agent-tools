@@ -14,7 +14,30 @@ PATH = "work/a/p1/t1.md"
 
 
 def test_a_ready_item_with_one_attempt_on_its_body_is_a_quarantine_row_with_that_run():
-    assert quarantined_rows([(PATH, "ready", BODY, [ON_BODY])]) == [{"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1"}]
+    assert quarantined_rows([(PATH, "ready", BODY, [ON_BODY])]) == [
+        {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}
+    ]
+
+
+def test_a_row_carries_the_reason_of_the_newest_attempt_on_its_body():
+    older = {**ON_BODY, "reason": "first verdict"}
+    newer = {**ON_BODY, "run": "i-2", "ts": "2026-09-26T01:00:00Z", "reason": "second verdict"}
+    assert quarantined_rows([(PATH, "ready", BODY, [newer, older])])[0]["reason"] == "second verdict"
+
+
+def test_a_newer_attempt_on_an_older_body_does_not_supply_the_reason():
+    stale = {**ON_BODY, "ts": "2026-09-27T01:00:00Z", "body_sha": "0" * 12, "reason": "stale verdict"}
+    current = {**ON_BODY, "reason": "current verdict"}
+    assert quarantined_rows([(PATH, "ready", BODY, [current, stale])])[0]["reason"] == "current verdict"
+
+
+def test_an_item_with_no_reason_text_gives_an_empty_reason():
+    assert quarantined_rows([(PATH, "ready", BODY, [{**ON_BODY, "reason": None}])])[0]["reason"] == ""
+
+
+def test_a_long_reason_is_not_cut():
+    long = "x" * 700
+    assert quarantined_rows([(PATH, "ready", BODY, [{**ON_BODY, "reason": long}])])[0]["reason"] == long
 
 
 def test_an_attempt_whose_body_sha_differs_gives_no_row():
@@ -54,7 +77,7 @@ def _world(tmp_path, monkeypatch, store_rows):
 
 def test_under_files_mode_the_file_state_holds_and_the_store_is_not_read(tmp_path, monkeypatch):
     calls = _world(tmp_path, monkeypatch, [{"initiative": "a", "task_id": "t1", "state": "done"}])
-    row = {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1"}
+    row = {"initiative": "a", "phase": "p1", "task": "t1", "run": "i-1", "reason": ""}
     assert (read_quarantined(tmp_path, "files"), calls) == ([row], [])
 
 

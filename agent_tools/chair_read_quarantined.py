@@ -42,17 +42,23 @@ def item_body(text: str) -> str:
     return text[close + 4 :] if close != -1 else text
 
 
+def newest_reason(attempts: Sequence[Attempt]) -> str:
+    """The stored `reason` text of the newest attempt by `ts`, uncut; empty with no attempt or no text."""
+    newest = max(attempts, key=lambda a: str(a.get("ts") or ""), default={})
+    return str(newest.get("reason") or "")
+
+
 def quarantined_rows(items: Iterable[Item]) -> list[Row]:
     """Rows for (path, state, body, attempts) items in state ready or blocked with an attempt on the current body, in input order.
 
-    The row carries `run` from the newest such attempt by `ts`."""
+    The row carries `run` and `reason` from the newest such attempt by `ts`."""
     rows = []
     for path, state, body, attempts in items:
         on_body = attempts_on_current_body([a for a in attempts or [] if isinstance(a, Mapping)], body)
         row = _row(path) if state in OPEN_STATES and on_body else None
         if row is not None:
             newest = max(on_body, key=lambda a: str(a.get("ts") or ""))
-            rows.append({**row, "run": str(newest.get("run") or "")})
+            rows.append({**row, "run": str(newest.get("run") or ""), "reason": newest_reason(on_body)})
     return rows
 
 
