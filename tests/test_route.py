@@ -108,6 +108,11 @@ def test_parse_profile_reads_the_chair_housekeeping_hours():
     assert profile["chair"] == {"housekeeping_hours": 6.0}
 
 
+def test_parse_profile_reads_the_chair_idle_stall_minutes():
+    text = VALID_PROFILE + "chair:\n  idle_stall_minutes: 20\n"
+    assert route.parse_profile(text)["chair"] == {"idle_stall_minutes": 20.0}
+
+
 def test_parse_profile_unknown_key_inside_chair_names_the_line():
     text = VALID_PROFILE + "chair:\n  bogus: 1\n"
     with pytest.raises(route.ProfileError) as exc_info:

@@ -14,6 +14,7 @@ from typing import Any
 
 from agent_tools import chair_read_docket, chair_smoke, forge, pacing, route
 from agent_tools.chair import lease_holder
+from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_docket import docket_from_rows
@@ -27,7 +28,10 @@ from agent_tools.chair_types import (
     DispatchFacts,
     EmptyDecomposeFacts,
     Facts,
+    HostCheck,
+    IdleStallInputs,
     InitiativeFacts,
+    LandWait,
     LeaseFacts,
     LimitsFacts,
     PhaseBranch,
@@ -99,6 +103,10 @@ class FactsDeps:
         `chair_read_stale.read_stale_candidates`. Optional, and absent means no candidates.
     stall_candidates: `stall_candidates(now) -> list[dict]`, bound in production to
         `chair_read_stall.read_stall_candidates`. Optional, and absent means no candidates.
+    idle_stall: `idle_stall(now) -> IdleStallInputs`, bound in production to the four `chair_read_idle_*` readers
+        (hosts, lands, backlog, open item) plus the configured `stall_minutes`. Stored unchanged under the
+        `idle_stall` fact. Required, so an unwired detector fails at construction instead of planning nothing.
+        `idle_stall_inputs` assembles the readers' outputs and `resolve_idle_stall_minutes` the threshold.
     queue: `run_store.read_queue`'s rows for this tick, read once and fed to `chair_read_docket.docket_from_rows`,
         `chair_read_intake.intake_from_rows`, `chair_read_quarantined.quarantined_from_rows` and
         `stranded_records`-paired `chair_read_stranded.stranded_from_rows` to build ready, intake, quarantined and
@@ -150,6 +158,7 @@ class FactsDeps:
     session: str
     pid: int
     host: str
+    idle_stall: Callable[[datetime], IdleStallInputs]  # now -> the idle-lanes stall inputs, stored unchanged
     dispatch: Callable[[Row], DispatchFacts] | None = None  # docket -> lane facts; absent counts every busy lane as local
     queue: Callable[[], Sequence[Row]] | None = None  # run_store.read_queue rows; absent or empty falls back to docket, intake, quarantined and stranded
     stranded_records: Callable[[], Sequence[Row]] | None = None  # paired with queue's task rows to build stranded; absent leaves stranded on the file reader
@@ -581,6 +590,38 @@ def resolve_stale_days(value: object) -> int:
         return DEFAULT_STALE_DAYS
 
 
+def resolve_idle_stall_minutes(value: object) -> int:
+    """The profile's raw `chair.idle_stall_minutes`, or 15 when it is missing, non-numeric, or not positive."""
+    try:
+        minutes = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return IDLE_STALL_MINUTES
+    return minutes if minutes > 0 else IDLE_STALL_MINUTES
+
+
+def idle_stall_inputs(
+    backlog: Row,
+    hosts: Sequence[HostCheck],
+    lands_waiting: Sequence[LandWait],
+    open_item: tuple[str | None, str | None],
+    stall_minutes: int,
+) -> IdleStallInputs:
+    """The four idle readers' outputs as one input. `open_item` is `read_idle_open`'s (signature, diagnosis)."""
+    return {
+        "free_lanes": int(backlog["free_lanes"]),
+        "ready": int(backlog["ready"]),
+        "queued": int(backlog["queued"]),
+        "last_progress_at": backlog["last_progress_at"],
+        "stall_minutes": stall_minutes,
+        "hosts": list(hosts),
+        "empty_stubs": list(backlog["empty_stubs"]),
+        "lands_waiting": list(lands_waiting),
+        "blocked_ready": list(backlog["blocked_ready"]),
+        "open_signature": open_item[0],
+        "open_diagnosis": open_item[1],
+    }
+
+
 def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     policy = deps.policy()
     weekly = deps.weekly()
@@ -657,4 +698,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
+        "idle_stall": deps.idle_stall(now),
     }

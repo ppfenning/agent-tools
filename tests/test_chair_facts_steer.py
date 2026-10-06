@@ -103,6 +103,10 @@ def test_a_work_tree_with_two_initiatives_sharing_a_path_gives_steer_check_a_non
         session="s",
         pid=7,
         host="h",
+        idle_stall=lambda n: {
+            "free_lanes": 0, "ready": 0, "queued": 0, "last_progress_at": None, "stall_minutes": 15, "hosts": [],
+            "empty_stubs": [], "lands_waiting": [], "blocked_ready": [], "open_signature": None, "open_diagnosis": None,
+        },
         tickets=lambda: read_ticket_items(tmp_path, "files"),
         repos=lambda: read_initiative_repos(tmp_path),
         actions=lambda: [{"ts": "1", "kind": "steer_clear", "initiative": "x", "other": "y"}],

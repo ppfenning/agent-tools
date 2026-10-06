@@ -11,10 +11,13 @@ from agent_tools.chair_facts import (
     forge_review_prs,
     gather_facts,
     harness_failures,
+    idle_stall_inputs,
     lease_facts,
     limits_facts,
     new_missing_repos,
+    resolve_idle_stall_minutes,
 )
+from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_attempts import with_stored_rescues
 from agent_tools.chair_types import Facts
@@ -34,6 +37,11 @@ QUARANTINED = {"initiative": "i", "phase": "p1", "task": "a"}
 # The keys `runs_stranded._row` emits, and no others: a real stranded row carries no initiative.
 STRANDED = {"run": "i-3", "task": "s", "phase": "p1", "branch": "i/s", "remedy": None}
 BARE = {"task_id": "a", "initiative": "i", "has_patch": False, "rescue_failed": False}
+IDLE_STALL = {
+    "free_lanes": 2, "ready": 1, "queued": 0, "last_progress_at": "2026-09-25T11:44:00Z", "stall_minutes": 15,
+    "hosts": [{"host": "h2", "ok": False, "detail": "ssh timed out"}], "empty_stubs": [], "lands_waiting": [],
+    "blocked_ready": [], "open_signature": None, "open_diagnosis": None,
+}
 
 
 def _window(spent: float, hours: int) -> pacing.Window:
@@ -71,6 +79,7 @@ def _deps(
         session="s",
         pid=7,
         host="h",
+        idle_stall=lambda n: IDLE_STALL,
     )
 
 
@@ -434,12 +443,32 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
-    # idle_stall and tuning are declared on Facts but not yet filled: later tasks fill them in gather_facts.
-    assert set(facts) == (set(Facts.__annotations__) - {"idle_stall", "tuning"}) | {"login_hosts"}
+    # tuning is declared on Facts but not yet filled: a later task fills it in gather_facts.
+    assert set(facts) == (set(Facts.__annotations__) - {"tuning"}) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
     assert facts["intake"] == ["old", "new"]
+
+
+def test_a_fake_idle_stall_callable_gives_its_literal_unchanged_under_idle_stall():
+    assert gather_facts(_deps(), NOW)["idle_stall"] == IDLE_STALL
+
+
+def test_an_unset_idle_stall_minutes_resolves_to_15():
+    assert resolve_idle_stall_minutes(None) == 15
+
+
+def test_a_configured_idle_stall_minutes_overrides_15():
+    assert resolve_idle_stall_minutes(20.0) == 20
+
+
+def test_a_failed_host_with_free_lanes_a_ready_item_and_16_idle_minutes_diagnoses_as_a_host():
+    backlog = {"free_lanes": 2, "ready": 1, "queued": 0, "last_progress_at": "2026-09-25T11:44:00Z", "empty_stubs": [], "blocked_ready": []}
+    hosts = [{"host": "h2", "ok": False, "detail": "ssh timed out"}]
+    inputs = idle_stall_inputs(backlog, hosts, [], (None, None), resolve_idle_stall_minutes(None))
+    facts = gather_facts(replace(_deps(), idle_stall=lambda n: inputs), NOW)
+    assert (is_stalled(facts["idle_stall"], NOW), diagnose(facts["idle_stall"])["signature"]) == (True, "host:h2")
 
 
 def test_a_fake_drafts_callable_returning_3_gives_drafts_3():
