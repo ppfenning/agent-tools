@@ -219,6 +219,39 @@ class StallCandidate(TypedDict):
     usr1_sent: bool  # a stalled_usr1 action was already recorded for this run
 
 
+class HostCheck(TypedDict):
+    host: str
+    ok: bool
+    detail: str
+
+
+class LandWait(TypedDict):
+    run: str
+    pr: str
+    waiting_since: str  # ISO UTC
+    checks_started: bool
+    forge_status: str | None
+
+
+class BlockedReady(TypedDict):
+    task: str
+    unlanded_needs: list[str]  # approved-but-unlanded tasks that are the only unmet needs
+
+
+class IdleStallInputs(TypedDict):
+    free_lanes: int
+    ready: int
+    queued: int
+    last_progress_at: str | None  # ISO UTC of the newest launch, land or node call
+    stall_minutes: int
+    hosts: list[HostCheck]
+    empty_stubs: list[str]  # initiative ids with a stub and no tasks
+    lands_waiting: list[LandWait]
+    blocked_ready: list[BlockedReady]
+    open_signature: str | None  # signature of the idle-stall needs_chair item still open
+    open_diagnosis: str | None  # that item's diagnosis text
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -259,6 +292,7 @@ class Facts(TypedDict):
     steer_streaks: NotRequired[dict[str, int]]
     stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
     phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
+    idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
 
 
 ActionKind = Literal[
