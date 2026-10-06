@@ -82,3 +82,16 @@ _SYNC_SCRIPT = "\n".join((
 def sync_argv(repo_path: str) -> list[str]:
     """Fast-forward `repo_path` to origin's default branch, or print one reason to stderr and exit 1."""
     return ["bash", "-c", _SYNC_SCRIPT, "sync", repo_path]
+
+
+def epic_refspec(initiative: str) -> str:
+    return f"refs/heads/epic/{initiative}/*:refs/heads/epic/{initiative}/*"
+
+
+def agent_refspec(run: str, task: str) -> str:
+    return f"refs/heads/agents/{run}/{task}:refs/heads/agents/{run}/{task}"
+
+
+def branch_push_argv(local_repo: str, ssh: str, repo_path: str, refspec: str) -> list[str]:
+    """`-C local_repo` because the executor's cwd is the work store, not the repo holding the branches."""
+    return ["git", "-C", local_repo, "push", "--force", f"ssh://{ssh}/{repo_path.lstrip('/')}", refspec]
