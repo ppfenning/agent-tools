@@ -376,6 +376,27 @@ def test_a_store_held_approved_row_reaches_the_chair_planner_as_a_land_phase_wit
     assert [(a["kind"], a.get("run")) for a in actions] == [("land_phase", _STORE_RUN)]
 
 
+
+def test_a_store_held_approved_row_keeps_its_run_when_the_fetch_wrote_another_tasks_local_record(tmp_path, monkeypatch):
+    """2026-10-05: a fetch wrote one task's record file locally while the run's other approval stayed in the store; the
+    run then counted as not store-held, the approval got no run, and plan_lands asked the chair (`no_run`) forever."""
+    ws, _ = _store_fetch_world(tmp_path, monkeypatch, record=_APPROVED_RECORD)
+    (ws / "work" / "x").mkdir(parents=True)
+    (ws / "work" / "x" / "initiative.md").write_text("---\nid: x\nrepo: /r\n---\n", encoding="utf-8")
+    _work_item(ws / "work", "x", "seams", "seams-task", "ready")
+    (ws / "runs" / f"{_STORE_RUN}.fetched.json").write_text(json.dumps({"fetched_at": "t", "repos": ["/r"]}), encoding="utf-8")
+    local = ws / "runs" / _STORE_RUN / "tasks" / "seams" / "other-task.json"
+    local.parent.mkdir(parents=True)
+    local.write_text(json.dumps({"review": {"verdict": "revise"}}), encoding="utf-8")
+    store_items = [{"initiative": "x", "task_id": "seams-task", "phase": "seams", "state": "approved"}]
+    monkeypatch.setattr(cli.run_store, "work_items", lambda runs_dir, initiative=None: store_items)
+    records, items = cli._chair_stranded_inputs(ws, "store")
+    stranded = cli.chair_read_stranded.read_stranded(records, items, lambda repo: True, lambda repo, branch: False)
+    fetch_facts = cli.chair_read_approved.read_fetch_facts(ws / "runs", stranded)
+    approved = cli.chair_read_approved.with_runs(cli.chair_read_approved.read_approved(ws, "store"), stranded, fetch_facts)
+    actions = plan_lands({"approved": approved, "initiatives": [{"id": "x", "started": True, "ready_tasks": [], "landed": set()}]})
+    assert [(a["kind"], a.get("run")) for a in actions] == [("land_phase", _STORE_RUN)]
+
 _METER_NOW = datetime(2026, 9, 28, 12, 0, 0, tzinfo=UTC)
 _DUMMY_ASSESSMENT = cli.pacing.Assessment(
     spent_fraction=0.0, elapsed_fraction=0.0, projected_total=0.0, headroom_usd=None,
