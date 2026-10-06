@@ -64,6 +64,7 @@ from agent_tools import (
     commands,
     console_screen,
     courier,
+    coxtop_launch,
     dash_detail_health,
     dash_detail_initiative,
     dash_detail_machine,
@@ -5064,24 +5065,20 @@ def _tolerant_profile(a: argparse.Namespace) -> dict:
         return {}
 
 
-def _console(a: argparse.Namespace) -> int:
+def _console(a: argparse.Namespace, launch=coxtop_launch.launch) -> int:
+    """Open coxtop on a terminal; otherwise, and always with --once, print the one-shot text."""
+    if not a.once and launch():
+        return 0
     profile = _tolerant_profile(a)
     runs_dir = Path(a.runs_dir)
-    local_name = socket.gethostname()
-    local_capacity = _chair_max_in_flight(runs_dir, profile)
-    if a.once or not sys.stdin.isatty():
-        now = datetime.datetime.now(datetime.UTC)
-        tz = now.astimezone().tzinfo
-        sections = console_screen.gather(
-            runs_dir, Path(a.work_dir), now.isoformat(), local_name, local_capacity,
-            _console_spend(runs_dir, profile, now),
-        )
-        print("\n".join(console_screen.render(sections, -1, 120, now, tz)))
-        return 0
-    def spend_fn() -> dict:
-        return _console_spend(runs_dir, profile, datetime.datetime.now(datetime.UTC))
-
-    return console_screen.main(runs_dir, Path(a.work_dir), local_name, local_capacity, spend_fn, a.interval)
+    now = datetime.datetime.now(datetime.UTC)
+    tz = now.astimezone().tzinfo
+    sections = console_screen.gather(
+        runs_dir, Path(a.work_dir), now.isoformat(), socket.gethostname(), _chair_max_in_flight(runs_dir, profile),
+        _console_spend(runs_dir, profile, now),
+    )
+    print("\n".join(console_screen.render(sections, -1, 120, now, tz)))
+    return 0
 
 
 _DASH_DETAIL_KINDS_NEEDING_AN_ID = ("run", "initiative", "machine")

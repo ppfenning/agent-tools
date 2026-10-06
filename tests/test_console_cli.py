@@ -101,3 +101,39 @@ def test_console_once_shows_a_host_beat_as_local_clock_plus_age(monkeypatch, cap
     out = capsys.readouterr().out
     assert re.search(r"beat=\d{1,2}:\d{2} [AP]M  2m ago", out)
     assert seen["beat"] not in out
+
+
+_EMPTY_SECTIONS = {"drafts": [], "hosts": [], "lanes": [], "chair": [], "needs_chair": []}
+
+
+def _once_text(sections: dict) -> str:
+    return "\n".join(console_screen.render(sections, -1, 120, datetime.now(UTC), UTC)) + "\n"
+
+
+def _gather_returns_empty(runs_dir, work_dir, now, local_name, local_capacity, spend) -> dict:
+    return _EMPTY_SECTIONS
+
+
+def test_console_on_a_terminal_with_coxtop_execs_it_and_prints_nothing(monkeypatch, capsys) -> None:
+    def gather_must_not_run(*args):
+        raise AssertionError("gather ran although coxtop was launched")
+
+    monkeypatch.setattr(console_screen, "gather", gather_must_not_run)
+    calls = []
+    rc = cli._console(cli.build_parser().parse_args(["console"]), launch=lambda: calls.append("launch") or True)
+    assert (rc, calls, capsys.readouterr().out) == (0, ["launch"], "")
+
+
+def test_console_without_a_terminal_prints_exactly_the_once_text(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(console_screen, "gather", _gather_returns_empty)
+    assert cli._console(cli.build_parser().parse_args(["console"]), launch=lambda: False) == 0
+    assert capsys.readouterr().out == _once_text(_EMPTY_SECTIONS)
+
+
+def test_console_once_never_calls_the_launcher(monkeypatch, capsys) -> None:
+    def launch_must_not_run() -> bool:
+        raise AssertionError("--once reached the launcher")
+
+    monkeypatch.setattr(console_screen, "gather", _gather_returns_empty)
+    assert cli._console(cli.build_parser().parse_args(["console", "--once"]), launch=launch_must_not_run) == 0
+    assert capsys.readouterr().out == _once_text(_EMPTY_SECTIONS)
