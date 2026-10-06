@@ -5169,19 +5169,10 @@ def _dash(a: argparse.Namespace) -> int:
 
 
 def _home(a: argparse.Namespace) -> int:
-    from agent_tools import home_screen
-    # `--profile` keeps the curses screen: coxtop takes no profile, and bare `cox` treats the flag the same way
-    if home_target(sys.stdin.isatty(), sys.stdout.isatty(), shutil.which("coxtop") is not None, a.profile is not None) == "coxtop":
-        os.execvp("coxtop", ["coxtop"])
-    profile, runs_dir, refuse_rc = _leader_runs_dir_or_refuse(a)
-    if refuse_rc is not None:
-        return refuse_rc
-    workspace = runs_dir.parent
-    plugin_root = _plugin_root(profile.get("skills_roots") or [])
-    return home_screen.main(
-        runs_dir, workspace / "work", workspace / "intake", str(plugin_root or ""),
-        window_ceiling_usd=profile.get("window_ceiling_usd"),
-    )
+    # `--profile` skips coxtop: coxtop takes no profile, and bare `cox` treats the flag the same way
+    if a.profile is None and coxtop_launch.launch(which=shutil.which, execv=os.execv, stdout=sys.stdout, stdin=sys.stdin):
+        return 0
+    return _route_context(argparse.Namespace(profile=a.profile, json=False))
 
 
 def _session(a: argparse.Namespace) -> int:
@@ -7708,11 +7699,6 @@ def _session_launch(launcher_profile: str | None, no_plugin: bool, extra_args: l
 def should_exec_coxtop(stdin_is_tty: bool, stdout_is_tty: bool, coxtop_on_path: bool, flags_given: bool) -> bool:
     """True only on a real terminal with coxtop installed and no launcher flag or extra argument given."""
     return stdin_is_tty and stdout_is_tty and coxtop_on_path and not flags_given
-
-
-def home_target(stdin_is_tty: bool, stdout_is_tty: bool, coxtop_on_path: bool, flags_given: bool) -> str:
-    """`cox home` opens coxtop when it would run, else the curses screen; the same decision bare `cox` makes."""
-    return "coxtop" if should_exec_coxtop(stdin_is_tty, stdout_is_tty, coxtop_on_path, flags_given) else "curses"
 
 
 def _exec_coxtop_if_wanted(flags_given: bool, stdin_is_tty: bool, stdout_is_tty: bool, which: Callable[[str], str | None]) -> None:
