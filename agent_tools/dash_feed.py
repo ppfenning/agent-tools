@@ -589,10 +589,14 @@ def _action_rows(runs_dir: Path) -> list[dict]:
     return rows
 
 
-def _needs_chair_open(entries: list[dict]) -> int:
-    """Unacknowledged courier entries that reach a person and are `needs_chair` refs, before the inbox cap."""
+def open_needs_chair_ids(entries: list[dict]) -> list[str]:
+    """The ids of unacknowledged courier entries that reach a person and are `needs_chair` refs, before the inbox cap."""
     refs = (_REF.fullmatch(str(e.get("ref") or "")) for e in entries if _reaches_a_person(str(e.get("to") or "")))
-    return len([m for m in refs if m and m.group(1) == "needs_chair"])
+    return [m.group(2) for m in refs if m and m.group(1) == "needs_chair"]
+
+
+def _needs_chair_open(entries: list[dict]) -> int:
+    return len(open_needs_chair_ids(entries))
 
 
 def _chair_edge(runs_dir: Path) -> dict:

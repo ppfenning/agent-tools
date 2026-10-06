@@ -18,9 +18,10 @@ NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 
 
 def _facts(hard_stop=False, weekly=0.61, five=0.42, last_housekeeping_at=None, window_start_day=None,
-           five_hour_source="meter", weekly_source="meter", review_prs=None):
+           five_hour_source="meter", weekly_source="meter", review_prs=None, idle_stall=None):
     return {
         **({} if review_prs is None else {"review_prs": review_prs}),
+        **({} if idle_stall is None else {"idle_stall": idle_stall}),
         "limits": {"hard_stop": hard_stop, "weekly_fraction": weekly, "hard_stop_fraction": 0.9,
                    "launch_cap": 2, "go_degraded": False, "five_hour_fraction": five,
                    "window_start_day": window_start_day, "window_source": five_hour_source,
@@ -41,6 +42,31 @@ def test_holding_line_carries_lanes_lands_limits_and_needs():
         "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter) | holding"
         " | needs chair: epic-a:harness | housekeeping never"
     )
+
+
+_BASELINE = (
+    "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter) | holding"
+    " | needs chair: epic-a:harness | housekeeping never"
+)
+_NEEDS = [{"kind": "needs_chair", "initiative": "epic-a", "cause": "harness"}]
+
+
+def test_an_open_idle_stall_appears_after_limits():
+    facts = _facts(idle_stall={"open_diagnosis": "host jarvis ssh check failed"})
+    assert format_status(facts, _NEEDS, [_landed()], NOW) == (
+        "chair 09-26 14:05 EDT | lanes 2/4 | lands 1 | limits 5h 42% (meter) weekly 61%/90% (meter)"
+        " | stall: host jarvis ssh check failed | holding | needs chair: epic-a:harness | housekeeping never"
+    )
+
+
+def test_an_idle_stall_with_no_open_diagnosis_leaves_the_line_as_it_was():
+    facts = _facts(idle_stall={"open_diagnosis": None})
+    assert format_status(facts, _NEEDS, [_landed()], NOW) == _BASELINE
+
+
+def test_facts_with_no_idle_stall_key_leave_the_line_as_it_was():
+    assert "idle_stall" not in _facts()
+    assert format_status(_facts(), _NEEDS, [_landed()], NOW) == _BASELINE
 
 
 def test_needs_chair_items_puts_runaway_entries_first_and_bare():

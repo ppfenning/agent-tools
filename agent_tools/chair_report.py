@@ -164,6 +164,12 @@ def review_fragment(review_prs: Sequence[ReviewPr]) -> str:
     return f"review: {len(items)} awaiting ({', '.join(items)})" if items else ""
 
 
+def _stall(facts: Facts) -> str | None:
+    """`stall: <diagnosis>` while an idle stall is open; None when closed or absent."""
+    diagnosis = (facts.get("idle_stall") or {}).get("open_diagnosis")
+    return f"stall: {diagnosis}" if isinstance(diagnosis, str) and diagnosis else None
+
+
 def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Result], now: datetime) -> str:
     """One line per tick. `now` must be timezone-aware; it is printed in Eastern time."""
     limits, dispatch = facts["limits"], facts["dispatch"]
@@ -176,12 +182,14 @@ def format_status(facts: Facts, actions: Sequence[Action], results: Sequence[Res
     steered = steered_items(results)
     drafts = facts.get("drafts", 0)
     review = review_fragment(facts.get("review_prs", []))
+    stall = _stall(facts)
     parts = [
         f"chair {now.astimezone(EASTERN):%m-%d %H:%M %Z}",
         f"lanes {dispatch['live_runs']}/{dispatch['max_in_flight']}",
         f"lands {lands_this_tick(results)}",
         *([f"drafts {drafts}"] if drafts > 0 else []),
         f"limits {_five_hour(dict(limits))} {_weekly(dict(limits))}{stop}",
+        *([stall] if stall else []),
         mode_of(actions, results),
         *([f"would: {', '.join(would)}"] if would else []),
         *([f"landing: {', '.join(landing)}"] if landing else []),
