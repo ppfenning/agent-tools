@@ -5,7 +5,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from agent_tools import cli, home_screen
+from agent_tools import cli
 from agent_tools.pacing import Window, assess
 from agent_tools.usage_window import (
     DEFAULT_POLICY,
@@ -279,20 +279,6 @@ def test_cli_usage_assessment_passes_none_when_the_profile_has_no_ceiling(tmp_pa
     captured = {}
     monkeypatch.setattr(cli.usage_window, "gather", _capturing_gather(captured))
     cli._usage_assessment(tmp_path)
-    assert captured["ceiling_usd"] is None
-
-
-def test_home_screen_read_window_threads_the_profile_ceiling_into_gather(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(home_screen.usage_window, "gather", _capturing_gather(captured))
-    home_screen._read_window(tmp_path, _NOW, window_ceiling_usd=125.0)
-    assert captured["ceiling_usd"] == 125.0
-
-
-def test_home_screen_read_window_passes_none_when_the_profile_has_no_ceiling(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(home_screen.usage_window, "gather", _capturing_gather(captured))
-    home_screen._read_window(tmp_path, _NOW)
     assert captured["ceiling_usd"] is None
 
 

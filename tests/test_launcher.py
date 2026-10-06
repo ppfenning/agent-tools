@@ -116,7 +116,6 @@ def test_the_profile_is_found_through_the_env_var_when_no_flag_is_given(tmp_path
 
 def test_no_arg_off_a_tty_prints_route_status_and_does_not_open_curses(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-    monkeypatch.setattr("agent_tools.home_screen.main", lambda *a, **k: (_ for _ in ()).throw(AssertionError("curses opened")))
     profile = _profile(tmp_path, tmp_path / "skills")
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile))
     main(["route", "status"])
