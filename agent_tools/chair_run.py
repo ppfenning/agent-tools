@@ -125,6 +125,8 @@ class RunDeps:
     # The lease-only renewal run from the loop's own thread; it returns a refusal line or "" and touches no tick state. None starts no thread.
     lease_beat: Callable[[], object] | None = None
     lease_beat_interval: float = LAND_BEAT_INTERVAL
+    # Receives the ids of the rows a live tick changed, exports the board and commits it; returns a note for the tick line, "" for none.
+    export_rows: Callable[[tuple[str, ...]], str] | None = None
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -137,6 +139,25 @@ def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None)
         return {"action": action, "status": "failed", "reason": f"{type(outcome.error).__name__}: {outcome.error}"}
     value = outcome.value
     return {**value, "reason": f"{value['reason']}\n{outcome.warning}"} if outcome.warning else value
+
+
+# A result changed a row when it is done, landed or recorded; the rows are its action's task_id, stale_tasks and intake_ids.
+CHANGED_STATUSES = frozenset({"done", "landed", "recorded"})
+
+
+def changed_row_ids(results: Sequence[Result]) -> tuple[str, ...]:
+    """The distinct ids of the rows the results changed, in first-seen order."""
+    actions = [r["action"] for r in results if r["status"] in CHANGED_STATUSES]
+    ids = (row_id for a in actions for row_id in [a.get("task_id", ""), *a.get("stale_tasks", []), *a.get("intake_ids", [])])
+    return tuple(dict.fromkeys(row_id for row_id in ids if row_id))
+
+
+def _export_note(export: Callable[[tuple[str, ...]], str], ids: tuple[str, ...]) -> str:
+    """Edge. The hook's note, or its failure as a line; a raising hook never leaves the tick."""
+    try:
+        return export(ids)
+    except Exception as exc:  # the rows are already changed; the failure is reported, not raised
+        return f"export failed: {type(exc).__name__}: {exc}"
 
 
 class WorkerLands:
@@ -282,6 +303,7 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     The meter is published right after the beat, so a gather, plan or perform that raises cannot skip it.
     A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
+    A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
     """
     deps.beat()
     _publish_meter(deps, dry_run, now)
@@ -297,10 +319,13 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
     if acting and gate.paused != deps.gate_state.paused:
         deps.gate_state.paused = gate.paused
+    ids = () if dry_run or deps.export_rows is None else changed_row_ids(results)
+    note = _export_note(deps.export_rows, ids) if ids and deps.export_rows is not None else ""
     try:
-        return format_status(facts, actions, results, now)
+        line = format_status(facts, actions, results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
-        return error_line(exc, now, results)
+        line = error_line(exc, now, results)
+    return f"{line} | {note}" if note else line
 
 
 def _attempt(deps: RunDeps, dry_run: bool) -> None:
