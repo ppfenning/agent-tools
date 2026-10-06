@@ -118,6 +118,154 @@ def test_a_fenced_action_is_refused_and_touches_nothing() -> None:
     assert calls == [("record", "pull")]
 
 
+def _carry(epoch: int = 1) -> dict:
+    pick = {"task": "t1", "run": "run-1", "host": "h", "branch": "agents/run-1/t1", "commit": "abc", "needs": [], "run_seq": 1}
+    return {"kind": "carry_phase", "initiative": "alpha", "phase": "p1", "pr_branch": "carry/alpha-p1", "picks": [pick], "epoch": epoch}
+
+
+def _rebase(epoch: int = 1) -> dict:
+    return {"kind": "rebase_phase", "initiative": "alpha", "phase": "p1", "branch": "epic/alpha/p1", "tip": "a" * 40, "base": "main", "epoch": epoch}
+
+
+def _wired(calls: list, monkeypatch) -> Deps:
+    def carry(action, git, forge, store):
+        calls.append(("carry", action["phase"]))
+        return {"action": action, "status": "done", "reason": ""}
+
+    def rebase(action, port):
+        calls.append(("rebase", action["branch"]))
+        return {"action": action, "status": "done", "reason": ""}
+
+    monkeypatch.setattr(chair_exec, "perform_carry", carry)
+    monkeypatch.setattr(chair_exec, "perform_rebase", rebase)
+    return replace(
+        _deps(calls),
+        carry_ports=lambda action: calls.append(("ports",)) or (None, None, None),
+        rebase_port=lambda action: calls.append(("port",)),
+    )
+
+
+def test_a_carry_phase_reaches_the_carry_executor_and_is_recorded_once(monkeypatch) -> None:
+    calls: list = []
+    results = perform([_carry()], _wired(calls, monkeypatch), lambda: 1, False)
+    assert [r["status"] for r in results] == ["done"]
+    assert calls == [("ports",), ("carry", "p1"), ("record", "carry_phase")]
+
+
+def test_a_rebase_phase_reaches_the_rebase_executor_and_is_recorded(monkeypatch) -> None:
+    calls: list = []
+    results = perform([_rebase()], _wired(calls, monkeypatch), lambda: 1, False)
+    assert [r["status"] for r in results] == ["done"]
+    assert calls == [("port",), ("rebase", "epic/alpha/p1"), ("record", "rebase_phase")]
+
+
+def test_a_fenced_carry_phase_and_rebase_phase_call_nothing(monkeypatch) -> None:
+    calls: list = []
+    results = perform([_carry(), _rebase()], _wired(calls, monkeypatch), lambda: 2, False)
+    assert [r["status"] for r in results] == ["fenced", "fenced"]
+    assert calls == [("record", "carry_phase"), ("record", "rebase_phase")]
+
+
+def test_a_dry_run_of_a_carry_phase_and_a_rebase_phase_performs_nothing(monkeypatch) -> None:
+    calls: list = []
+    results = perform([_carry(), _rebase()], _wired(calls, monkeypatch), lambda: 1, True)
+    assert [r["status"] for r in results] == ["dry_run", "dry_run"]
+    assert calls == []
+
+
+def test_a_carry_conflict_is_surfaced_as_needs_chair_and_marks_nothing_landed() -> None:
+    calls: list = []
+
+    class Git:
+        def fetch_branch(self, host, branch): calls.append("fetch")
+        def create_branch_from_main(self, name): calls.append("branch")
+        def already_on_main(self, commit): return False
+        def cherry_pick(self, commit): return ["a.py"]
+
+    class Store:
+        def mark_landed(self, task, run): calls.append("mark_landed")
+        def set_done(self, task): calls.append("set_done")
+
+    deps = replace(_deps(calls), carry_ports=lambda action: (Git(), None, Store()))
+    results = perform([_carry()], deps, lambda: 1, False)
+    assert [r["status"] for r in results] == ["refused", "recorded"]
+    assert results[0]["needs_chair"]["kind"] == "needs_chair"
+    assert "mark_landed" not in calls and "set_done" not in calls
+    assert [c for c in calls if c[0] == "record"] == [("record", "carry_phase"), ("record", "needs_chair")]
+
+
+def _store_edge(tmp_path, monkeypatch, pr_url: str) -> tuple[list, chair_exec._StoreEdge]:
+    argvs: list = []
+
+    def fake_run(build, run=None):
+        argvs.append(build("py"))
+        return 0, "{}"
+
+    monkeypatch.setattr(chair_exec.store_cli, "_run", fake_run)
+    monkeypatch.setattr(chair_exec.store_cli, "_store_url", lambda runs_dir: None)
+    forge = chair_exec._ForgeEdge(None)
+    forge.pr_url = pr_url
+    return argvs, chair_exec._StoreEdge(tmp_path, tmp_path, _carry(), forge, lambda: "2026-10-05T00:00:00+00:00")
+
+
+def test_the_store_edge_stamps_the_pr_url_open_pr_returned(tmp_path, monkeypatch) -> None:
+    argvs, store = _store_edge(tmp_path, monkeypatch, "https://github.com/o/r/pull/7")
+    store.mark_landed("t1", "run-1")
+    assert argvs == [[
+        "py", "-m", "harness.store_cli", "mark-landed", "run-1", "p1", "t1",
+        "--pr", "https://github.com/o/r/pull/7", "--at", "2026-10-05T00:00:00+00:00",
+    ]]
+
+
+def test_the_store_edge_writes_no_landed_record_when_no_pr_was_opened(tmp_path, monkeypatch) -> None:
+    argvs, store = _store_edge(tmp_path, monkeypatch, "")
+    store.mark_landed("t1", "run-1")
+    assert argvs == []
+
+
+def test_the_forge_edge_keeps_only_the_url_gh_printed(monkeypatch) -> None:
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: (0, ""))
+    monkeypatch.setattr(chair_exec.forge_auto, "open_pr", lambda *a, **k: (True, "Creating pull request\nhttps://github.com/o/r/pull/7\n"))
+    forge = chair_exec._ForgeEdge(chair_exec._GitEdge(Path("."), Path("."), "r"))
+    assert forge.open_pr("carry/alpha-p1", "t", "b") == "https://github.com/o/r/pull/7"
+    assert forge.pr_url == "https://github.com/o/r/pull/7"
+
+
+def test_the_rebase_edge_fetches_origin_then_pushes_origin_main_as_the_phase_tip(monkeypatch) -> None:
+    argvs: list = []
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (0, ""))
+    chair_exec._RebaseEdge("/r").recreate_branch("epic/alpha/p1", "main")
+    assert argvs == [
+        ["git", "-C", "/r", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        ["git", "-C", "/r", "push", "--force", "origin", "origin/main:refs/heads/epic/alpha/p1"],
+    ]
+
+
+def test_the_git_edge_fetches_origin_first_and_cuts_the_carry_branch_from_origin_main(tmp_path, monkeypatch) -> None:
+    argvs: list = []
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (0, ""))
+    monkeypatch.setattr(chair_exec.tempfile, "mkdtemp", lambda prefix: str(tmp_path))
+    git = chair_exec._GitEdge(tmp_path, tmp_path, "/r")
+    git.create_branch_from_main("carry/alpha-p1")
+    assert argvs[0] == ["git", "-C", "/r", "fetch", "origin"]
+    assert argvs[-1] == ["git", "-C", "/r", "worktree", "add", "-B", "carry/alpha-p1", str(tmp_path), "origin/main"]
+
+
+def test_the_git_edge_checks_a_pick_against_origin_main(monkeypatch) -> None:
+    argvs: list = []
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (0, ""))
+    assert chair_exec._GitEdge(Path("."), Path("."), "/r").already_on_main("abc") is True
+    assert argvs[-1] == ["git", "-C", "/r", "merge-base", "--is-ancestor", "abc", "origin/main"]
+
+
+def test_a_failed_fetch_of_origin_fails_the_carry_before_any_worktree_is_added(monkeypatch) -> None:
+    argvs: list = []
+    monkeypatch.setattr(chair_exec, "run_argv", lambda argv, cwd=None, timeout=None: argvs.append(argv) or (1, "no route"))
+    with pytest.raises(RuntimeError, match="git fetch origin: no route"):
+        chair_exec._GitEdge(Path("."), Path("."), "/r").create_branch_from_main("carry/alpha-p1")
+    assert argvs == [["git", "-C", "/r", "fetch", "origin"]]
+
+
 def test_land_refusal_is_none_on_a_clean_exit() -> None:
     assert land_refusal(_land("t1", "r"), 0, LANDED) is None
 

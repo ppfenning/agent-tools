@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
+from agent_tools.chair_carry import plan_carry
 from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
+from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_types import (
     Action,
     ApprovedTask,
@@ -204,6 +206,29 @@ def _cap_launches(
 
 def _needs_chair_only(actions: list[Action]) -> list[Action]:
     return [a for a in actions if a["kind"] == "needs_chair"]
+
+
+def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[Action]:
+    """A phase planned for carry is not also landed this tick."""
+    carried = {(a["initiative"], a["phase"]) for a in carries if a["kind"] == "carry_phase"}
+    return [a for a in lands if not (a["kind"] == "land_phase" and (a["initiative"], a["phase"]) in carried)]
+
+
+def _is_launch(action: Action) -> bool:
+    return action["kind"] in _LAUNCHES or action["kind"] == "launch_epic"
+
+
+def _with_rebases(actions: list[Action], rebases: list[Action]) -> list[Action]:
+    """Each rebase_phase directly before the first relaunch, retry, rescue or launch_epic of its initiative.
+
+    A rebase whose launch the cap dropped has no anchor and leads the list: it starts no run, so the cap does not bind it."""
+    first: dict[str, int] = {}
+    for n in reversed(range(len(actions))):
+        if _is_launch(actions[n]):
+            first[actions[n]["initiative"]] = n
+    unanchored = [r for r in rebases if r["initiative"] not in first]
+    placed = [x for n, a in enumerate(actions) for x in (*(r for r in rebases if first.get(r["initiative"]) == n), a)]
+    return [*unanchored, *placed]
 
 
 def _hosted(action: Action, placed: str | None, routed_home: Mapping[str, str]) -> Action:
@@ -463,7 +488,8 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
 
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
-    lands = plan_lands(facts)
+    carries = plan_carry(facts.get("stranded", []))
+    lands = _without_carried_lands(plan_lands(facts), carries)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -488,6 +514,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *stale,
             *stall,
             *idle_stall,
+            *carries,
             *_needs_chair_only(recovered),
             *login_needs_chair,
             *empty_decompose_needs_chair,
@@ -516,14 +543,18 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed)
+    launches = [*capped, *filled]
+    # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
+    relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
+    rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
     return [
         *lands,
         *fetch_exits,
         *stale,
         *stall,
         *idle_stall,
-        *capped,
-        *filled,
+        *carries,
+        *_with_rebases(launches, rebases),
         *login_needs_chair,
         *empty_decompose_needs_chair,
         *review,

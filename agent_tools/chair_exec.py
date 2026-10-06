@@ -28,14 +28,20 @@ from agent_tools import (
     chair_login_watch,
     chair_plan_prune,
     courier,
+    forge_auto,
+    host_cmd,
+    remote_fetch,
     remote_lane,
     route,
     run_store,
     stale_draft,
     store_cli,
 )
+from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort, perform_carry
 from agent_tools.chair_facts import STRANDED_CAUSE
+from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
+from agent_tools.land import approve_to_done
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, ssh_argv, sync_argv
 
 __all__ = [
@@ -130,6 +136,8 @@ class Deps:
     send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
     ids_mode: str = "slug"  # the routing profile's `ids:` key; "sequence" makes a launch_decompose carry --initiative-id/--task-ids
     lands: LandSink | None = None  # None runs a land in line, as before; a sink runs it behind the tick
+    carry_ports: Callable[[Action], tuple[GitPort, ForgePort, StorePort]] | None = None  # a carry_phase's ports; None refuses it
+    rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -702,6 +710,33 @@ def _review_landed(action: Action, deps: Deps) -> Result:
     return {**_result(action, "refused", outcome.reason), "needs_chair": raised}
 
 
+def _carry_phase(action: Action, deps: Deps) -> Result:
+    """Edge. `perform_carry` over the wired ports. A stop comes back refused and carrying its needs_chair, the shape
+    `_review_landed` returns; a port failure is a failed result, never a raise out of perform."""
+    if deps.carry_ports is None:
+        return _result(action, "refused", "carry_phase needs wired carry ports")
+    git, forge, store = deps.carry_ports(action)
+    try:
+        result = perform_carry(action, git, forge, store)
+    except Exception as exc:  # the edge: a port failure becomes a failed result
+        return _result(action, "failed", f"carry of {action.get('phase', '')} failed: {exc}")
+    finally:
+        close = getattr(git, "close", None)  # the real git edge's worktree; a fake has none
+        if close is not None:
+            close()
+    stop = result["action"]
+    if result["status"] == "escalated" and stop.get("kind") == "needs_chair":
+        return {**_result(action, "refused", result["reason"]), "needs_chair": stop}
+    return {**result, "action": action}
+
+
+def _rebase_phase(action: Action, deps: Deps) -> Result:
+    """Edge. `perform_rebase` over the wired port; its own refusal already carries the needs_chair."""
+    if deps.rebase_port is None:
+        return _result(action, "refused", "rebase_phase needs a wired rebase port")
+    return perform_rebase(action, deps.rebase_port(action))
+
+
 def _steer_reason(action: Action) -> str:
     """`steer clear of <other>: <paths joined by comma>`, cut to 200 characters."""
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
@@ -722,6 +757,10 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _clear(action, deps, blocked)
     if kind == "review_landed":
         return _review_landed(action, deps)
+    if kind == "carry_phase":
+        return _carry_phase(action, deps)
+    if kind == "rebase_phase":
+        return _rebase_phase(action, deps)
     if kind == "take_lease":
         return _lease(action, deps)
     if kind == "check_login":
@@ -849,7 +888,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
-        if action.get("kind") in ("clear_branches", "review_landed") and "needs_chair" in result:
+        if action.get("kind") in ("clear_branches", "review_landed", "carry_phase", "rebase_phase") and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)
@@ -997,6 +1036,182 @@ def _check_login_edge(runs_dir: Path, ssh_run: Run, provider_profile: Callable[[
     )
 
 
+_CHECKS_TIMEOUT_S = 600.0
+_CHECK_COMMAND_TIMEOUT_S = 900.0
+
+
+def _must(code: int, output: str, what: str) -> str:
+    if code != 0:
+        raise RuntimeError(f"{what}: {output.strip()}")
+    return output
+
+
+class _GitEdge:
+    """Edge. GitPort over one throwaway worktree of `repo`; the main checkout is never switched or written.
+
+    Every base is `origin/<default branch>` after a `git fetch origin`; local `main` is never read, so it cannot be stale."""
+
+    def __init__(self, runs_dir: Path, workspace: Path, repo: str) -> None:
+        self.runs_dir, self.workspace, self.repo, self.tmp = runs_dir, workspace, repo, ""
+
+    def _git(self, *args: str) -> tuple[int, str]:
+        return run_argv(["git", "-C", self.tmp or self.repo, *args])
+
+    def default_branch(self) -> str:
+        """What `origin/HEAD` names; "main" when it names nothing."""
+        code, out = run_argv(["git", "-C", self.repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        name = out.strip().removeprefix("origin/") if code == 0 else ""
+        return name or "main"
+
+    def fetch_branch(self, host: str, branch: str) -> None:
+        """The run's branch from its host, reached as `<ssh>:<repo on the host>` the way `remote_fetch` reaches it. An empty host is here."""
+        if not host:
+            return
+        lane = next(iter(host_cmd.host_rows_to_lane_hosts([{**_host_row(self.runs_dir, host), "state": "active"}])), None)
+        if lane is None or not lane.workspace_dir:
+            raise RuntimeError(f"host {host} has no ssh or workspace_dir recorded")
+        host_repo = remote_fetch.host_repo_path(str(self.workspace), lane.workspace_dir, self.repo)
+        _must(*self._git("fetch", f"{lane.ssh}:{host_repo}", f"+refs/heads/{branch}:refs/heads/{branch}"), f"git fetch {branch} from {host}")
+
+    def create_branch_from_main(self, name: str) -> None:
+        """Fetches origin, then cuts `name` from `origin/<default branch>` in a new worktree; a failed fetch raises."""
+        _must(*run_argv(["git", "-C", self.repo, "fetch", "origin"]), "git fetch origin")
+        start = f"origin/{self.default_branch()}"
+        tmp = tempfile.mkdtemp(prefix="cox-carry-")
+        code, out = run_argv(["git", "-C", self.repo, "worktree", "add", "-B", name, tmp, start])
+        if code != 0:
+            Path(tmp).rmdir()
+            raise RuntimeError(f"git worktree add {name} from {start}: {out.strip()}")
+        self.tmp = tmp
+
+    def cherry_pick(self, commit: str) -> list[str]:
+        code, out = self._git("cherry-pick", commit)
+        if code == 0:
+            return []
+        conflicts = [line for line in self._git("diff", "--name-only", "--diff-filter=U")[1].splitlines() if line.strip()]
+        self._git("cherry-pick", "--abort")
+        if not conflicts:
+            raise RuntimeError(f"git cherry-pick {commit}: {out.strip()}")
+        return conflicts
+
+    def push(self, branch: str) -> None:
+        ok, detail = forge_auto.push(self.tmp, branch)
+        if not ok:
+            raise RuntimeError(f"push of {branch}: {detail}")
+
+    def run_checks(self) -> list[str]:
+        """The failing lines of the worktree's `.agent-checks`, each run through bash there; blanks and comments skipped."""
+        try:
+            lines = (Path(self.tmp) / ".agent-checks").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        commands = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+        return [c for c in commands if run_argv(["bash", "-c", c], cwd=Path(self.tmp), timeout=_CHECK_COMMAND_TIMEOUT_S)[0] != 0]
+
+    def already_on_main(self, commit: str) -> bool:
+        return self._git("merge-base", "--is-ancestor", commit, f"origin/{self.default_branch()}")[0] == 0
+
+    def close(self) -> None:
+        if self.tmp:
+            run_argv(["git", "-C", self.repo, "worktree", "remove", "--force", self.tmp])
+
+
+def _pr_url(detail: str) -> str:
+    """The URL `gh pr create` prints as its last line; "" when the forge printed none, as the local forge does."""
+    last = detail.strip().splitlines()[-1].strip() if detail.strip() else ""
+    return last if last.startswith("http") else ""
+
+
+class _ForgeEdge:
+    """Edge. ForgePort over `forge_auto` in the git edge's worktree; the carry's PR body already carries the footer."""
+
+    def __init__(self, git: _GitEdge) -> None:
+        self.git, self.branch, self.pr_url = git, "", ""
+
+    def open_pr(self, branch: str, title: str, body: str) -> str:
+        ok, detail = forge_auto.open_pr(self.git.tmp, title, body, head=branch, base=self.git.default_branch())
+        if not ok:
+            raise RuntimeError(f"open PR for {branch}: {detail}")
+        self.branch, self.pr_url = branch, _pr_url(detail)
+        return self.pr_url or detail
+
+    def wait_checks(self, pr: str) -> list[str]:
+        ok, detail = forge_auto.wait_checks(self.git.tmp, _CHECKS_TIMEOUT_S)
+        return [] if ok else [detail]
+
+    def merge(self, pr: str) -> None:
+        ok, detail = forge_auto.merge(self.git.tmp, {"branch": self.branch, "default_branch": self.git.default_branch()})
+        if not ok:
+            raise RuntimeError(f"merge of {self.branch}: {detail}")
+
+
+class _StoreEdge:
+    """Edge. StorePort over `store_cli`, then the ticket file, the way the review path closes a landed task."""
+
+    def __init__(self, runs_dir: Path, work_dir: Path, action: Action, forge: _ForgeEdge, now: Callable[[], str]) -> None:
+        self.runs_dir, self.work_dir, self.action, self.forge, self.now = runs_dir, work_dir, action, forge, now
+
+    def mark_landed(self, task: str, run: str) -> None:
+        """Stamps the PR url `open_pr` returned. With no PR (every pick already on main) there is nothing to stamp."""
+        if not self.forge.pr_url:
+            return
+        result = store_cli.mark_landed(self.runs_dir, run, self.action["phase"], task, self.forge.pr_url, self.now())
+        error = chair_apply_review._stamped(result)
+        if error:
+            raise RuntimeError(error)
+
+    def set_done(self, task: str) -> None:
+        initiative = self.action["initiative"]
+        error = chair_apply_review._set_done(store_cli.set_state(self.runs_dir, initiative, task, "done", "chair"))
+        if error:
+            raise RuntimeError(error)
+        path = _ticket_paths(self.work_dir, initiative).get(task)
+        if path is not None:
+            new_text, _ = approve_to_done(path.read_text(encoding="utf-8"), merged=True)
+            if new_text is not None:
+                path.write_text(new_text, encoding="utf-8")
+
+
+class _RebaseEdge:
+    """Edge. RebasePort over the remote: tips are read with ls-remote and pushes never check anything out."""
+
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+
+    def _git(self, *args: str) -> tuple[int, str]:
+        return run_argv(["git", "-C", self.repo, *args])
+
+    def _remote_tip(self, ref: str) -> str | None:
+        out = _must(*self._git("ls-remote", "origin", f"refs/heads/{ref}"), f"git ls-remote {ref}")
+        for line in out.splitlines():
+            sha, _, name = line.partition("\t")
+            if name.strip() == f"refs/heads/{ref}":
+                return sha
+        return None
+
+    def branch_tip(self, branch: str) -> str | None:
+        return self._remote_tip(branch)
+
+    def create_ref(self, ref: str, sha: str) -> None:
+        _must(*self._git("push", "origin", f"{sha}:refs/heads/{ref}"), f"git push backup {ref}")
+
+    def recreate_branch(self, branch: str, base: str) -> None:
+        """Fetches origin, then force-pushes `origin/<base>` (the tip the planner read, never local main) as the branch."""
+        _must(*self._git("fetch", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"), f"git fetch origin {base}")
+        _must(*self._git("push", "--force", "origin", f"origin/{base}:refs/heads/{branch}"), f"git push --force {branch}")
+
+    def ref_exists(self, ref: str) -> bool:
+        return self._remote_tip(ref) is not None
+
+
+def _carry_ports(
+    runs_dir: Path, workspace: Path, repo_for: Callable[[Action], str], now: Callable[[], str], action: Action,
+) -> tuple[GitPort, ForgePort, StorePort]:
+    git = _GitEdge(runs_dir, workspace, action.get("repo") or repo_for(action))
+    forge = _ForgeEdge(git)
+    return git, forge, _StoreEdge(runs_dir, workspace, action, forge, now)
+
+
 def edge_deps(
     runs_dir: Path,
     workspace: Path,
@@ -1036,4 +1251,6 @@ def edge_deps(
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,
+        carry_ports=partial(_carry_ports, runs_dir, workspace, repo_for, lambda: datetime.now(UTC).isoformat()),
+        rebase_port=lambda action: _RebaseEdge(action.get("repo") or repo_for(action)),
     )
