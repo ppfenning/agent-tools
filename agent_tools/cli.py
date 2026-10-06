@@ -4203,15 +4203,20 @@ def _store_run_rows(runs_dir: Path, run_id: str, wanted: set[str] | None = None)
 
 
 def _store_held_runs(runs_dir: Path) -> list[str]:
-    """Edge. Fetched remote runs with no local task record: a store-mode fetch left their records in the store.
-    A landed-elsewhere marker names a run with nothing left to land, so it is not one."""
+    """Edge. Fetched remote runs: a store-mode fetch leaves their records in the store, sometimes beside a local record
+    file for one task, so a local file does not make the run's other tasks local. A landed-elsewhere marker names a run
+    with nothing left to land, so it is not one."""
     suffix = ".fetched.json"
     fetched = [p.name[: -len(suffix)] for p in sorted(runs_dir.glob(f"*{suffix}"))]
     return [
         run for run in fetched
         if not remote_lane.is_landed_elsewhere_marker(_read_text_or_none(remote_lane.fetched_record_path(runs_dir, run)))
-        and not any((runs_dir / run / "tasks").glob("*/*.json"))
     ]
+
+
+def _local_record_tasks(runs_dir: Path, run: str) -> set[str]:
+    """Edge. The task ids that have a record file under `runs/<run>/tasks/`; those are read from the file, not the store."""
+    return {path.stem for path in (runs_dir / run / "tasks").glob("*/*.json")}
 
 
 def _store_held_records(runs_dir: Path, items: list[dict]) -> list[dict]:
@@ -4222,7 +4227,8 @@ def _store_held_records(runs_dir: Path, items: list[dict]) -> list[dict]:
         {"run": run, "task": task, "phase": phase, **record}
         for run in _store_held_runs(runs_dir)
         for (phase, task), record in _store_run_rows(
-            runs_dir, run, {task for initiative, task in live if initiative == chair_facts.run_initiative(run)},
+            runs_dir, run,
+            {task for initiative, task in live if initiative == chair_facts.run_initiative(run)} - _local_record_tasks(runs_dir, run),
         ).items()
         if record is not None
     ]
