@@ -20,6 +20,7 @@ from agent_tools import (
     land_repo_lease,
     usage_meter,
 )
+from agent_tools.chair_beat import beat_in_thread
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
 from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held
@@ -29,7 +30,7 @@ from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_g
 from agent_tools.forge_status import StatusReader
 
 __all__ = [
-    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
+    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
     "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "run", "tick",
 ]
 
@@ -121,6 +122,9 @@ class RunDeps:
     set_gate: Callable[[CiGate], object] = no_gate_change
     plan_held: PlanHeld = plan_tick_held
     gate_state: GateState = field(default_factory=GateState)
+    # The lease-only renewal run from the loop's own thread; it returns a refusal line or "" and touches no tick state. None starts no thread.
+    lease_beat: Callable[[], object] | None = None
+    lease_beat_interval: float = LAND_BEAT_INTERVAL
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -316,9 +320,36 @@ def _attempt(deps: RunDeps, dry_run: bool) -> None:
             deps.report_deps.echo(error_line(exc, now))
 
 
+class LeaseRejected(Exception):
+    """The lease code refused a beat: a newer epoch or another holder owns the lease."""
+
+
+def _fenced(beat: Callable[[], object]) -> Callable[[], None]:
+    """A refusal line from the lease code becomes a raise, so the beat thread stops on it."""
+
+    def call() -> None:
+        refusal = beat()
+        if refusal:
+            raise LeaseRejected(str(refusal))
+
+    return call
+
+
+def start_lease_beat(deps: RunDeps, dry_run: bool) -> threading.Event:
+    """Edge. Starts the daemon beat thread unless this is a dry run or no beat is wired, and returns its stop event.
+
+    A rejected or raising beat sets the event, so the thread stops; `gather` then reads the lost lease on the next tick.
+    """
+    stop = threading.Event()
+    if deps.lease_beat is not None and not dry_run:
+        beat_in_thread(_fenced(deps.lease_beat), deps.lease_beat_interval, stop, lambda _exc: stop.set())
+    return stop
+
+
 def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
     """Ticks until interrupted or SIGTERM, or once; an interrupt stops the land worker, then releases the lease if held."""
     restore = (lambda: None) if dry_run else deps.install_sigterm()
+    beating = start_lease_beat(deps, dry_run)
     try:
         while True:
             _attempt(deps, dry_run)
@@ -326,10 +357,12 @@ def run(once: bool, interval: float, dry_run: bool, deps: RunDeps) -> None:
                 return
             deps.sleep(interval)
     except KeyboardInterrupt:
+        beating.set()  # before the release: a beat with no sidecar acquires, and would retake the lease just released
         restore()  # a second SIGTERM during the release below ends the process as it would have
         with contextlib.suppress(Exception):  # a failed land release must not keep the chair lease held
             deps.stop_lands()
         if deps.holds():
             deps.release()
     finally:
+        beating.set()
         restore()
