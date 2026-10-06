@@ -3,9 +3,11 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_tools import run_store, usage_meter
-from agent_tools.dash_detail_spend import _rows_since, build, group_spend, project_to_hard_stop
+from agent_tools import cli, run_store, usage_meter
+from agent_tools.dash_detail_spend import _rows_since, build, group_spend, project_to_hard_stop, schema1_keys
 from agent_tools.usage_meter import Meter, MeterEntry
+
+FIXTURE = Path(__file__).parent / "fixtures" / "dash_detail_spend_v1.json"
 
 
 def row(initiative, role, model, task_id, cost_usd):
@@ -80,7 +82,7 @@ def test_project_to_hard_stop_zero_burn_never_exhausts():
 
 def test_build_against_an_empty_runs_dir_has_the_expected_shape(tmp_path: Path):
     got = build(tmp_path, "2026-09-28T12:00:00+00:00")
-    assert set(got) == {"today", "week", "projection"}
+    assert set(got) == {"schema", "kind", "at", "five_hour", "weekly", "history", "daily", "today", "week", "projection"}
     for window in (got["today"], got["week"]):
         assert window["total_usd"] is None
         assert window["attributed_usd"] == 0.0
@@ -123,7 +125,10 @@ def test_rows_since_joins_a_usage_file_calls_task_id_to_its_work_items_initiativ
     got = _rows_since(tmp_path, "2026-09-28T00:00:00+00:00")
 
     assert got == [
-        {"initiative": "epic-x", "role": "build", "model": "sonnet", "task_id": "task-a", "cost_usd": 1.5},
+        {
+            "initiative": "epic-x", "role": "build", "model": "sonnet", "task_id": "task-a", "cost_usd": 1.5,
+            "ts": "2026-09-28T01:00:00+00:00",
+        },
     ]
 
 
@@ -206,3 +211,78 @@ def test_build_projection_wires_a_populated_usage_meter_reading(tmp_path: Path, 
     assert projection["remaining_pct"] == expected["remaining_pct"]
     assert projection["hours_to_exhaustion"] == expected["hours_to_exhaustion"]
     assert projection["hits_before_reset"] == expected["hits_before_reset"]
+
+
+def _assert_same_shape(actual, expected, path="$"):
+    assert type(actual) is type(expected), f"{path}: {type(actual).__name__} is not {type(expected).__name__}"
+    if isinstance(expected, dict):
+        assert set(expected) <= set(actual), f"{path}: missing {set(expected) - set(actual)}"
+        for key, value in expected.items():
+            _assert_same_shape(actual[key], value, f"{path}.{key}")
+    elif isinstance(expected, list) and expected:
+        assert actual, f"{path}: empty"
+        for index, item in enumerate(actual):
+            _assert_same_shape(item, expected[0], f"{path}[{index}]")
+
+
+SNAPSHOT_SPEND = {
+    "five_hour_fraction": 0.5,
+    "five_hour_resets_at": "2026-10-05T17:00:00+00:00",
+    "weekly_fraction": 0.25,
+    "weekly_resets_at": "2026-10-09T09:00:00+00:00",
+}
+
+
+def snapshot_from_literals():
+    return schema1_keys(
+        SNAPSHOT_SPEND,
+        [["2026-10-05T14:10:00Z", 4.0], ["2026-10-05T14:20:00Z", 10.0]],
+        [
+            {**row("a", "build", "sonnet", "t1", 1.5), "ts": "2026-10-04T01:00:00+00:00"},
+            {**row("a", "build", "sonnet", "t1", 2.0), "ts": "2026-10-04T23:00:00+00:00"},
+            {**row("a", "build", "sonnet", "t2", 4.0), "ts": "2026-10-05T10:00:00+00:00"},
+        ],
+        20.0,
+        200.0,
+        "2026-10-05T14:30:00+00:00",
+    )
+
+
+def test_schema1_keys_match_the_fixture_shape_and_types():
+    got = snapshot_from_literals()
+    fixture = json.loads(FIXTURE.read_text())
+    _assert_same_shape(got, fixture)
+    assert got["schema"] == 1
+    assert got["kind"] == "spend"
+
+
+def test_schema1_keys_derive_used_usd_history_and_daily_from_the_literals():
+    got = snapshot_from_literals()
+    assert got["five_hour"] == {
+        "fraction": 0.5, "used_usd": 10.0, "ceiling_usd": 20.0, "resets_at": "2026-10-05T17:00:00+00:00",
+    }
+    assert got["weekly"]["used_usd"] == 50.0
+    assert got["history"] == [
+        {"at": "2026-10-05T14:10:00Z", "five_hour": 0.2, "weekly": 0.02},
+        {"at": "2026-10-05T14:20:00Z", "five_hour": 0.5, "weekly": 0.05},
+    ]
+    assert got["daily"] == [{"day": "2026-10-04", "cost": 3.5}, {"day": "2026-10-05", "cost": 4.0}]
+
+
+def test_schema1_keys_with_no_ceiling_or_reset_have_no_nulls():
+    got = schema1_keys({"five_hour_fraction": None}, [["2026-10-05T14:10:00Z", 4.0]], [], None, None, "now")
+    assert got["five_hour"] == {"fraction": 0.0, "used_usd": 0.0, "ceiling_usd": 0.0, "resets_at": ""}
+    assert got["history"] == [{"at": "2026-10-05T14:10:00Z", "five_hour": 0.0, "weekly": 0.0}]
+    assert got["daily"] == []
+
+
+def test_dash_detail_spend_entry_point_prints_kind_spend(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(tmp_path / "no-profile.yaml"))
+    monkeypatch.setattr(usage_meter, "read", lambda: None)
+    monkeypatch.setattr(run_store, "work_items", lambda *a, **k: [])
+
+    assert cli.main(["dash", "--detail", "spend", "--runs-dir", str(tmp_path)]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["kind"] == "spend"
+    assert printed["schema"] == 1

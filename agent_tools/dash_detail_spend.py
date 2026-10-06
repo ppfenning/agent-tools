@@ -24,8 +24,13 @@ nothing before the next row can add to it), so a category built entirely of chea
 could show $0.00. Each total is rounded exactly once, to the cent, only when it is
 written into the dict this module returns.
 
-`group_spend` and `project_to_hard_stop` are the pure core: plain data in, plain data
-out, no clock and no filesystem. `_rows_since` and `build` are the thin edge.
+`build` also carries the schema-1 keys `schema`, `kind`, `at`, `five_hour`, `weekly`,
+`history` and `daily` that coxtop parses. `schema1_keys` computes them as pure data from
+the feed's spend block, its spend series, the ledger rows and the ceilings; `_schema1_edge`
+does the reads.
+
+`group_spend`, `project_to_hard_stop` and `schema1_keys` are the pure core: plain data in,
+plain data out, no clock and no filesystem. `_rows_since` and `build` are the thin edge.
 """
 
 from __future__ import annotations
@@ -34,9 +39,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent_tools import run_store, usage_meter, usage_window
+from agent_tools import dash_feed, run_store, usage_meter, usage_window
+from agent_tools.dash_spend_series import spend_series
 
-__all__ = ["build", "group_spend", "project_to_hard_stop"]
+__all__ = ["build", "group_spend", "project_to_hard_stop", "schema1_keys"]
 
 TOP_N_DEFAULT = 5
 _WEEKLY_SPAN = timedelta(days=7)
@@ -55,8 +61,8 @@ def _calls_of(usage: Any) -> list[dict[str, Any]]:
 
 def _rows_since(runs_dir: Path, since: str) -> list[dict[str, Any]]:
     """Edge. Every call from `run_store.usages(runs_dir)` with `ts >= since`, kept to
-    `initiative`, `role`, `model`, `task_id`, `cost_usd`. `initiative` is `None` when
-    the call's `task_id` has no matching `work_items` row."""
+    `initiative`, `role`, `model`, `task_id`, `cost_usd`, `ts`. `initiative` is `None`
+    when the call's `task_id` has no matching `work_items` row."""
     initiatives = _initiative_map(runs_dir)
     return [
         {
@@ -65,6 +71,7 @@ def _rows_since(runs_dir: Path, since: str) -> list[dict[str, Any]]:
             "model": call.get("model"),
             "task_id": call.get("task_id"),
             "cost_usd": float(call.get("cost_usd") or 0.0),
+            "ts": call["ts"],
         }
         for usage in run_store.usages(runs_dir).values()
         for call in _calls_of(usage)
@@ -159,13 +166,75 @@ def _projection(now: datetime) -> dict[str, Any] | None:
     }
 
 
+def _window_v1(fraction: float | None, ceiling_usd: float, resets_at: str | None) -> dict[str, Any]:
+    """Pure. One quota window; an unknown fraction reads 0.0 and an unknown reset time "", as the feed does."""
+    known = float(fraction or 0.0)
+    return {
+        "fraction": known,
+        "used_usd": known * ceiling_usd,
+        "ceiling_usd": ceiling_usd,
+        "resets_at": resets_at or "",
+    }
+
+
+def _share(cumulative_usd: float, ceiling_usd: float) -> float:
+    return cumulative_usd / ceiling_usd if ceiling_usd > 0 else 0.0
+
+
+def schema1_keys(
+    spend: dict[str, Any],
+    series: list[list],
+    rows: list[dict[str, Any]],
+    window_ceiling_usd: float | None,
+    weekly_ceiling_usd: float | None,
+    now: str,
+) -> dict[str, Any]:
+    """Pure. The schema-1 keys coxtop parses. `spend` is the feed's spend block and `series`
+    its `[at, cumulative_usd]` pairs; each `history` point is the cumulative spend as a
+    fraction of each ceiling, 0.0 when that ceiling is unknown. `rows` carry `ts` and
+    `cost_usd`; `daily` sums them per `ts[:10]` day, rounded once, days ascending."""
+    five_hour_ceiling = float(window_ceiling_usd or 0.0)
+    weekly_ceiling = float(weekly_ceiling_usd or 0.0)
+    per_day = _totals_by(
+        [{"day": str(row["ts"])[:10], "cost_usd": row.get("cost_usd")} for row in rows if row.get("ts")],
+        "day",
+    )
+    return {
+        "schema": 1,
+        "kind": "spend",
+        "at": now,
+        "five_hour": _window_v1(spend.get("five_hour_fraction"), five_hour_ceiling, spend.get("five_hour_resets_at")),
+        "weekly": _window_v1(spend.get("weekly_fraction"), weekly_ceiling, spend.get("weekly_resets_at")),
+        "history": [
+            {
+                "at": at,
+                "five_hour": _share(float(cumulative), five_hour_ceiling),
+                "weekly": _share(float(cumulative), weekly_ceiling),
+            }
+            for at, cumulative in series
+        ],
+        "daily": [{"day": day, "cost": per_day[day]} for day in sorted(per_day)],
+    }
+
+
+def _schema1_edge(runs_dir: Path, now: str, since_week: datetime) -> dict[str, Any]:
+    """Edge. Reads the feed's own spend block, profile ceilings and spend series, and the
+    week's ledger rows, and hands them to `schema1_keys`."""
+    rows = _rows_since(runs_dir, since_week.isoformat())
+    window_ceiling, weekly_ceiling = dash_feed._profile_ceilings()
+    series = spend_series(dash_feed._spend_points({"week": rows}), dash_feed._parse_now(now))
+    spend = dash_feed._spend_v1(dash_feed._spend(runs_dir, now))
+    return schema1_keys(spend, series, rows, window_ceiling, weekly_ceiling, now)
+
+
 def build(runs_dir: Path, now: str) -> dict[str, Any]:
-    """Edge. The data behind `cox dash --detail spend`: today's and this week's spend,
-    each broken down by initiative, role and model with the costliest tasks, and a
-    projection to the weekly hard stop."""
+    """Edge. The data behind `cox dash --detail spend`: the schema-1 keys, today's and
+    this week's spend, each broken down by initiative, role and model with the costliest
+    tasks, and a projection to the weekly hard stop."""
     now_dt = datetime.fromisoformat(now)
     since_week = usage_window.weekly_window_start(now_dt, reset=None)
     return {
+        **_schema1_edge(runs_dir, now, since_week),
         "today": _spend_window(runs_dir, _midnight(now_dt), TOP_N_DEFAULT),
         "week": _spend_window(runs_dir, since_week, TOP_N_DEFAULT),
         "projection": _projection(now_dt),

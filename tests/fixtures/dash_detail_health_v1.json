@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "kind": "health",
+  "at": "2026-10-05T04:30:00Z",
+  "hosts": [
+    {"name": "mini", "state": "active", "lanes_in_use": 1, "capacity": 2}
+  ],
+  "logins": [
+    {"provider": "claude", "host": "mini", "ok": true, "detail": "logged in, checked 2026-10-05T04:00:00Z"}
+  ],
+  "store": {"ok": true, "detail": "store opened", "latency_ms": 12},
+  "chair_lease": {"holder": "chair@mini:4242", "expires_at": "2026-10-05T05:00:00+00:00", "ok": true},
+  "housekeeping": {"last_run_at": "2026-10-05T00:00:00Z", "age_hours": 4.5}
+}
