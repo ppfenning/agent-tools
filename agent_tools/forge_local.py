@@ -38,11 +38,11 @@ def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tup
     return True, "local forge: the land's own checks are the gate"
 
 
-def merge_state(pr: int) -> str:
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
     raise ForgeNotSupported("local forge: no pull requests, so no merge state")
 
 
-def update_branch(pr: int) -> None:
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
     raise ForgeNotSupported("local forge: no pull requests, so no branch to update")
 
 
