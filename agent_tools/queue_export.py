@@ -2,8 +2,8 @@
 
 `plan_export` takes the rows `run_store.read_queue` returned and the text currently on disk, and
 says which files to write and which to delete to make the tree match the rows. It never touches a
-filesystem; `export_files` is the edge that reads, plans, and writes. `initiative.md` files are
-never part of a row and are never written or deleted, whatever `files_on_disk` holds for them.
+filesystem; `export_files` is the edge that reads, plans, and writes. An `initiative.md` is written
+when an initiative row holds it, and is never deleted, whatever `files_on_disk` holds for it.
 """
 
 from __future__ import annotations
@@ -18,10 +18,15 @@ Row = dict[str, Any]
 _TREES = ("intake", "work")
 
 
+def export_rows(rows: list[Row]) -> dict[str, str]:
+    """Workspace-relative path to file text for every row: initiative, tickets and intake alike."""
+    return {row_path(row): render_item(row) for row in rows}
+
+
 def plan_export(rows: list[Row], files_on_disk: dict[str, str]) -> tuple[list[tuple[str, str]], list[str]]:
     """(writes, deletes) to bring `files_on_disk` to match `rows`. `render_item` is deterministic,
     so a path whose text already matches is left alone, and a board that changed nothing gives ([], [])."""
-    target = {row_path(row): render_item(row) for row in rows}
+    target = export_rows(rows)
     writes = [(path, text) for path, text in target.items() if files_on_disk.get(path) != text]
     deletes = [path for path in files_on_disk if path not in target and Path(path).name != "initiative.md"]
     return writes, deletes

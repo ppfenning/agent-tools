@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from agent_tools import chair, queue_rows, run_store
+from agent_tools import chair, decompose_empty, queue_rows, run_store
 from agent_tools.intake_state import intake_group
 from agent_tools.pacing import Assessment
 
@@ -1354,6 +1354,58 @@ def write_filed_item(runs_dir: Path, path: Path, kind: str, path_parts: tuple[st
         print(_filed_write_error(path, stored, exc))
         return 1
     return 0
+
+
+_UNSTARTED_STATES = frozenset({"todo", "ready"})  # route_guard.EDITABLE_STATES; any other state is past ready
+
+
+def select_intake_row(rows: Sequence[Mapping], intake_id: str) -> Mapping | None:
+    """The intake row named by `intake_id`, matched on `task_id` or `extra["id"]` in any state, else None."""
+    return next(
+        (r for r in rows if r.get("kind") == "intake" and intake_id in (r.get("task_id"), (r.get("extra") or {}).get("id"))),
+        None,
+    )
+
+
+def intake_input_from_row(row: Mapping) -> dict:
+    """The plain data a decompose run takes in place of the intake file path."""
+    return {"id": row["task_id"], "body": row["body"], "state": row["state"]}
+
+
+def plan_writes(plan: Mapping, intake_row: Mapping, existing: Sequence[Mapping]) -> tuple[list[dict], str | None]:
+    """`(rows, failure)`: the initiative row, ticket rows and stamped intake row to upsert, in that order.
+
+    A plan with no tasks gives no rows and the `decompose_empty` reason. A row the store holds past ready
+    is left out, so a rerun never resets it. `existing` is the store's rows for the plan's initiative.
+    """
+    outcome = decompose_empty.empty_outcome(len(plan["tasks"]), list(plan.get("lint", [])), False)
+    if outcome["empty"]:
+        return [], f"routing: {outcome['reason']}"
+    started = {(r["kind"], r["task_id"]) for r in existing if r.get("state") not in _UNSTARTED_STATES}
+    built = [*queue_rows.plan_to_rows(plan, intake_row["task_id"]), queue_rows.intake_stamp(dict(intake_row), plan["id"])]
+    return [r for r in built if (r["kind"], r["task_id"]) not in started], None
+
+
+def decompose_into_rows(
+    runs_dir: Path, intake_id: str, run: Callable[[dict], Mapping],
+) -> tuple[int, list[str]]:
+    """Edge for store mode: read the intake row, hand its body to `run`, write the plan it returns as rows.
+
+    No workspace file is read or written. Returns `(exit code, lines to print)`.
+    """
+    intake = select_intake_row(run_store.read_queue(runs_dir, kind="intake"), intake_id)
+    if intake is None:
+        return 2, [f"routing: no intake row {intake_id}"]
+    plan = run(intake_input_from_row(intake))
+    existing = run_store.read_queue(runs_dir, plan["id"]) if plan["tasks"] else []
+    rows, failure = plan_writes(plan, intake, existing)
+    if failure is not None:
+        return 1, [failure]
+    for row in rows:
+        detail = run_store.upsert_row_detail(runs_dir, row)
+        if detail:
+            return 1, [f"routing: store refused {row['kind']} row {row['task_id']}: {detail}"]
+    return 0, [f"routing: wrote {len(rows)} rows for {plan['id']}"]
 
 
 def next_priority(current: int, flag: int | str) -> int:
