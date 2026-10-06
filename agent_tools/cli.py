@@ -135,6 +135,7 @@ notify = _LazyModule("agent_tools.notify")
 pacing = _LazyModule("agent_tools.pacing")
 plan = _LazyModule("agent_tools.plan")
 provenance = _LazyModule("agent_tools.provenance")
+queue_export = _LazyModule("agent_tools.queue_export")
 queue_rows = _LazyModule("agent_tools.queue_rows")
 records = _LazyModule("agent_tools.records")
 remote_argv = _LazyModule("agent_tools.remote_argv")
@@ -4005,9 +4006,18 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     if a.graph == "epic":
+        initiative_id = launch_dir.name
+        if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+            rows_code, rows_lines, _ = route.launch_from_rows(runs_dir, initiative_id, a.repo)
+            if rows_code:
+                for line in rows_lines:
+                    print(line)
+                return rows_code
+            skipped = _export_board(runs_dir, runs_dir.parent)
+            if skipped:
+                print(f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}")
         _merge_initiative_tickets(launch_dir)
         # Only --include-blocked lifts this guard; --force never does.
-        initiative_id = launch_dir.name
         held = route.launch_blockers([
             item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
         ])
@@ -4573,6 +4583,13 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode, by)
     print("\n".join(lines))
     return 0 if outcome == "fetched" else 2
+
+
+def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
+    """Edge. Write the whole store board under `workspace` and return the ids of the contentless rows skipped.
+
+    The whole board, never one initiative: `export_files` deletes every intake/ and work/ file its rows do not name."""
+    return queue_export.export_files(workspace, run_store.read_queue(runs_dir)).skipped
 
 
 def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
