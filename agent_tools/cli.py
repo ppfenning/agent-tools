@@ -43,6 +43,10 @@ from agent_tools import (
     chair_read_docket,
     chair_read_exits,
     chair_read_housekeeping,
+    chair_read_idle_backlog,
+    chair_read_idle_hosts,
+    chair_read_idle_lands,
+    chair_read_idle_open,
     chair_read_intake,
     chair_read_lease,
     chair_read_live,
@@ -7031,6 +7035,15 @@ def _chair_run_deps(
     def weekly_source() -> str:
         return meter_fresh_now()[1]
 
+    def idle_stall(n: datetime.datetime) -> chair_facts.IdleStallInputs:
+        return chair_facts.idle_stall_inputs(
+            chair_read_idle_backlog.read_idle_backlog(ws, mode, _local_max_in_flight(runs_dir, profile, host), n),
+            chair_read_idle_hosts.read_idle_hosts(runs_dir, startup_hosts),
+            chair_read_idle_lands.read_lands_waiting(runs_dir, n),
+            chair_read_idle_open.read_idle_open(ws),
+            chair_facts.resolve_idle_stall_minutes((profile.get("chair") or {}).get("idle_stall_minutes")),
+        )
+
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=window,
@@ -7066,6 +7079,7 @@ def _chair_run_deps(
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
+        idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),
         pid_probe=lambda: chair_pid_probe.read_pid_probe(
             runs_dir, now_text(), _pid_probe_ssh, () if isinstance(parsed_hosts, lane_hosts.LaneHostError) else parsed_hosts, host
