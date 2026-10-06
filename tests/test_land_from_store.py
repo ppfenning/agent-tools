@@ -309,6 +309,29 @@ def test_backfill_never_overwrites_an_existing_task_record_file(tmp_path, monkey
     assert (phase_dir / "a-task.json").read_text(encoding="utf-8") == local
 
 
+def test_backfill_takes_a_task_approved_in_an_earlier_run_tagged_with_that_run(tmp_path, monkeypatch):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    (runs_dir / "epic-x-5:seams.json").write_text(json.dumps({"phase_verdict": {"reasoning": "solid"}}), encoding="utf-8")
+    held = {"epic-x-5": ["b-task"], "epic-x-4": ["a-task", "b-task"], "epic-x-3": ["a-task"]}
+    monkeypatch.setattr(run_store, "run_task_ids", lambda runs_dir, run_id: held.get(run_id, []))
+    monkeypatch.setattr(run_store, "task_record", lambda runs_dir, run_id, phase, task: {"task": task, "phase": phase, "from": run_id})
+    cli._backfill_phase_task_files(runs_dir, "epic-x-5", "seams")
+    phase_dir = runs_dir / "epic-x-5" / "tasks" / "seams"
+    read = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in phase_dir.glob("*.json")}
+    # b-task comes from run 5 itself; a-task from the newest earlier run that holds it, tagged so the gather finds agents/epic-x-4/a-task.
+    assert read == {"b-task": {"task": "b-task", "phase": "seams", "from": "epic-x-5", "run": "epic-x-5"},
+                    "a-task": {"task": "a-task", "phase": "seams", "from": "epic-x-4", "run": "epic-x-4"}}
+    _, task_records, _, _ = cli._land_phase_record(runs_dir, "epic-x-5", "seams")
+    assert {r["task"]: r["run"] for r in task_records} == {"a-task": "epic-x-4", "b-task": "epic-x-5"}
+
+
+def test_earlier_runs_are_newest_first_and_empty_for_an_unnumbered_id():
+    assert cli._earlier_runs("epic-x-3") == ["epic-x-2", "epic-x-1"]
+    assert cli._earlier_runs("epic-x-1") == []
+    assert cli._earlier_runs("epic") == []
+
+
 def test_phase_items_in_store_mode_reads_status_from_work_items_and_plans(tmp_path, monkeypatch):
     work_root = tmp_path / "work"
     (work_root / "x" / "seams").mkdir(parents=True)

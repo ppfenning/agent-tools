@@ -1,11 +1,10 @@
 usage: cox route [-h]
-                 {context,status,file,priority,pull,lint,groups,drift,import,approve,decline,edit,remove,chair,sync,launch}
-                 ...
+                 {context,status,file,priority,pull,lint,groups,drift,import,store-fill,approve,decline,edit,remove,chair,sync,launch} ...
 
 File work for the harness, and see what is queued or running.
 
 positional arguments:
-  {context,status,file,priority,pull,lint,groups,drift,import,approve,decline,edit,remove,chair,sync,launch}
+  {context,status,file,priority,pull,lint,groups,drift,import,store-fill,approve,decline,edit,remove,chair,sync,launch}
     context             the routing profile's resolved context
     status              what is queued or running for this profile
     file                file a new ticket for the harness
@@ -15,6 +14,7 @@ positional arguments:
     groups              print the newest plans/intake-groups/<date>.md file, work-shape.md §5
     drift               items whose store state and file state differ
     import              load the current work item files into the store's work_items table
+    store-fill          fill the store's work_items from the workspace files
     approve             approve a draft initiative's todo tickets: todo becomes ready
     decline             decline a draft initiative: its todo tickets become dropped
     edit                change a queued intake's or an initiative's title, body or repo

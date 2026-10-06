@@ -1511,19 +1511,28 @@ def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths
 
 
 def _backfill_phase_task_files(runs_dir: Path, run_id: str, phase: str) -> None:
-    """Store mode only: write any task record the store holds for this run and phase that has
-    no file yet under `runs/<run>/tasks/<phase>/`, so `_land_phase_record`'s own directory read
-    finds it. Never overwrites a file already on disk."""
+    """Store mode only: write any task record the store holds for this run and phase, then for each earlier run of
+    the same initiative (newest first), that has no file yet under `runs/<run>/tasks/<phase>/`, so
+    `_land_phase_record`'s own directory read finds it. Never overwrites a file already on disk."""
     phase_dir = runs_dir / run_id / "tasks" / phase
-    for task_id in run_store.run_task_ids(runs_dir, run_id):
-        path = phase_dir / f"{task_id}.json"
-        if path.exists():
-            continue
-        record = run_store.task_record(runs_dir, run_id, phase, task_id)
-        if record is None:
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(record), encoding="utf-8")
+    for source_run in (run_id, *_earlier_runs(run_id)):
+        for task_id in run_store.run_task_ids(runs_dir, source_run):
+            path = phase_dir / f"{task_id}.json"
+            if path.exists():
+                continue
+            record = run_store.task_record(runs_dir, source_run, phase, task_id)
+            if record is None:
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({**record, "run": source_run}), encoding="utf-8")
+
+
+def _earlier_runs(run_id: str) -> list[str]:
+    """`<initiative>-<n>`'s earlier runs, newest first: a task approved in run 2 and still unlanded when run 3 lands
+    the phase has its record only under run 2 (2026-10-06, the-store-holds-every-initiative-and-ticket). Tagging the
+    written record with its own run keeps the gather on `agents/<that run>/<task>`. Empty for an unnumbered id."""
+    prefix, _, number = run_id.rpartition("-")
+    return [f"{prefix}-{n}" for n in range(int(number) - 1, 0, -1)] if prefix and number.isdigit() else []
 
 
 def _land_phase_record(runs_dir: Path, run_id: str, phase: str) -> tuple[dict | None, list[dict], dict[str, str], str]:
@@ -6591,6 +6600,11 @@ ROUTE_COMMANDS = [
         "import", "route", "load the current work item files into the store's work_items table",
         (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
         "agent_tools.cli:_route_import", False, (),
+    ),
+    commands.Command(
+        "store-fill", "route", "fill the store's work_items from the workspace files",
+        (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
+        "agent_tools.store_fill:main", False, (),
     ),
     commands.Command(
         "approve", "route", "approve a draft initiative's todo tickets: todo becomes ready",
