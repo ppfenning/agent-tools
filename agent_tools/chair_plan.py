@@ -34,10 +34,13 @@ def _launch_cap(limits: LimitsFacts) -> int:
     return 0 if limits["go_degraded"] or limits.get("smoke_hold") is not None else max(limits["launch_cap"], 0)
 
 
-def initiative_homes(newest_run_host: Mapping[str, str], unfinished: Collection[str]) -> dict[str, str]:
+def initiative_homes(newest_run_host: Mapping[str, str], unfinished: Collection[str], local_host: str = "") -> dict[str, str]:
     """An initiative in `unfinished` (a carried partial phase or an approved task not yet landed) is homed on
-    its newest run's host, "" meaning this machine; an initiative with no unfinished work has no entry."""
-    return {initiative: newest_run_host[initiative] for initiative in unfinished if initiative in newest_run_host}
+    its newest run's host, "" meaning this machine; an initiative with no unfinished work has no entry.
+    A run recorded under `local_host`, the chair's own name, is this machine too, so it homes on ""."""
+    def here(host: str) -> str:
+        return "" if local_host and host == local_host else host
+    return {initiative: here(newest_run_host[initiative]) for initiative in unfinished if initiative in newest_run_host}
 
 
 def _lease_gate(lease: LeaseFacts) -> list[Action] | None:
