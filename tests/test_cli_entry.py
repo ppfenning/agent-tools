@@ -71,9 +71,9 @@ def test_bare_cox_on_a_terminal_execs_coxtop_and_a_flag_keeps_the_session(tmp_pa
 
 
 def _stub_launch(monkeypatch, result: bool) -> list:
-    """`coxtop_launch.launch` is replaced and records each call."""
+    """`towpath_launch.launch` is replaced and records each call."""
     calls = []
-    monkeypatch.setattr("agent_tools.coxtop_launch.launch", lambda *a, **k: calls.append((a, k)) or result)
+    monkeypatch.setattr("agent_tools.towpath_launch.launch", lambda *a, **k: calls.append((a, k)) or result)
     return calls
 
 
