@@ -42,8 +42,10 @@ def _rows(table: list[tuple[commands.Group, list[commands.Command]]]) -> list[co
 def test_every_real_row_names_its_handler_as_a_module_function_path() -> None:
     handlers = [row.handler for row in _rows(cli.COMMAND_TABLE) if row.handler is not None]
     handlers += [group.fn for group, _ in cli.COMMAND_TABLE if group.fn is not None]
-    assert len(handlers) == 99
-    assert all(isinstance(h, cli._LazyHandler) and h.target.startswith("agent_tools.cli:") for h in handlers)
+    assert len(handlers) == 100
+    outside = [h.target for h in handlers if not h.target.startswith("agent_tools.cli:")]
+    assert all(isinstance(h, cli._LazyHandler) for h in handlers)
+    assert outside == ["agent_tools.store_fill:main"]  # the one handler whose edge lives in its own module
     assert cli.RUNS_COMMANDS[0].handler == "agent_tools.cli:_runs_usage"
 
 

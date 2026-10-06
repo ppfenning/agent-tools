@@ -9,26 +9,65 @@ when an initiative row holds it, and is never deleted, whatever `files_on_disk` 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from agent_tools.queue_rows import render_item, row_path
 
 Row = dict[str, Any]
 
 _TREES = ("intake", "work")
+_KEEP_PREFIXES = ("intake/held/", "intake/done/")  # never deleted, whether or not a row names them
+_PATH_KEYS = {"task": ("initiative", "phase", "task_id"), "initiative": ("initiative",), "intake": ("task_id",)}
+
+
+class Export(NamedTuple):
+    touched: list[str]
+    skipped: list[str]
+
+
+def is_contentless(row: Row) -> bool:
+    """True for a row with nothing to render: no kind, or title, body and extra all None."""
+    return row.get("kind") is None or all(row.get(key) is None for key in ("title", "body", "extra"))
+
+
+def skipped_ids(rows: list[Row]) -> list[str]:
+    """The task_id of each contentless row, in row order; `#<index in rows>` when it has none, so each stays distinct."""
+    return [str(row.get("task_id") or f"#{i}") for i, row in enumerate(rows) if is_contentless(row)]
+
+
+def _named_path(row: Row) -> str | None:
+    """row_path when the kind and the fields it keys on are set, else None: a contentless row may still name its file."""
+    keys = _PATH_KEYS.get(row.get("kind"))
+    named = keys is not None and all(row.get(key) is not None for key in keys)
+    return row_path({"state": None, **row}) if named else None
+
+
+def _filled(row: Row) -> Row:
+    """None in a content field becomes its empty value, so render_item never sees None where it expects text or a collection."""
+    empty = {"title": "", "needs": [], "surfaces": [], "body": "", "extra": {}}
+    return {**row, **{key: row.get(key) or value for key, value in empty.items()}}
 
 
 def export_rows(rows: list[Row]) -> dict[str, str]:
-    """Workspace-relative path to file text for every row: initiative, tickets and intake alike."""
-    return {row_path(row): render_item(row) for row in rows}
+    """Workspace-relative path to file text for every row with content: initiative, tickets and intake alike."""
+    return {row_path(row): render_item(_filled(row)) for row in rows if not is_contentless(row)}
 
 
 def plan_export(rows: list[Row], files_on_disk: dict[str, str]) -> tuple[list[tuple[str, str]], list[str]]:
     """(writes, deletes) to bring `files_on_disk` to match `rows`. `render_item` is deterministic,
-    so a path whose text already matches is left alone, and a board that changed nothing gives ([], [])."""
+    so a path whose text already matches is left alone, and a board that changed nothing gives ([], []).
+    A contentless row is not written, but the path it names is kept, never deleted."""
     target = export_rows(rows)
+    kept = {_named_path(row) for row in rows if is_contentless(row)}
     writes = [(path, text) for path, text in target.items() if files_on_disk.get(path) != text]
-    deletes = [path for path in files_on_disk if path not in target and Path(path).name != "initiative.md"]
+    deletes = [
+        path
+        for path in files_on_disk
+        if path not in target
+        and path not in kept
+        and Path(path).name != "initiative.md"
+        and not path.startswith(_KEEP_PREFIXES)
+    ]
     return writes, deletes
 
 
@@ -48,12 +87,14 @@ def _prune_empty_dirs(directory: Path, stop_at: set[Path]) -> None:
         directory = parent
 
 
-def export_files(workspace: Path, rows: list[Row]) -> list[str]:
-    """Edge: write and delete files under `workspace` so intake/ and work/ match `rows`, and return
-    the sorted list of paths touched. An empty `rows` means the store was unavailable, not an empty
-    board, so it changes nothing and returns []."""
-    if not rows:
-        return []
+def export_files(workspace: Path, rows: list[Row]) -> Export:
+    """Edge: write and delete files under `workspace` so intake/ and work/ match `rows`.
+    Returns the sorted paths touched and the ids of contentless rows skipped. Nothing under
+    intake/held/ or intake/done/ is deleted. Rows with no content to export mean the store was
+    unavailable or degraded, not an empty board, so the tree is left unchanged."""
+    skipped = skipped_ids(rows)
+    if len(skipped) == len(rows):
+        return Export([], skipped)
     workspace = Path(workspace)
     writes, deletes = plan_export(rows, _read_files(workspace))
     stop_at = {workspace, workspace / "intake", workspace / "work"}
@@ -65,4 +106,4 @@ def export_files(workspace: Path, rows: list[Row]) -> list[str]:
         full = workspace / path
         full.unlink()
         _prune_empty_dirs(full.parent, stop_at)
-    return sorted({path for path, _ in writes} | set(deletes))
+    return Export(sorted({path for path, _ in writes} | set(deletes)), skipped)
