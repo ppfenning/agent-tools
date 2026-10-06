@@ -179,7 +179,8 @@ def _cap_launches(
     actions: list[Action], cap: int, initiatives: list[InitiativeFacts], host_free: Sequence[HostSlot], home: Mapping[str, str],
     facts: Facts,
 ) -> tuple[list[Action], dict[str, int]]:
-    """A relaunch or retry goes to the machine with the most free lanes, this one included (_place_freest): a
+    """A relaunch or retry goes to the machine with the most free lanes, this one included unless its local lanes are
+    decompose-only (_place_freest): a
     tie goes to the initiative's home, then to this machine, then to the host _best_host ranks first. A host
     lacking the initiative's capabilities is skipped. A placement here carries no host, one elsewhere carries
     host, and a paired clear_branches always runs locally. A move off a remote home plans a fetch of its newest
@@ -236,7 +237,10 @@ def _cap_launches(
         taken_so_far[host] = taken_so_far.get(host, 0) + 1
     # A move off a remote home needs a fetch of its branches; with none to fetch the initiative stays pinned there.
     free_fetches = {i: _home_fetch(i, facts["approved"]) for i in freest_initiatives if home.get(i)}
-    local_left = max(0, cap - local_used - min(len(unhomed_at), max(0, cap - local_used)))
+    # Decompose-only local lanes take no relaunch or retry: the freest machine is then always a lane host (2026-10-06,
+    # chair-widens and each-release were placed on the decompose-only Mac).
+    decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
+    local_left = 0 if decompose_only else max(0, cap - local_used - min(len(unhomed_at), max(0, cap - local_used)))
     freest = _place_freest(
         [
             (

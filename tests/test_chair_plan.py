@@ -407,6 +407,17 @@ def test_a_chair_homed_relaunch_moves_to_a_lane_host_when_local_lanes_are_decomp
 
 
 # The chair is freest here (no live run of its own), so the freest-host rule also keeps it local: a tie goes to the home.
+def test_an_unhomed_relaunch_never_takes_a_decompose_only_local_lane_even_when_the_chair_is_freest(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    facts = _facts(
+        dispatch={**_two_host_dispatch(), "max_in_flight": 3, "live_runs": 0, "local_lanes": "decompose"},
+        run_exited={"a": True},
+    )
+    planned = plan_tick(facts)
+    relaunch = [a for a in planned if a["kind"] == "relaunch"]
+    assert relaunch and relaunch[0].get("host") in ("jarvis", "friday")
+
+
 @pytest.mark.parametrize("dispatch_extra", [{"live_runs": 0}, {"live_runs": 0, "local_lanes": "any"}])
 def test_a_chair_homed_relaunch_stays_local_when_the_setting_is_absent_or_not_decompose(monkeypatch, dispatch_extra):
     _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
