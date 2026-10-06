@@ -5410,6 +5410,15 @@ def _chair_meter(
     return local, "est"
 
 
+def _tolerant_cost_since(runs_dir, since: str) -> float | None:
+    """Edge. The store's spend since `since`, or None on any store error, so a broken store falls back to the usage
+    files instead of failing the gate and every surface that narrates it (route context still prints its docket)."""
+    try:
+        return run_store.cost_since(Path(runs_dir), since)
+    except (*run_store._db_errors(), ValueError, TypeError, RuntimeError):  # RuntimeError: psycopg not installed
+        return None
+
+
 def _usage_assessment(
     runs_dir, window_ceiling_usd: float | None = None, weekly_ceiling_usd: float | None = None,
     weekly_reset: str | None = None,
@@ -5452,7 +5461,7 @@ def _usage_assessment(
     # also hold runs fetched from or synced with other machines (jarvis read $4093 against a store $1349, 2026-10-06).
     estimate_weekly = usage_window.gather_weekly(
         runs_dir, now, weekly_ceiling, usage=usage, reset=reset,
-        store_spend=lambda since: run_store.cost_since(runs_dir, since),
+        store_spend=lambda since: _tolerant_cost_since(runs_dir, since),
     )
     weekly_usable = (
         usage_meter.usable_percentage(
