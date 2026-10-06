@@ -213,6 +213,49 @@ def test_cli_runs_top_once_prints_the_header(tmp_path, capsys):
     assert "RUN" in capsys.readouterr().out
 
 
+def _terminals(monkeypatch, coxtop: bool, tty: bool) -> list:
+    """Stdin and stdout report `tty`; `which` finds coxtop when asked; `os.execv` is recorded, not run."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: tty)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/coxtop" if coxtop else None)
+    calls = []
+    monkeypatch.setattr("os.execv", lambda path, argv: calls.append((path, argv)))
+    return calls
+
+
+def test_cli_runs_top_on_a_terminal_with_coxtop_execs_it_and_prints_no_table(tmp_path, monkeypatch, capsys):
+    calls = _terminals(monkeypatch, coxtop=True, tty=True)
+
+    rc = cli.main(["runs", "top", "--runs-dir", str(tmp_path)])
+
+    assert rc == 0
+    assert calls == [("/usr/bin/coxtop", ["/usr/bin/coxtop"])]
+    assert "RUN" not in capsys.readouterr().out
+
+
+def test_cli_runs_top_without_a_terminal_prints_what_once_prints(tmp_path, monkeypatch, capsys):
+    calls = _terminals(monkeypatch, coxtop=True, tty=False)
+    argv = ["runs", "top", "--runs-dir", str(tmp_path)]
+
+    assert cli.main(argv) == 0
+    plain = capsys.readouterr().out
+    assert cli.main([*argv, "--once"]) == 0
+
+    assert plain == capsys.readouterr().out
+    assert plain.splitlines()[-1] == "all lanes clear"
+    assert calls == []
+
+
+def test_cli_runs_top_once_never_execs_coxtop_even_on_a_terminal(tmp_path, monkeypatch, capsys):
+    calls = _terminals(monkeypatch, coxtop=True, tty=True)
+
+    rc = cli.main(["runs", "top", "--runs-dir", str(tmp_path), "--once"])
+
+    assert rc == 0
+    assert calls == []
+    assert "RUN" in capsys.readouterr().out
+
+
 def test_loop_enter_expands_the_row_in_place_and_enter_again_collapses_it(tmp_path):
     _write(tmp_path / "r1.pid", "123")
     _write(tmp_path / "r1.log", "n1 verdict: land\n")
