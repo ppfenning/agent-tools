@@ -8,16 +8,18 @@ from typing import Literal
 
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_remedy import remedy_for, trim_reason
+from agent_tools.chair_revert import revert_stopped
 from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask, RunningInitiative
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
 
-Recovery = Literal["rescue", "retry", "needs_chair", "none"]
+Recovery = Literal["rescue", "retry", "needs_chair", "relaunch", "none"]
 
 STRANDED_CAUSE = "stranded"
+MAIN_RED_CAUSE = "main_red"
 
 
-def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]]) -> Recovery:
+def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]], outcomes: Mapping[str, list[str]]) -> Recovery:
     # A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: no harness_failures
     # count, retry count or approval state ever turns it into a retry or a rescue.
     if q["cause"] == RUNAWAY_CAUSE:
@@ -28,6 +30,10 @@ def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]]) -> Recovery:
     # another phase of the same initiative still matches.
     if q["cause"] == STRANDED_CAUSE and (q["initiative"], q["task_id"]) in approved:
         return "none"
+    # A main_red quarantine recovers by the ordinary relaunch pair until two reverts in a row. Then it plans
+    # nothing and still blocks its initiative (_blocks): relaunching onto a main that keeps going red stacks work on it.
+    if q["cause"] == MAIN_RED_CAUSE:
+        return "none" if revert_stopped(outcomes.get(q["initiative"], [])) else "relaunch"
     # harness_failures == 0 on a harness cause is not a case the rules name; the chair looks at it.
     if q["cause"] != "harness" or q["harness_failures"] != 1:
         return "needs_chair"
@@ -62,13 +68,20 @@ def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
     return {"kind": kind, "task_id": q["task_id"], "initiative": q["initiative"]}
 
 
-def _quarantine_actions(quarantines: list[QuarantineFacts], approved: set[tuple[str, str]]) -> list[Action]:
-    kinds = [(q, _recovery(q, approved)) for q in quarantines]
+def _blocks(q: QuarantineFacts, kind: Recovery) -> bool:
+    """A "relaunch" recovery leaves the relaunch pair to _relaunch_actions; a stopped main_red keeps blocking it."""
+    return False if kind == "relaunch" else kind != "none" or q["cause"] == MAIN_RED_CAUSE
+
+
+def _quarantine_actions(
+    quarantines: list[QuarantineFacts], approved: set[tuple[str, str]], outcomes: Mapping[str, list[str]]
+) -> list[Action]:
+    kinds = [(q, _recovery(q, approved, outcomes)) for q in quarantines]
     chair = {q["initiative"] for q, kind in kinds if kind == "needs_chair"}
     return [
         _quarantine_action(q, kind)
         for q, kind in kinds
-        if kind != "none" and (kind == "needs_chair" or q["initiative"] not in chair)
+        if kind not in ("none", "relaunch") and (kind == "needs_chair" or q["initiative"] not in chair)
     ]
 
 
@@ -215,7 +228,9 @@ def plan_recover(facts: Facts) -> list[Action]:
 
     An initiative whose repo has a land in `landing` gets no relaunch pair, so the pair never takes a launch slot.
 
-    Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
+    Every open quarantine blocks its initiative's relaunch except one whose recovery is "none" or "relaunch".
+    A main_red quarantine recovers by relaunch until `land_outcomes` for its initiative ends in two reverts.
+    Then its recovery is "none" and it keeps blocking.
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
     rescued, whatever its harness_failures, retry count or approval state.
     A one-failure harness quarantine is rescued if it kept a patch, retried if not, and goes to the chair once a
@@ -227,10 +242,11 @@ def plan_recover(facts: Facts) -> list[Action]:
     quarantines = facts["quarantines"]
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     deaths = facts.get("schema_deaths", {})
-    blocked = {q["initiative"] for q in quarantines if _recovery(q, approved) != "none"} | set(deaths)
+    outcomes = facts.get("land_outcomes", {})
+    blocked = {q["initiative"] for q in quarantines if _blocks(q, _recovery(q, approved, outcomes))} | set(deaths)
     return _steered(
         _schema_death_actions(deaths)
-        + _without_schema_dead_launches(_quarantine_actions(quarantines, approved), deaths)
+        + _without_schema_dead_launches(_quarantine_actions(quarantines, approved, outcomes), deaths)
         + _relaunch_actions(facts["initiatives"], blocked, _landing_repos(facts))
         + _waiting_actions(facts["initiatives"], blocked),
         facts,

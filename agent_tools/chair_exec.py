@@ -41,6 +41,9 @@ from agent_tools import (
 from agent_tools.chair_carry_exec import ForgePort, GitPort, StorePort, perform_carry
 from agent_tools.chair_facts import STRANDED_CAUSE
 from agent_tools.chair_rebase_exec import RebasePort, perform_rebase
+from agent_tools.chair_revert_exec import MERGED, RevertResult, perform_revert
+from agent_tools.chair_revert_exec import ForgePort as RevertForgePort
+from agent_tools.chair_revert_exec import GitPort as RevertGitPort
 from agent_tools.chair_types import Action, LandTrigger, is_fenced
 from agent_tools.land import approve_to_done
 from agent_tools.remote_argv import LANE_HOST_TIMEOUT_S, ssh_argv, sync_argv
@@ -141,6 +144,9 @@ class Deps:
     carry_ports: Callable[[Action], tuple[GitPort, ForgePort, StorePort]] | None = None  # a carry_phase's ports; None refuses it
     rebase_port: Callable[[Action], RebasePort] | None = None  # a rebase_phase's port; None refuses it
     set_lanes: Callable[[str, int], int] | None = None  # a tune_lanes's (host, count) -> exit code; None refuses it
+    revert_ports: Callable[[Action], tuple[RevertGitPort, RevertForgePort]] | None = None  # a revert_land's ports; None refuses it
+    quarantine_phase: Callable[[str, str, str, str], None] | None = None  # (initiative, phase, cause, reason): quarantines that phase's tasks
+    resolve_land: Callable[[str, str, str], None] | None = None  # (initiative, phase, outcome): the store's resolve write for a land
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
@@ -777,6 +783,35 @@ def _rebase_phase(action: Action, deps: Deps) -> Result:
     return perform_rebase(action, deps.rebase_port(action))
 
 
+def revert_outcome(action: Action, reverted: RevertResult) -> tuple[str, str]:
+    """The needs_chair (cause, reason) for a revert: main_red once merged, else revert_failed, which says main is still red."""
+    if reverted.status == MERGED:
+        return "main_red", f"main went red after PR #{action.get('pr', 0)}; reverted {action.get('commit', '')} in {reverted.pr}"
+    return "revert_failed", f"{reverted.detail}; main is still red after the revert of {action.get('commit', '')}"
+
+
+def _revert_land(action: Action, deps: Deps) -> Result:
+    """Edge. `perform_revert` over the wired ports, then quarantine the phase whatever the status, so no relaunch stacks onto
+    a red main. The land is resolved as reverted only when the revert merged; a failed one is planned again next tick."""
+    if deps.revert_ports is None or deps.quarantine_phase is None or deps.resolve_land is None:
+        return _result(action, "refused", "revert_land needs wired revert ports, quarantine and resolve writers")
+    initiative, phase = action.get("initiative", ""), action.get("phase", "")
+    git, forge = deps.revert_ports(action)
+    try:
+        reverted = perform_revert(action.get("repo", ""), action.get("pr", 0), action.get("commit", ""), action.get("reason", ""), git, forge)
+    except Exception as exc:  # the edge: a port failure is a failed revert, and main is still red
+        reverted = RevertResult("failed", "", f"revert raised {type(exc).__name__}: {exc}")
+    deps.quarantine_phase(initiative, phase, "main_red", action.get("reason", ""))
+    if reverted.status == MERGED:
+        deps.resolve_land(initiative, phase, "reverted")
+    cause, reason = revert_outcome(action, reverted)
+    raised: Action = {
+        "kind": "needs_chair", "initiative": initiative, "phase": phase, "cause": cause,
+        "epoch": action.get("epoch", 0), "reason": reason,
+    }
+    return {**_result(action, "done" if reverted.status == MERGED else "failed", reason), "needs_chair": raised}
+
+
 def _steer_reason(action: Action) -> str:
     """`steer clear of <other>: <paths joined by comma>`, cut to 200 characters."""
     return f"steer clear of {action.get('other', '')}: {','.join(action.get('paths', []))}"[:200]
@@ -801,6 +836,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _carry_phase(action, deps)
     if kind == "rebase_phase":
         return _rebase_phase(action, deps)
+    if kind == "revert_land":
+        return _revert_land(action, deps)
     if kind == "take_lease":
         return _lease(action, deps)
     if kind == "check_login":
@@ -934,7 +971,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             escalated = _escalate(action, result)
             deps.record(_recorded(escalated))
             results.append(escalated)
-        if action.get("kind") in ("clear_branches", "review_landed", "carry_phase", "rebase_phase") and "needs_chair" in result:
+        if action.get("kind") in ("clear_branches", "review_landed", "carry_phase", "rebase_phase", "revert_land") and "needs_chair" in result:
             carried = _result(result["needs_chair"], "recorded", result["needs_chair"].get("reason", ""))
             deps.record(_recorded(carried))
             results.append(carried)

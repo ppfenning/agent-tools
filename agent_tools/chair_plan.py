@@ -25,6 +25,7 @@ from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_plan_tune import plan_tune
 from agent_tools.chair_rebase import plan_rebase
+from agent_tools.chair_revert import revert_check
 from agent_tools.chair_types import (
     Action,
     ApprovedTask,
@@ -580,6 +581,7 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
 
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
+    reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
     lands = _without_carried_lands(plan_lands(facts), carries)
     fetch_exits = _fetch_exit_actions(facts)
@@ -602,6 +604,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)], held)
     if facts["limits"]["hard_stop"]:
         return [
+            *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
             *lands,
             *fetch_exits,
             *stale,
@@ -642,6 +645,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
     rebases = plan_rebase(facts.get("phase_branches", []), relaunching)
     return [
+        *reverts,
         *lands,
         *fetch_exits,
         *stale,
