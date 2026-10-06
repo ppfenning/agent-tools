@@ -2,7 +2,7 @@ import copy
 from datetime import UTC, datetime, timedelta
 
 from agent_tools.chair_facts import initiative_facts
-from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_stall, plan_tick
+from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_idle_stall, plan_stall, plan_tick
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_types import Facts
 
@@ -440,6 +440,141 @@ def test_a_stalled_run_passes_through_plan_tick_uncounted_at_the_hard_stop():
         last_housekeeping_at="2026-09-27T11:00:00+00:00",
     )
     assert plan_tick(facts, _NOW) == [{"kind": "stalled_usr1", "run": "r1", "initiative": "i", "epoch": 7}]
+
+
+def _idle_inputs(**overrides) -> dict:
+    return {
+        "free_lanes": 1,
+        "ready": 1,
+        "queued": 0,
+        "last_progress_at": "2026-09-27T11:40:00Z",
+        "stall_minutes": 15,
+        "hosts": [],
+        "empty_stubs": [],
+        "lands_waiting": [],
+        "blocked_ready": [],
+        "open_signature": None,
+        "open_diagnosis": None,
+        **overrides,
+    }
+
+
+def _idle_action(subject: str, reason: str) -> dict:
+    return {
+        "kind": "needs_chair",
+        "initiative": subject,
+        "cause": "idle_stall",
+        "reason": reason,
+        "signature": None,
+    }
+
+
+def test_a_failed_host_plans_one_idle_stall_needs_chair_naming_the_host():
+    inputs = _idle_inputs(hosts=[{"host": "box1", "ok": False, "detail": "ssh timed out"}])
+    assert plan_idle_stall(inputs, _NOW) == [
+        {**_idle_action("box1", "host box1 failed its check: ssh timed out"), "signature": "host:box1"}
+    ]
+
+
+def test_an_empty_stub_plans_one_idle_stall_needs_chair():
+    assert plan_idle_stall(_idle_inputs(empty_stubs=["init-a"]), _NOW) == [
+        {
+            **_idle_action("init-a", "the intake has an initiative stub and no tasks: init-a"),
+            "signature": "stub:init-a",
+        }
+    ]
+
+
+def test_a_land_waiting_with_checks_not_started_quotes_the_forge_status():
+    land = {
+        "run": "r1",
+        "pr": "42",
+        "waiting_since": "2026-09-27T11:00:00Z",
+        "checks_started": False,
+        "forge_status": "pending",
+    }
+    assert plan_idle_stall(_idle_inputs(lands_waiting=[land]), _NOW) == [
+        {
+            **_idle_action("r1", "run r1 pr 42 has not started its checks, forge status: 'pending'"),
+            "signature": "land_ci:r1",
+        }
+    ]
+
+
+def test_a_task_blocked_by_unlanded_needs_plans_one_idle_stall_needs_chair():
+    blocked = [{"task": "t9", "unlanded_needs": ["a", "b"]}]
+    assert plan_idle_stall(_idle_inputs(blocked_ready=blocked), _NOW) == [
+        {**_idle_action("t9", "task t9 waits on unlanded needs: a, b"), "signature": "blocked_needs:t9"}
+    ]
+
+
+def test_an_unexplained_stall_plans_one_idle_stall_needs_chair_with_the_counts():
+    assert plan_idle_stall(_idle_inputs(queued=2), _NOW) == [
+        {
+            **_idle_action("chair", "unknown free_lanes=1 ready=1 queued=2 lands_waiting=0"),
+            "signature": "unknown:chair",
+        }
+    ]
+
+
+def test_a_stall_fourteen_minutes_old_plans_nothing():
+    assert plan_idle_stall(_idle_inputs(last_progress_at="2026-09-27T11:46:00Z"), _NOW) == []
+
+
+def test_a_stall_fifteen_minutes_old_plans_one():
+    assert _kinds(plan_idle_stall(_idle_inputs(last_progress_at="2026-09-27T11:45:00Z"), _NOW)) == ["needs_chair"]
+
+
+def test_a_stall_already_recorded_under_the_same_signature_plans_nothing():
+    assert plan_idle_stall(_idle_inputs(open_signature="unknown:chair"), _NOW) == []
+
+
+def test_a_stall_recorded_under_a_different_signature_plans_one():
+    actions = plan_idle_stall(_idle_inputs(open_signature="host:box1"), _NOW)
+    assert [(a["cause"], a["signature"]) for a in actions] == [("idle_stall", "unknown:chair")]
+
+
+def test_no_inputs_plan_nothing():
+    assert plan_idle_stall(None, _NOW) == []
+
+
+_QUIET_HOUSEKEEPING = "2026-09-27T11:00:00+00:00"
+
+
+def test_facts_with_no_idle_stall_key_plan_nothing_from_the_rule():
+    assert plan_tick(_facts(last_housekeeping_at=_QUIET_HOUSEKEEPING), _NOW) == []
+
+
+def test_plan_tick_stamps_the_idle_stall_action_with_the_lease_epoch():
+    facts = _facts(idle_stall=_idle_inputs(), last_housekeeping_at=_QUIET_HOUSEKEEPING)
+    assert plan_tick(facts, _NOW) == [
+        {**_idle_action("chair", "unknown free_lanes=1 ready=1 queued=0 lands_waiting=0"), "signature": "unknown:chair", "epoch": 7}
+    ]
+
+
+def test_the_idle_stall_action_passes_the_hard_stop_and_a_zero_launch_cap():
+    limits = {"hard_stop": True, "weekly_fraction": 0.95, "hard_stop_fraction": 0.9, "launch_cap": 0, "go_degraded": False}
+    facts = _facts(limits=limits, idle_stall=_idle_inputs(), last_housekeeping_at=_QUIET_HOUSEKEEPING)
+    assert [a["cause"] for a in plan_tick(facts, _NOW)] == ["idle_stall"]
+
+
+def test_the_idle_stall_action_is_not_counted_against_the_launch_cap():
+    limits = {"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False}
+    facts = _facts(
+        limits=limits,
+        initiatives=[_initiative("a"), _initiative("b"), _initiative("c")],
+        run_exited={"a": True, "b": True, "c": True},
+        idle_stall=_idle_inputs(),
+        last_housekeeping_at=_QUIET_HOUSEKEEPING,
+    )
+    actions = plan_tick(facts, _NOW)
+    assert [(a["kind"], a["initiative"]) for a in actions] == [
+        ("needs_chair", "chair"),
+        ("clear_branches", "a"),
+        ("relaunch", "a"),
+        ("clear_branches", "b"),
+        ("relaunch", "b"),
+    ]
 
 
 def test_free_lanes_is_the_launch_cap_minus_kept_launches_when_the_cap_binds():
