@@ -476,7 +476,7 @@ def test_usage_assessment_falls_back_to_the_estimate_when_the_meter_reading_is_p
         seen_ceilings["five_hour"] = ceiling_usd
         return _tagged_window(222.0)
 
-    def _gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None, reset=None):
+    def _gather_weekly(runs_dir, now, weekly_ceiling_usd=None, usage=None, reset=None, store_spend=None):
         seen_ceilings["weekly"] = weekly_ceiling_usd
         return _tagged_window(444.0)
 
@@ -1101,3 +1101,18 @@ def test_runs_top_once_prints_the_short_id_for_a_run_whose_slug_has_one(tmp_path
     out = capsys.readouterr().out
     assert "I412" in out and "my-slug-3" not in out
     assert "other-1" in out
+
+
+def test_usage_assessment_estimates_the_weekly_figure_from_the_stores_spend(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.usage_meter, "read", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_chair_meter", lambda local, now, runs_dir: (None, "est"))
+    monkeypatch.setattr(cli.usage_meter, "implied_ceiling", lambda kind, now: None)
+    monkeypatch.setattr(cli.usage_window, "gather", lambda *a, **k: _tagged_window(1.0))
+    monkeypatch.setattr(cli.run_store, "cost_since", lambda runs_dir, since: (runs_dir, since))
+    seen: dict = {}
+    monkeypatch.setattr(cli.usage_window, "gather_weekly", lambda *a, **k: seen.update(k) or _tagged_window(2.0))
+    _capture_assess(monkeypatch)
+
+    cli._usage_assessment(tmp_path, 50.0, 200.0, None)
+
+    assert seen["store_spend"]("2026-10-04") == (tmp_path, "2026-10-04")

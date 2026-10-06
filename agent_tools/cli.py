@@ -5448,7 +5448,12 @@ def _usage_assessment(
     weekly_ceiling = usage_meter.implied_ceiling("weekly", now)
     if weekly_ceiling is None:
         weekly_ceiling = weekly_ceiling_usd
-    estimate_weekly = usage_window.gather_weekly(runs_dir, now, weekly_ceiling, usage=usage, reset=reset)
+    # The store's spend, the same source the chair's facts and the console read: a lane host's own usage files
+    # also hold runs fetched from or synced with other machines (jarvis read $4093 against a store $1349, 2026-10-06).
+    estimate_weekly = usage_window.gather_weekly(
+        runs_dir, now, weekly_ceiling, usage=usage, reset=reset,
+        store_spend=lambda since: run_store.cost_since(runs_dir, since),
+    )
     weekly_usable = (
         usage_meter.usable_percentage(
             "weekly", meter.seven_day, meter.observed_at, now, Path(runs_dir), weekly_ceiling,
