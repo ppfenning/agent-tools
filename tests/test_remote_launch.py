@@ -6,7 +6,7 @@ import pytest
 from agent_tools.lane_hosts import LaneHost
 from agent_tools.remote_argv import launch_argv, ssh_argv, sync_argv
 from agent_tools.remote_lane import remote_record
-from agent_tools.remote_launch import LaunchError, env_preflight, launch_on_host, launch_plan
+from agent_tools.remote_launch import LaunchError, Relaunch, env_preflight, launch_on_host, launch_plan
 
 needs_rsync = pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
 SSH_BOUND = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
@@ -185,3 +185,76 @@ def test_env_preflight_names_the_first_empty_variable_and_is_none_when_all_are_s
 def test_env_preflight_reports_a_failed_ssh_and_an_empty_name_list_without_calling_them_unset():
     assert env_preflight(("K",), {"K": (255, "ssh: Connection refused\n")}) == "env var check failed on the host: ssh: Connection refused"
     assert env_preflight((), {}) == "no auth_env or endpoint_env configured: nothing to check on the host"
+
+
+REPO = "/home/me/repos/proj"
+EPIC_PUSH = [
+    "git", "-C", "/home/me/repos/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+    "refs/heads/epic/init/*:refs/heads/epic/init/*",
+]
+AGENT_PUSH = [
+    "git", "-C", "/home/me/repos/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+    "refs/heads/agents/init-1/t1:refs/heads/agents/init-1/t1",
+]
+
+
+def test_a_relocated_launch_plan_pushes_the_branches_before_the_launch_step():
+    host = LaneHost("box", "me@box", "/ws")
+    plan = launch_plan(host, "init", "r2", "lbl", None, REPO, None, Relaunch("init-1", ("t1",)))
+    assert plan[1] == ssh_argv("me@box", sync_argv(REPO))
+    assert plan[2:4] == [EPIC_PUSH, AGENT_PUSH]
+    assert plan[-1] == ssh_argv("me@box", launch_argv("/ws/work/init", "r2", "lbl"))
+    assert len(plan) == 5
+
+
+def test_a_plain_launch_plan_has_no_push_step():
+    host = LaneHost("box", "me@box", "/ws")
+    plan = launch_plan(host, "init", "r2", "lbl", None, REPO)
+    assert [argv[0] for argv in plan] == ["rsync", "ssh", "ssh"]
+    assert plan == launch_plan(host, "init", "r2", "lbl", None, REPO, None, None)
+
+
+def test_a_failed_push_returns_a_launch_error_and_never_runs_the_launch_step():
+    host, calls = LaneHost("box", "me@box", "/ws"), []
+
+    def run(argv):
+        calls.append(argv)
+        return 1 if argv[0] == "git" else 0
+
+    result = launch_on_host(host, "init", "r2", "lbl", "t", run, lambda p: p, REPO, None, Relaunch("init-1", ("t1",)))
+    assert isinstance(result, LaunchError)
+    assert result.step == "push"
+    assert "box" in result.message and "epic/init/*" in result.message
+    assert calls[-1] == EPIC_PUSH
+    assert ssh_argv("me@box", launch_argv("/ws/work/init", "r2", "lbl")) not in calls
+
+
+def test_a_failed_agents_push_names_that_branch_and_never_runs_the_launch_step():
+    host, calls = LaneHost("box", "me@box", "/ws"), []
+
+    def run(argv):
+        calls.append(argv)
+        return 128 if argv[-1].startswith("refs/heads/agents/") else 0
+
+    relaunch = Relaunch("init-1", ("t1", "t2"))
+    result = launch_on_host(host, "init", "r2", "lbl", "t", run, lambda p: p, REPO, None, relaunch)
+    assert result == LaunchError(
+        "push", "pushing agents/init-1/t1 to box exited 128: the lane would not have the initiative's branches"
+    )
+    assert calls[-2:] == [EPIC_PUSH, AGENT_PUSH]
+
+
+def test_a_relaunch_pushes_from_the_chairs_checkout_when_it_differs_from_the_hosts_repo():
+    host = LaneHost("box", "me@box", "/ws")
+    plan = launch_plan(host, "init", "r2", "lbl", None, REPO, None, Relaunch("init-1", (), "/srv/chair/proj"))
+    assert plan[2] == [
+        "git", "-C", "/srv/chair/proj", "push", "--force", "ssh://me@box/home/me/repos/proj",
+        "refs/heads/epic/init/*:refs/heads/epic/init/*",
+    ]
+
+
+def test_a_relaunch_without_a_repo_is_refused_before_anything_runs():
+    host, calls = LaneHost("box", "me@box", "/ws"), []
+    result = launch_on_host(host, "init", "r2", "lbl", "t", lambda argv: calls.append(argv) or 0, relaunch=Relaunch("init-1"))
+    assert result == LaunchError("push", "a relocated relaunch to box has no repo to push epic/init/* into: nothing was run")
+    assert calls == []
