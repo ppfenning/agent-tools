@@ -6,15 +6,18 @@ Local roots are bare paths: a `file://` prefix is stripped from the root and fro
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from collections.abc import Iterable
 
-from pyarrow.fs import FileSelector, FileType
 from pyiceberg.catalog import Catalog
-from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.table import Table
 
 from agent_tools.lake_tables import NAMESPACE
+
+# As in lake_sync: a missing pyarrow fails this import, outside the sync lease, without loading pyarrow.
+if importlib.util.find_spec("pyarrow") is None:
+    raise ModuleNotFoundError("No module named 'pyarrow'", name="pyarrow")
 
 __all__ = ["new_files", "register_traces", "trace_files"]
 
@@ -40,6 +43,9 @@ def new_files(found: Iterable[str], registered: Iterable[str]) -> list[str]:
 
 def _list_files(table: Table, root: str) -> list[str]:
     """Edge. Every file under root through the table's FileIO, spelled as root is; [] when root is absent."""
+    from pyarrow.fs import FileSelector, FileType
+    from pyiceberg.io.pyarrow import PyArrowFileIO  # imports pyarrow itself, so it stays lazy too
+
     scheme, netloc, path = PyArrowFileIO.parse_location(root)
     fs = table.io.fs_by_scheme(scheme, netloc)
     infos = fs.get_file_info(FileSelector(path, recursive=True, allow_not_found=True))

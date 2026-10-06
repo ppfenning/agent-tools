@@ -8,6 +8,7 @@ import contextlib
 import dataclasses
 import datetime
 import getpass
+import importlib
 import importlib.metadata
 import importlib.util
 import io
@@ -32,125 +33,166 @@ from pathlib import Path
 
 import yaml
 
-from agent_tools import (
-    chair,
-    chair_capacity,
-    chair_exec,
-    chair_facts,
-    chair_pid_probe,
-    chair_read_approved,
-    chair_read_attempts,
-    chair_read_docket,
-    chair_read_exits,
-    chair_read_housekeeping,
-    chair_read_idle_backlog,
-    chair_read_idle_hosts,
-    chair_read_idle_lands,
-    chair_read_idle_open,
-    chair_read_intake,
-    chair_read_lease,
-    chair_read_live,
-    chair_read_lost,
-    chair_read_patch,
-    chair_read_quarantined,
-    chair_read_record,
-    chair_read_remote_unfetched,
-    chair_read_run_id,
-    chair_read_stale,
-    chair_read_stall,
-    chair_read_stranded,
-    chair_report,
-    chair_run,
-    chair_service,
-    chair_service_host,
-    chair_smoke,
-    cleanup,
-    commands,
-    console_screen,
-    courier,
-    coxtop_launch,
-    dash_detail_health,
-    dash_detail_initiative,
-    dash_detail_machine,
-    dash_detail_release,
-    dash_detail_run,
-    dash_detail_spend,
-    dash_feed,
-    decisions,
-    doctor,
-    draft_apply,
-    draft_list,
-    epic,
-    forge,
-    forge_github,
-    generate,
-    host_cmd,
-    install,
-    install_exec,
-    lake_config,
-    lake_lease,
-    land,
-    land_lease,
-    land_repo_lease,
-    lane_hosts,
-    leader_chat,
-    notify,
-    pacing,
-    plan,
-    provenance,
-    queue_rows,
-    records,
-    remote_doctor,
-    remote_fetch,
-    remote_lane,
-    remote_launch,
-    review_pr,
-    route,
-    route_drift,
-    route_edit,
-    route_guard,
-    route_import,
-    route_remove,
-    route_sync,
-    route_sync_gh,
-    router,
-    run_logs,
-    run_store,
-    runs_bar,
-    runs_detail,
-    runs_detail_screen,
-    runs_move,
-    runs_stop,
-    runs_stranded,
-    runs_top,
-    runs_top_screen,
-    schema,
-    setup_install,
-    sources,
-    stats_causes,
-    stats_chair,
-    stats_efficiency,
-    stats_examples,
-    stats_gates,
-    stats_ingest,
-    stats_lanes,
-    stats_models_cmd,
-    stats_query,
-    stats_schema,
-    stats_system_one,
-    stats_tiers_cmd,
-    steward,
-    steward_draft,
-    store_cli,
-    store_dialect,
-    store_url,
-    tracker,
-    usage_meter,
-    usage_window,
-    work_state,
-)
-from agent_tools import runs as runs_module
-from agent_tools.remote_argv import auth_status_argv, env_check_argv, ssh_argv
+from agent_tools import commands
+
+
+# Importing `agent_tools.cli` does not import the command modules: a name like `chair` below is a
+# `_LazyModule`, not the module. Writes reach the real module, so `monkeypatch.setattr(cli.chair, ...)` holds.
+class _LazyModule:
+    """A module imported with importlib on its first attribute read; writes and deletes go to the real module."""
+
+    def __init__(self, path: str) -> None:
+        object.__setattr__(self, "_lazy_path", path)
+
+    def _lazy_load(self) -> types.ModuleType:
+        return importlib.import_module(self._lazy_path)
+
+    def __getattr__(self, name: str):
+        return getattr(self._lazy_load(), name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        setattr(self._lazy_load(), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(self._lazy_load(), name)
+
+    def __repr__(self) -> str:
+        return f"<lazy module {self._lazy_path}>"
+
+
+@dataclasses.dataclass(frozen=True)
+class _LazyHandler:
+    """A `"dotted.module:function"` table entry; calling it imports the module with importlib, not before."""
+
+    target: str
+
+    def __call__(self, *args, **kwargs):
+        module_path, _, func = self.target.partition(":")
+        return getattr(importlib.import_module(module_path), func)(*args, **kwargs)
+
+
+chair = _LazyModule("agent_tools.chair")
+chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_exec = _LazyModule("agent_tools.chair_exec")
+chair_facts = _LazyModule("agent_tools.chair_facts")
+chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
+chair_read_approved = _LazyModule("agent_tools.chair_read_approved")
+chair_read_attempts = _LazyModule("agent_tools.chair_read_attempts")
+chair_read_docket = _LazyModule("agent_tools.chair_read_docket")
+chair_read_exits = _LazyModule("agent_tools.chair_read_exits")
+chair_read_housekeeping = _LazyModule("agent_tools.chair_read_housekeeping")
+chair_read_idle_backlog = _LazyModule("agent_tools.chair_read_idle_backlog")
+chair_read_idle_hosts = _LazyModule("agent_tools.chair_read_idle_hosts")
+chair_read_idle_lands = _LazyModule("agent_tools.chair_read_idle_lands")
+chair_read_idle_open = _LazyModule("agent_tools.chair_read_idle_open")
+chair_read_intake = _LazyModule("agent_tools.chair_read_intake")
+chair_read_lease = _LazyModule("agent_tools.chair_read_lease")
+chair_read_live = _LazyModule("agent_tools.chair_read_live")
+chair_read_lost = _LazyModule("agent_tools.chair_read_lost")
+chair_read_patch = _LazyModule("agent_tools.chair_read_patch")
+chair_read_quarantined = _LazyModule("agent_tools.chair_read_quarantined")
+chair_read_record = _LazyModule("agent_tools.chair_read_record")
+chair_read_remote_unfetched = _LazyModule("agent_tools.chair_read_remote_unfetched")
+chair_read_run_id = _LazyModule("agent_tools.chair_read_run_id")
+chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
+chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
+chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
+chair_report = _LazyModule("agent_tools.chair_report")
+chair_run = _LazyModule("agent_tools.chair_run")
+chair_service = _LazyModule("agent_tools.chair_service")
+chair_service_host = _LazyModule("agent_tools.chair_service_host")
+chair_smoke = _LazyModule("agent_tools.chair_smoke")
+cleanup = _LazyModule("agent_tools.cleanup")
+console_screen = _LazyModule("agent_tools.console_screen")
+courier = _LazyModule("agent_tools.courier")
+coxtop_launch = _LazyModule("agent_tools.coxtop_launch")
+dash_detail_health = _LazyModule("agent_tools.dash_detail_health")
+dash_detail_initiative = _LazyModule("agent_tools.dash_detail_initiative")
+dash_detail_machine = _LazyModule("agent_tools.dash_detail_machine")
+dash_detail_release = _LazyModule("agent_tools.dash_detail_release")
+dash_detail_run = _LazyModule("agent_tools.dash_detail_run")
+dash_detail_spend = _LazyModule("agent_tools.dash_detail_spend")
+dash_feed = _LazyModule("agent_tools.dash_feed")
+decisions = _LazyModule("agent_tools.decisions")
+doctor = _LazyModule("agent_tools.doctor")
+draft_apply = _LazyModule("agent_tools.draft_apply")
+draft_list = _LazyModule("agent_tools.draft_list")
+epic = _LazyModule("agent_tools.epic")
+forge = _LazyModule("agent_tools.forge")
+forge_github = _LazyModule("agent_tools.forge_github")
+generate = _LazyModule("agent_tools.generate")
+host_cmd = _LazyModule("agent_tools.host_cmd")
+install = _LazyModule("agent_tools.install")
+install_exec = _LazyModule("agent_tools.install_exec")
+lake_config = _LazyModule("agent_tools.lake_config")
+lake_lease = _LazyModule("agent_tools.lake_lease")
+land = _LazyModule("agent_tools.land")
+land_lease = _LazyModule("agent_tools.land_lease")
+land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
+lane_hosts = _LazyModule("agent_tools.lane_hosts")
+leader_chat = _LazyModule("agent_tools.leader_chat")
+notify = _LazyModule("agent_tools.notify")
+pacing = _LazyModule("agent_tools.pacing")
+plan = _LazyModule("agent_tools.plan")
+provenance = _LazyModule("agent_tools.provenance")
+queue_rows = _LazyModule("agent_tools.queue_rows")
+records = _LazyModule("agent_tools.records")
+remote_argv = _LazyModule("agent_tools.remote_argv")
+remote_doctor = _LazyModule("agent_tools.remote_doctor")
+remote_fetch = _LazyModule("agent_tools.remote_fetch")
+remote_lane = _LazyModule("agent_tools.remote_lane")
+remote_launch = _LazyModule("agent_tools.remote_launch")
+review_pr = _LazyModule("agent_tools.review_pr")
+route = _LazyModule("agent_tools.route")
+route_drift = _LazyModule("agent_tools.route_drift")
+route_edit = _LazyModule("agent_tools.route_edit")
+route_guard = _LazyModule("agent_tools.route_guard")
+route_import = _LazyModule("agent_tools.route_import")
+route_remove = _LazyModule("agent_tools.route_remove")
+route_sync = _LazyModule("agent_tools.route_sync")
+route_sync_gh = _LazyModule("agent_tools.route_sync_gh")
+router = _LazyModule("agent_tools.router")
+run_logs = _LazyModule("agent_tools.run_logs")
+run_store = _LazyModule("agent_tools.run_store")
+runs_bar = _LazyModule("agent_tools.runs_bar")
+runs_detail = _LazyModule("agent_tools.runs_detail")
+runs_detail_screen = _LazyModule("agent_tools.runs_detail_screen")
+runs_module = _LazyModule("agent_tools.runs")
+runs_move = _LazyModule("agent_tools.runs_move")
+runs_stop = _LazyModule("agent_tools.runs_stop")
+runs_stranded = _LazyModule("agent_tools.runs_stranded")
+runs_top = _LazyModule("agent_tools.runs_top")
+runs_top_screen = _LazyModule("agent_tools.runs_top_screen")
+schema = _LazyModule("agent_tools.schema")
+setup_install = _LazyModule("agent_tools.setup_install")
+sources = _LazyModule("agent_tools.sources")
+stats_causes = _LazyModule("agent_tools.stats_causes")
+stats_chair = _LazyModule("agent_tools.stats_chair")
+stats_efficiency = _LazyModule("agent_tools.stats_efficiency")
+stats_examples = _LazyModule("agent_tools.stats_examples")
+stats_gates = _LazyModule("agent_tools.stats_gates")
+stats_ingest = _LazyModule("agent_tools.stats_ingest")
+stats_lanes = _LazyModule("agent_tools.stats_lanes")
+stats_models_cmd = _LazyModule("agent_tools.stats_models_cmd")
+stats_query = _LazyModule("agent_tools.stats_query")
+stats_schema = _LazyModule("agent_tools.stats_schema")
+stats_system_one = _LazyModule("agent_tools.stats_system_one")
+stats_tiers_cmd = _LazyModule("agent_tools.stats_tiers_cmd")
+steward = _LazyModule("agent_tools.steward")
+steward_draft = _LazyModule("agent_tools.steward_draft")
+store_cli = _LazyModule("agent_tools.store_cli")
+store_dialect = _LazyModule("agent_tools.store_dialect")
+store_url = _LazyModule("agent_tools.store_url")
+tracker = _LazyModule("agent_tools.tracker")
+usage_meter = _LazyModule("agent_tools.usage_meter")
+usage_window = _LazyModule("agent_tools.usage_window")
+work_state = _LazyModule("agent_tools.work_state")
+
+# Argument defaults the parser needs at build time, copied so `--help` imports no command module.
+# tests/test_cli_lazy_dispatch.py pins each to the module constant it copies.
+_STATS_CAUSES = ("ticket", "code", "harness", "unknown")  # stats_chair.CAUSES
+_GATES_MIN_SAMPLE = 50  # stats_gates.MIN_SAMPLE
+_CHAIR_RUN_INTERVAL = 60.0  # chair_run.DEFAULT_INTERVAL
 
 
 def _runs_usage(a: argparse.Namespace) -> int:
@@ -1571,9 +1613,6 @@ def _phase_needing_land(runs_dir: Path, run_id: str) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-_LAUNCH_ERROR = land.LAUNCH_ERROR
-
-
 def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, str]:
     """Each `(name, argv)` pair in order, stopping at the first launch error
     or failure and naming it by `name`, never by its argv or shell command."""
@@ -1582,7 +1621,7 @@ def _run_checks(checks: list[tuple[str, list[str]]], cwd: Path) -> tuple[bool, s
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
         except OSError as exc:
-            return False, land.checks_detail(f"{_LAUNCH_ERROR}{name}: {exc}", skipped)
+            return False, land.checks_detail(f"{land.LAUNCH_ERROR}{name}: {exc}", skipped)
         verdict = land.check_exit(argv, r.returncode)
         if verdict == "fail":
             return False, land.checks_detail(f"{name}: {(r.stderr or r.stdout).strip()}", skipped)
@@ -2066,8 +2105,8 @@ def _close_approved_item(item_path: str | None, *, runs_dir: Path, by: str, merg
     return None
 
 
-_await_checks = land.await_checks
-_wait_checks = forge_github.wait_checks
+_await_checks = _LazyHandler("agent_tools.land:await_checks")
+_wait_checks = _LazyHandler("agent_tools.forge_github:wait_checks")
 
 
 def _repo_is_dirty(repo: Path) -> bool:
@@ -2465,7 +2504,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # The sync may have just written `issue:`; the PR opened next must carry its `Closes`.
             steps = land.with_issue(steps, record, _land_item_facts(item_path)[1])
         pr = _landed_pr(step["kind"], ok, detail, pr)
-        if step["kind"] == "checks" and not ok and detail.startswith(_LAUNCH_ERROR):
+        if step["kind"] == "checks" and not ok and detail.startswith(land.LAUNCH_ERROR):
             # A check whose executable `subprocess` can't find is a refusal,
             # not an ordinary failure, and it fires before `push` so a check
             # that never ran leaves no pushed branch behind.
@@ -3829,7 +3868,8 @@ def _route_sync(a: argparse.Namespace) -> int:
     if mirror is None:
         print(f"route sync: no tracker named {tracker_choice} (built in: none, github-projects)")
         return 2
-    if mirror is not route_sync_gh:
+    # `route_sync_gh` here is a lazy proxy, so the identity test runs against the real module.
+    if mirror is not importlib.import_module("agent_tools.route_sync_gh"):
         return _route_sync_registered(a, tracker_choice, mirror, workspace)
     if not route_sync_gh.auth_ok(subprocess.run):
         print("route sync: gh is not authenticated; run `gh auth login`")
@@ -4174,10 +4214,10 @@ def _route_launch_on_host(
     # `setup doctor --host` helper once remote-doctor-runner-check lands one; do not write a second read.
     runner, env_names = chair_exec._login_runner_and_env(dict(provider))
     if runner == "claude-code":
-        preflight = remote_doctor.auth_verdict(_host_auth_output(ssh_argv(host.ssh, auth_status_argv())))
+        preflight = remote_doctor.auth_verdict(_host_auth_output(remote_argv.ssh_argv(host.ssh, remote_argv.auth_status_argv())))
     else:
         preflight = remote_launch.env_preflight(
-            env_names, {name: _host_env_probe(ssh_argv(host.ssh, env_check_argv(name))) for name in env_names}
+            env_names, {name: _host_env_probe(remote_argv.ssh_argv(host.ssh, remote_argv.env_check_argv(name))) for name in env_names}
         )
     result = remote_launch.launch_on_host(
         host, _initiative_path(runs_dir, a.initiative).name, run_id, _holder_label(a), launched_at, run, locate, repo, harness_dir,
@@ -5200,9 +5240,9 @@ def _tolerant_profile(a: argparse.Namespace) -> dict:
         return {}
 
 
-def _console(a: argparse.Namespace, launch=coxtop_launch.launch) -> int:
+def _console(a: argparse.Namespace, launch=None) -> int:
     """Open coxtop on a terminal; otherwise, and always with --once, print the one-shot text."""
-    if not a.once and launch():
+    if not a.once and (launch or coxtop_launch.launch)():
         return 0
     profile = _tolerant_profile(a)
     runs_dir = Path(a.runs_dir)
@@ -5469,12 +5509,12 @@ RUNS_COMMANDS = [
     commands.Command(
         "usage", "runs", "usage stats and cost for one run",
         (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
-        _runs_usage, False, (),
+        "agent_tools.cli:_runs_usage", False, (),
     ),
     commands.Command(
         "trace", "runs", "the tool-call trace for one run",
         (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--role",)), commands.Arg(("-v", "--verbose"), {"action": "store_true"})),
-        _runs_trace, False, (),
+        "agent_tools.cli:_runs_trace", False, (),
     ),
     commands.Command(
         "clean", "runs", "delete a run's worktree and branches locally",
@@ -5483,7 +5523,7 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--apply",), {"action": "store_true"}), commands.Arg(("--force",), {"action": "store_true", "help": "delete every branch regardless of whether its task is on main"}),
         ),
-        _runs_clean, False, (),
+        "agent_tools.cli:_runs_clean", False, (),
     ),
     commands.Command(
         "land", "runs", "merge a run's branch into the target repo",
@@ -5496,7 +5536,7 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--gate",), {"choices": ["ticket", "phase", "epic", "full"], "help": "override the resolved gate level for this invocation"}),
         ),
-        _runs_land, False, (),
+        "agent_tools.cli:_runs_land", False, (),
     ),
     commands.Command(
         "fetch", "runs", "pull an ended remote lane's run directory, log and branches to this machine",
@@ -5508,12 +5548,12 @@ RUNS_COMMANDS = [
             commands.Arg(("run_id",), {"nargs": "?"}),
             commands.Arg(("--all",), {"action": "store_true", "help": "fetch every remote run with no local tasks directory yet; a live run is skipped"}),
         ),
-        _runs_fetch, False, (),
+        "agent_tools.cli:_runs_fetch", False, (),
     ),
     commands.Command(
         "review", "runs", "review a contributor PR with the review graph and post the verdict",
         (commands.Arg(("--pr",), {"required": True, "help": "https://github.com/<owner>/<repo>/pull/<n>"}), commands.Arg(("--profile",))),
-        _runs_review, False, (),
+        "agent_tools.cli:_runs_review", False, (),
     ),
     commands.Command(
         "recover", "runs", "merge an approved task's commit into its phase branch after an escalated merge",
@@ -5522,12 +5562,12 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the merge that would be made and exit without touching anything"}),
         ),
-        _runs_recover, False, (),
+        "agent_tools.cli:_runs_recover", False, (),
     ),
     commands.Command(
         "series", "runs", "per-run summary rows across a runs directory",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--append",))),
-        _runs_series, False, (),
+        "agent_tools.cli:_runs_series", False, (),
     ),
     commands.Command(
         "wait", "runs", "block until a busy lane's run exits, then print its outcome lines",
@@ -5535,22 +5575,22 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--max-seconds",), {"type": float, "default": 3600}),
             commands.Arg(("--interval",), {"type": float, "default": 15}), commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _runs_wait, False, (),
+        "agent_tools.cli:_runs_wait", False, (),
     ),
     commands.Command(
         "events", "runs", "poll a run's log for structured events",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--follow",), {"action": "store_true"}), commands.Arg(("--json",), {"action": "store_true"})),
-        _runs_events, False, (),
+        "agent_tools.cli:_runs_events", False, (),
     ),
     commands.Command(
         "top", "runs", "live table of busy lanes (runs in flight); --once prints it and exits",
         (commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--interval",), {"type": float, "default": 3}), commands.Arg(("--once",), {"action": "store_true"})),
-        _runs_top, False, (),
+        "agent_tools.cli:_runs_top", False, (),
     ),
     commands.Command(
         "bar", "runs", "one Waybar JSON line: busy lanes, cost, class idle|running|attention",
         (commands.Arg(("--runs-dir",), {"default": "runs"}),),
-        _runs_bar, False, (),
+        "agent_tools.cli:_runs_bar", False, (),
     ),
     commands.Command(
         "notify", "runs", "desktop notifications for exits, quarantines, budget stops and cost",
@@ -5558,12 +5598,12 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--once",), {"action": "store_true"}), commands.Arg(("--interval",), {"type": float, "default": 10}),
             commands.Arg(("--replay",), {"action": "store_true", "help": "emit history on first start; default is silent for existing runs when no state file is present"}),
         ),
-        _runs_notify, False, (),
+        "agent_tools.cli:_runs_notify", False, (),
     ),
     commands.Command(
         "detail", "runs", "one run's timeline, objection and last tool calls",
         (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
-        _runs_detail, False, (),
+        "agent_tools.cli:_runs_detail", False, (),
     ),
     commands.Command(
         "stranded", "runs", "every approved task record whose work item is not done, with its remedy",
@@ -5571,16 +5611,16 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _runs_stranded, False, (),
+        "agent_tools.cli:_runs_stranded", False, (),
     ),
     commands.Command(
         "cause", "runs", "record why one run's attempt at a task was quarantined",
         (
-            commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("cause",), {"choices": list(stats_chair.CAUSES)}),
+            commands.Arg(("run_id",)), commands.Arg(("task_id",)), commands.Arg(("cause",), {"choices": list(_STATS_CAUSES)}),
             commands.Arg(("--note",), {"help": "free text kept beside the cause"}),
             commands.Arg(("--runs-dir",), {"help": "override: resolve task records here instead of the profile's workspace_dir"}), commands.Arg(("--profile",)),
         ),
-        _runs_cause, False, (),
+        "agent_tools.cli:_runs_cause", False, (),
     ),
     commands.Command(
         "stop", "runs", "stop a run's process, local or remote, and wait for it to exit",
@@ -5588,7 +5628,7 @@ RUNS_COMMANDS = [
             commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--profile",)),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _runs_stop, False, (),
+        "agent_tools.cli:_runs_stop", False, (),
     ),
     commands.Command(
         "pause", "runs", "mark a run paused in the store",
@@ -5596,12 +5636,12 @@ RUNS_COMMANDS = [
             commands.Arg(("run_id",)), commands.Arg(("--reason",)), commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _runs_pause, False, (),
+        "agent_tools.cli:_runs_pause", False, (),
     ),
     commands.Command(
         "resume", "runs", "mark a paused run resumed in the store",
         (commands.Arg(("run_id",)), commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--json",), {"action": "store_true"})),
-        _runs_resume, False, (),
+        "agent_tools.cli:_runs_resume", False, (),
     ),
     commands.Command(
         "move", "runs", "stop a run at its node boundary and relaunch it on another host",
@@ -5610,13 +5650,13 @@ RUNS_COMMANDS = [
             commands.Arg(("--runs-dir",), {"default": "runs"}), commands.Arg(("--profile",)),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _runs_move, False, (),
+        "agent_tools.cli:_runs_move", False, (),
     ),
 ]
 
 VERSIONS_GROUP = commands.Group(
     name="versions", help="component versions against the manifest", description="", epilog="",
-    args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn=_versions,
+    args=(commands.Arg(("--root",)), commands.Arg(("--manifest",))), fn="agent_tools.cli:_versions",
 )
 
 CONSOLE_GROUP = commands.Group(
@@ -5629,7 +5669,7 @@ CONSOLE_GROUP = commands.Group(
         commands.Arg(("--once",), {"action": "store_true"}),
         commands.Arg(("--profile",)),
     ),
-    fn=_console,
+    fn="agent_tools.cli:_console",
 )
 
 DASH_GROUP = commands.Group(
@@ -5644,7 +5684,7 @@ DASH_GROUP = commands.Group(
         commands.Arg(("--interval",), {"type": float, "default": 2}),
         commands.Arg(("--detail",), {"nargs": "+", "metavar": "KIND"}),
     ),
-    fn=_dash,
+    fn="agent_tools.cli:_dash",
 )
 
 def _settings_get(a: argparse.Namespace) -> int:
@@ -5666,7 +5706,7 @@ SETTINGS_COMMANDS = [
     commands.Command(
         "get", "settings", "print every setting, grouped by section; unset keys appear as built-in defaults, which set can override",
         (commands.Arg(("--json",), {"action": "store_true"}), commands.Arg(("--profile",))),
-        _settings_get, False, (),
+        "agent_tools.cli:_settings_get", False, (),
     ),
     commands.Command(
         "set", "settings", "change one setting: print the diff and write the file; --commit also commits a git-tracked cartridge",
@@ -5678,7 +5718,7 @@ SETTINGS_COMMANDS = [
             commands.Arg(("--commit",), {"action": "store_true", "help": "commit the changed cartridge file in git; profile files are never committed"}),
             commands.Arg(("--profile",)),
         ),
-        _settings_set, False, (),
+        "agent_tools.cli:_settings_set", False, (),
     ),
 ]
 
@@ -5694,7 +5734,7 @@ INSTALL_GROUP = commands.Group(
         commands.Arg(("--edge",), {"action": "store_true"}),
         commands.Arg(("--dry-run",), {"action": "store_true"}),
     ),
-    fn=_install,
+    fn="agent_tools.cli:_install",
 )
 
 UPGRADE_GROUP = commands.Group(
@@ -5709,12 +5749,12 @@ UPGRADE_GROUP = commands.Group(
         commands.Arg(("--to",)),
         commands.Arg(("--dry-run",), {"action": "store_true"}),
     ),
-    fn=_upgrade,
+    fn="agent_tools.cli:_upgrade",
 )
 
 HOME_GROUP = commands.Group(
     name="home", help="the live dashboard: runs, leader, backlog", description="", epilog="",
-    args=(commands.Arg(("--profile",)),), fn=_home,
+    args=(commands.Arg(("--profile",)),), fn="agent_tools.cli:_home",
 )
 
 SESSION_GROUP = commands.Group(
@@ -5728,7 +5768,7 @@ SESSION_GROUP = commands.Group(
         commands.Arg(("--print-argv",), {"action": "store_true", "dest": "session_print_argv", "help": "print the claude argv and cwd instead of exec'ing it"}),
         commands.Arg(("session_extra",), {"nargs": "*", "metavar": "CLAUDE_ARG", "help": "after --: passed to claude verbatim, as bare cox does"}),
     ),
-    fn=_session,
+    fn="agent_tools.cli:_session",
 )
 
 USAGE_GROUP = commands.Group(
@@ -5744,7 +5784,7 @@ USAGE_COMMANDS = [
             commands.Arg(("--runs-dir",), {"default": "runs"}),
             commands.Arg(("--profile",), {"help": "the routing profile naming the window ceiling (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),
-        _usage_assess, False, (),
+        "agent_tools.cli:_usage_assess", False, (),
     ),
 ]
 
@@ -5766,7 +5806,7 @@ STATS_COMMANDS = [
             commands.Arg(("--work-store-root",), {"default": "work"}),
             commands.Arg(("--cartridges-repo",), {"default": None}),
         ),
-        _stats_ingest, False, (),
+        "agent_tools.cli:_stats_ingest", False, (),
     ),
     commands.Command(
         "roles", "stats", "landed rate, attempts-to-land and $/landed per role and model",
@@ -5776,7 +5816,7 @@ STATS_COMMANDS = [
             commands.Arg(("--cartridge-sha",), {"default": None, "help": "keep only runs on this cartridge_sha"}),
             commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
         ),
-        _stats_roles, False, (),
+        "agent_tools.cli:_stats_roles", False, (),
     ),
     commands.Command(
         "tiers", "stats", "per-role model summaries, a cost-aware pick and the spend it would save",
@@ -5786,7 +5826,7 @@ STATS_COMMANDS = [
             commands.Arg(("--min-samples",), {"type": int, "default": 20, "help": "tasks a model needs before it can be picked (default 20)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_tiers, False, (),
+        "agent_tools.cli:_stats_tiers", False, (),
     ),
     commands.Command(
         "models", "stats", "per-role cost, tokens, turns, $/landed and first-try per model id",
@@ -5796,7 +5836,7 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only calls whose run started on or after DATE (YYYY-MM-DD)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_models, False, (),
+        "agent_tools.cli:_stats_models", False, (),
     ),
     commands.Command(
         "causes", "stats", "quarantined attempts by cause and kind, with sample reasons",
@@ -5805,7 +5845,7 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_causes, False, (),
+        "agent_tools.cli:_stats_causes", False, (),
     ),
     commands.Command(
         "efficiency", "stats", "cost per turn, cost per landed task, first-try rate, waste share, per day",
@@ -5814,7 +5854,7 @@ STATS_COMMANDS = [
             commands.Arg(("--days",), {"type": int, "default": 7, "help": "UTC days to report, today included (default 7)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_efficiency, False, (),
+        "agent_tools.cli:_stats_efficiency", False, (),
     ),
     commands.Command(
         "gates", "stats", "what each review, validation and plan gate costs and how often it changes the outcome",
@@ -5823,10 +5863,10 @@ STATS_COMMANDS = [
             commands.Arg(("--since",), {"default": None, "help": "keep only rows dated on or after DATE (YYYY-MM-DD)"}),
             commands.Arg(("--store",), {"action": "store_true", "help": "read task and call rows from the run store instead of stats.db"}),
             commands.Arg(("--runs-dir",), {"default": "runs", "help": "the run store's directory, with --store"}),
-            commands.Arg(("--min-sample",), {"type": int, "default": stats_gates.MIN_SAMPLE, "help": "decided tasks a role needs before it is judged, else 'not enough data' (default %(default)s)"}),
+            commands.Arg(("--min-sample",), {"type": int, "default": _GATES_MIN_SAMPLE, "help": "decided tasks a role needs before it is judged, else 'not enough data' (default %(default)s)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_gates, False, (),
+        "agent_tools.cli:_stats_gates", False, (),
     ),
     commands.Command(
         "explain", "stats", "the failure-class breakdown behind one role",
@@ -5835,7 +5875,7 @@ STATS_COMMANDS = [
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_explain, False, (),
+        "agent_tools.cli:_stats_explain", False, (),
     ),
     commands.Command(
         "series", "stats", "per-run summary rows read from the stats store",
@@ -5845,7 +5885,7 @@ STATS_COMMANDS = [
             commands.Arg(("--cartridge-sha",), {"default": None, "help": "keep only runs on this cartridge_sha"}),
             commands.Arg(("--provider-profile",), {"default": None, "help": "keep only runs on this provider_profile"}),
         ),
-        _stats_series, False, (),
+        "agent_tools.cli:_stats_series", False, (),
     ),
     commands.Command(
         "coverage", "stats", "known/total provenance rows for runs, calls and tasks",
@@ -5853,7 +5893,7 @@ STATS_COMMANDS = [
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_coverage, False, (),
+        "agent_tools.cli:_stats_coverage", False, (),
     ),
     commands.Command(
         "bounds", "stats", "n/p50/p95/max and strict/moderate/liberal candidate ceilings per role and model",
@@ -5864,7 +5904,7 @@ STATS_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--write",), {"default": None, "help": "also write the JSON table to PATH inside the repo checkout"}),
         ),
-        _stats_bounds, False, (),
+        "agent_tools.cli:_stats_bounds", False, (),
     ),
     commands.Command(
         "spend-mix", "stats", "per-model token counts and cost share by class, plus the build-only split",
@@ -5872,7 +5912,7 @@ STATS_COMMANDS = [
             commands.Arg(("--db",), {"default": "workspace/stats/stats.db"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_spend_mix, False, (),
+        "agent_tools.cli:_stats_spend_mix", False, (),
     ),
     commands.Command(
         "chair", "stats", "harness PRs and $, chair $ per PR, hand-finished lands and quarantine $ by cause",
@@ -5885,7 +5925,7 @@ STATS_COMMANDS = [
             commands.Arg(("--projects-dir",), {"default": "~/.claude/projects"}),
             commands.Arg(("--profile",), {"help": "the routing profile naming cartridges_dir (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),
-        _stats_chair, False, (),
+        "agent_tools.cli:_stats_chair", False, (),
     ),
     commands.Command(
         "examples", "stats", "the local system-one backend's training file (JSON lines) from task records",
@@ -5895,7 +5935,7 @@ STATS_COMMANDS = [
             commands.Arg(("--out",), {"default": None, "help": "write the file to PATH (default: stdout)"}),
             commands.Arg(("--since",), {"default": None, "help": "keep only records dated on or after DATE (YYYY-MM-DD)"}),
         ),
-        _stats_examples, False, (),
+        "agent_tools.cli:_stats_examples", False, (),
     ),
     commands.Command(
         "system-one", "stats", "shadow-to-on graduation report per role, and a proposal for the maintainer to approve",
@@ -5907,7 +5947,7 @@ STATS_COMMANDS = [
             commands.Arg(("--propose",), {"action": "store_true", "help": "write a graduation proposal for each READY role; never edits a profile"}),
             commands.Arg(("--plans-dir",), {"default": "plans", "help": "where --propose writes system-one-graduation-<role>-<date>.md"}),
         ),
-        _stats_system_one, False, (),
+        "agent_tools.cli:_stats_system_one", False, (),
     ),
     commands.Command(
         "lanes", "stats", "per hour, the average and peak busy lanes and the idle minutes, from the store's run spans",
@@ -5916,7 +5956,7 @@ STATS_COMMANDS = [
             commands.Arg(("--hours",), {"type": int, "default": 24, "help": "how many clock hours back to report"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _stats_lanes, False, (),
+        "agent_tools.cli:_stats_lanes", False, (),
     ),
 ]
 
@@ -5993,9 +6033,10 @@ def _lake_catalog_missing(catalog_uri: str) -> bool:
 
 
 def _lake_real_run(config: lake_config.LakeConfig, store: str, root: str,
-                   runs_dir: Path | None = None, retention: int = run_logs.DEFAULT_RETENTION_DAYS) -> Callable[[], dict]:
+                   runs_dir: Path | None = None, retention: int | None = None) -> Callable[[], dict]:
     """Edge. Create any missing table; return the callable a lease guards that appends the new rows, registers
     traces, and archives ended runs' logs past `retention` days beside the traces before removing the local copies."""
+    retention = run_logs.DEFAULT_RETENTION_DAYS if retention is None else retention
     catalog = lake_config.load_catalog(config)
     # Imported here: these modules import pyiceberg and pyarrow at module top, and cli.py must load without the extra.
     from agent_tools import lake_sync, lake_tables, lake_traces
@@ -6198,7 +6239,7 @@ LAKE_COMMANDS = [
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "report what would be synced; create and write nothing"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _lake_sync, False, (),
+        "agent_tools.cli:_lake_sync", False, (),
     ),
     commands.Command(
         "query", "lake", "run DuckDB SQL over the lake tables (runs, phases, ...) and print the rows",
@@ -6208,7 +6249,7 @@ LAKE_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _lake_query, False, (),
+        "agent_tools.cli:_lake_query", False, (),
     ),
     commands.Command(
         "doctor", "lake", "check the lake: catalog, namespace, warehouse and each table; exits 1 on a failed check",
@@ -6217,7 +6258,7 @@ LAKE_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _lake_doctor, False, (),
+        "agent_tools.cli:_lake_doctor", False, (),
     ),
 ]
 
@@ -6417,17 +6458,17 @@ COURIER_COMMANDS = [
     commands.Command(
         "send", "courier", "append a bus entry naming a courier reference",
         (commands.Arg(("ref",)), commands.Arg(("--to",), {"required": True}), commands.Arg(("--note",), {"required": True}), commands.Arg(("--profile",))),
-        _courier_send, False, (),
+        "agent_tools.cli:_courier_send", False, (),
     ),
     commands.Command(
         "inbox", "courier", "list this label's unacknowledged bus entries",
         (commands.Arg(("--label",)), commands.Arg(("--profile",))),
-        _courier_inbox, False, (),
+        "agent_tools.cli:_courier_inbox", False, (),
     ),
     commands.Command(
         "ack", "courier", "acknowledge one bus entry by id",
         (commands.Arg(("id",)), commands.Arg(("--profile",))),
-        _courier_ack, False, (),
+        "agent_tools.cli:_courier_ack", False, (),
     ),
 ]
 
@@ -6440,7 +6481,7 @@ PLAN_COMMANDS = [
     commands.Command(
         "serve", "plan", "serve a visual plan through the local bridge",
         (commands.Arg(("dir",)), commands.Arg(("--kind",), {"default": "plan"}), commands.Arg(("--check",), {"action": "store_true"}), commands.Arg(("--no-open",), {"action": "store_true"})),
-        _plan_serve, False, (),
+        "agent_tools.cli:_plan_serve", False, (),
     ),
 ]
 
@@ -6457,7 +6498,7 @@ EPIC_COMMANDS = [
             commands.Arg(("--max-seconds",), {"type": float, "default": 570}), commands.Arg(("--interval",), {"type": float, "default": 20}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _epic_watch, False, (),
+        "agent_tools.cli:_epic_watch", False, (),
     ),
 ]
 
@@ -6478,7 +6519,7 @@ ROUTE_COMMANDS = [
     commands.Command(
         "context", "route", "the routing profile's resolved context",
         (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
-        _route_context, False, (),
+        "agent_tools.cli:_route_context", False, (),
     ),
     commands.Command(
         "status", "route", "what is queued or running for this profile",
@@ -6486,7 +6527,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--all",), {"action": "store_true", "help": "every run, not only live and recent ones"}),
         ),
-        _route_status, False, (),
+        "agent_tools.cli:_route_status", False, (),
     ),
     commands.Command(
         "file", "route", "file a new ticket for the harness",
@@ -6495,7 +6536,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--phase",), {"default": "build"}), commands.Arg(("--intake",), {"action": "store_true"}),
             commands.Arg(("--from-intake",), {"help": "link and file an existing intake file's initiative, then retire it"}),
         ),
-        _route_file, False, (),
+        "agent_tools.cli:_route_file", False, (),
     ),
     commands.Command(
         "priority", "route", "move an initiative up or down the launch order",
@@ -6505,7 +6546,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--up",), {"action": "store_true", "help": "one above the initiative's highest priority"}),
             commands.Arg(("--down",), {"action": "store_true", "help": "one below the initiative's highest priority"}),
         ),
-        _route_priority, False, (),
+        "agent_tools.cli:_route_priority", False, (),
         exclusive=("--set", "--up", "--down"),
     ),
     commands.Command(
@@ -6515,27 +6556,27 @@ ROUTE_COMMANDS = [
             commands.Arg(("--source",), {"default": None, "help": "one source; default every source in the profile"}),
             commands.Arg(("--dry-run",), {"action": "store_true"}),
         ),
-        _route_pull, False, (),
+        "agent_tools.cli:_route_pull", False, (),
     ),
     commands.Command(
         "lint", "route", "static ticket lint over a filed initiative, work-shape.md §3",
         (commands.Arg(("initiative_dir",)), commands.Arg(("--repo",), {"default": None})),
-        _route_lint, False, (),
+        "agent_tools.cli:_route_lint", False, (),
     ),
     commands.Command(
         "groups", "route", "print the newest plans/intake-groups/<date>.md file, work-shape.md §5",
         (commands.Arg(("--profile",)),),
-        _route_groups, False, (),
+        "agent_tools.cli:_route_groups", False, (),
     ),
     commands.Command(
         "drift", "route", "items whose store state and file state differ",
         (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
-        _route_drift, False, (),
+        "agent_tools.cli:_route_drift", False, (),
     ),
     commands.Command(
         "import", "route", "load the current work item files into the store's work_items table",
         (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
-        _route_import, False, (),
+        "agent_tools.cli:_route_import", False, (),
     ),
     commands.Command(
         "approve", "route", "approve a draft initiative's todo tickets: todo becomes ready",
@@ -6543,7 +6584,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("initiative",)), commands.Arg(("--task",), {"help": "approve this one task only"}),
             commands.Arg(("--by",), {"help": "who approves; default the OS user"}), commands.Arg(("--profile",)),
         ),
-        _route_approve, False, (), defaults={"runs_dir": None},
+        "agent_tools.cli:_route_approve", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "decline", "route", "decline a draft initiative: its todo tickets become dropped",
@@ -6551,7 +6592,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("initiative",)), commands.Arg(("--reason",), {"required": True}),
             commands.Arg(("--by",), {"help": "who declines; default the OS user"}), commands.Arg(("--profile",)),
         ),
-        _route_decline, False, (), defaults={"runs_dir": None},
+        "agent_tools.cli:_route_decline", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "edit", "route", "change a queued intake's or an initiative's title, body or repo",
@@ -6561,7 +6602,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the diff and write nothing"}),
             commands.Arg(("--profile",)),
         ),
-        _route_edit, False, (), defaults={"runs_dir": None},
+        "agent_tools.cli:_route_edit", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "remove", "route", "remove a queued intake or an initiative that has no live run",
@@ -6572,7 +6613,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the plan and write nothing"}),
             commands.Arg(("--profile",)),
         ),
-        _route_remove, False, (), defaults={"runs_dir": None},
+        "agent_tools.cli:_route_remove", False, (), defaults={"runs_dir": None},
     ),
     commands.Command(
         "chair", "route", "the chair lock for the landing loop (runs/chair.json)", (), None, False, (),
@@ -6584,7 +6625,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--steal",), {"action": "store_true"}),
                     commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "how long the takeover lasts before the loop may steal it (default: policy.leader.takeover_hours)"}),
                 ),
-                _route_chair_take, False, (),
+                "agent_tools.cli:_route_chair_take", False, (),
             ),
             commands.Command(
                 "extend", "route", "move the end of the chair takeover this session holds",
@@ -6592,7 +6633,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
                     commands.Arg(("--hours",), {"type": float, "default": _leader_takeover_hours(), "help": "hours from now (default: policy.leader.takeover_hours)"}),
                 ),
-                _route_chair_extend, False, (),
+                "agent_tools.cli:_route_chair_extend", False, (),
             ),
             commands.Command(
                 "beat", "route", "refresh the chair lock's heartbeat",
@@ -6600,17 +6641,17 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG,
                     commands.Arg(("--run",)),
                 ),
-                _route_chair_beat, False, (),
+                "agent_tools.cli:_route_chair_beat", False, (),
             ),
             commands.Command(
                 "release", "route", "release the chair lock this session holds",
                 (commands.Arg(("--profile",)), commands.Arg(("--label",)), _CHAIR_PID_ARG),
-                _route_chair_release, False, (),
+                "agent_tools.cli:_route_chair_release", False, (),
             ),
             commands.Command(
                 "status", "route", "the chair lock's holder and computed state",
                 (commands.Arg(("--profile",)), commands.Arg(("--json",), {"action": "store_true"})),
-                _route_chair_status, False, (),
+                "agent_tools.cli:_route_chair_status", False, (),
             ),
             commands.Command(
                 "clear", "route", "remove the chair lock file, refusing a live holder unless --force",
@@ -6618,7 +6659,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)),
                     commands.Arg(("--force",), {"action": "store_true", "help": "clear the lock even if its recorded pid is live"}),
                 ),
-                _route_chair_clear, False, (),
+                "agent_tools.cli:_route_chair_clear", False, (),
             ),
             commands.Command(
                 "chat", "route", "append to or read the leader chat thread (runs/leader.chat.jsonl)",
@@ -6628,7 +6669,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--since",)), commands.Arg(("--json",), {"action": "store_true"}),
                     commands.Arg(("--as-leader",), {"action": "store_true", "help": "send as the lock's holder; refuses unless this process is the live holder"}),
                 ),
-                _route_chair_chat, False, (),
+                "agent_tools.cli:_route_chair_chat", False, (),
             ),
         ),
         sub_dest="chair_cmd", sub_required=False,
@@ -6639,7 +6680,7 @@ ROUTE_COMMANDS = [
             commands.Arg(("--profile",)), commands.Arg(("--item",)), commands.Arg(("--project",)),
             commands.Arg(("--workspace",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
         ),
-        _route_sync, False, (),
+        "agent_tools.cli:_route_sync", False, (),
     ),
     commands.Command(
         "launch", "route", "run one of the harness's graphs directly", (), None, False, (),
@@ -6656,7 +6697,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--include-blocked",), {"action": "store_true", "help": "launch despite a ready task behind a blocked item (--force does not)"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
-                _route_launch, False, (), defaults={"graph": "epic"},
+                "agent_tools.cli:_route_launch", False, (), defaults={"graph": "epic"},
             ),
             commands.Command(
                 "decompose", "route", "launch the decompose graph against an idea",
@@ -6667,7 +6708,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--dry-run",), {"action": "store_true"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
-                _route_launch, False, (), defaults={"graph": "decompose"},
+                "agent_tools.cli:_route_launch", False, (), defaults={"graph": "decompose"},
             ),
             commands.Command(
                 "rescue", "route", "launch the rescue graph against a task",
@@ -6679,7 +6720,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--run-id",), {"help": "use this run id instead of the next free one; refused when taken"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
-                _route_launch, False, (), defaults={"graph": "rescue"},
+                "agent_tools.cli:_route_launch", False, (), defaults={"graph": "rescue"},
             ),
             commands.Command(
                 "cos", "route", "launch the cos graph",
@@ -6687,7 +6728,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--profile",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
                     *_LAUNCH_SHARED_ARGS,
                 ),
-                _route_launch, False, (), defaults={"graph": "cos"},
+                "agent_tools.cli:_route_launch", False, (), defaults={"graph": "cos"},
             ),
             commands.Command(
                 "sweep", "route", "launch the sweep graph against an idea",
@@ -6696,7 +6737,7 @@ ROUTE_COMMANDS = [
                     commands.Arg(("--initiative-id",), {"required": True}),
                     commands.Arg(("--label",)), commands.Arg(("--dry-run",), {"action": "store_true"}),
                 ),
-                _route_launch_sweep, False, (),
+                "agent_tools.cli:_route_launch_sweep", False, (),
             ),
         ),
         sub_dest="graph", sub_required=True,
@@ -6725,7 +6766,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--host",), {"help": "run the doctor on this lane host from lane_hosts; --json is ignored"}),
         ),
-        _setup_doctor_row, False, (),
+        "agent_tools.cli:_setup_doctor_row", False, (),
     ),
     commands.Command(
         "install", "setup", "clone components and write a profile for this machine",
@@ -6737,7 +6778,7 @@ SETUP_COMMANDS = [
             commands.Arg(("--window-ceiling-usd",), {"type": float, "default": None, "dest": "window_ceiling_usd", "help": "write spend: window_ceiling_usd into the profile"}),
             commands.Arg(("--weekly-ceiling-usd",), {"type": float, "default": None, "dest": "weekly_ceiling_usd", "help": "write spend: weekly_ceiling_usd into the profile"}),
         ),
-        _setup_install, False, (),
+        "agent_tools.cli:_setup_install", False, (),
     ),
 ]
 
@@ -7421,12 +7462,12 @@ CHAIR_COMMANDS = [
         "run", "chair", "beat, gather, plan, perform and report every tick until interrupted",
         (
             commands.Arg(("--once",), {"action": "store_true", "help": "run one tick, release the lease, exit 1 if the tick errored"}),
-            commands.Arg(("--interval",), {"type": float, "default": chair_run.DEFAULT_INTERVAL, "help": "seconds between ticks (default: 60)"}),
+            commands.Arg(("--interval",), {"type": float, "default": _CHAIR_RUN_INTERVAL, "help": "seconds between ticks (default: 60)"}),
             commands.Arg(("--dry-run",), {"action": "store_true", "help": "plan and report each tick without taking the lease or performing any action"}),
             commands.Arg(("--label",), {"help": "the chair's holder label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",), {"help": "the routing profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
         ),
-        _chair_run, False, (),
+        "agent_tools.cli:_chair_run", False, (),
         defaults={"profile": None},
         description=(
             "Each tick beats the chair lease, gathers facts, plans, performs and reports one status line.\n"
@@ -7446,7 +7487,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--host",), {"help": "a hosts-table name: install or report on that lane host over ssh"}),
             commands.Arg(("--apply",), {"action": "store_true", "help": "with --install --host, run the steps instead of printing them"}),
         ),
-        _chair_service, False, (),
+        "agent_tools.cli:_chair_service", False, (),
         description=(
             "--install writes ~/.config/systemd/user/coxswain-chair.service and prints the systemctl lines.\n"
             "It does not run systemctl."
@@ -7461,12 +7502,12 @@ CHAIR_COMMANDS = [
             commands.Arg(("--label",), {"help": "the chair's label (default: $COX_SESSION_LABEL, else unlabeled)"}),
             commands.Arg(("--profile",)),
         ),
-        _chair_ask, False, (),
+        "agent_tools.cli:_chair_ask", False, (),
     ),
     commands.Command(
         "answer", "chair", "answer an open decision with one of its options",
         (commands.Arg(("id",)), commands.Arg(("option",)), commands.Arg(("--profile",))),
-        _chair_answer, False, (),
+        "agent_tools.cli:_chair_answer", False, (),
     ),
     commands.Command(
         "decisions", "chair", "list decisions asked of pat and their answers",
@@ -7476,7 +7517,7 @@ CHAIR_COMMANDS = [
             commands.Arg(("--json",), {"action": "store_true"}),
             commands.Arg(("--profile",)),
         ),
-        _chair_decisions, False, (),
+        "agent_tools.cli:_chair_decisions", False, (),
         exclusive=("--open", "--answered"),
     ),
 ]
@@ -7495,7 +7536,7 @@ ROUTER_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile and the router flag (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _router_select, False, (),
+        "agent_tools.cli:_router_select", False, (),
     ),
 ]
 
@@ -7512,7 +7553,7 @@ STEWARD_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the provider profile (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _steward_propose, False, (),
+        "agent_tools.cli:_steward_propose", False, (),
     ),
     commands.Command(
         "draft", "steward", "write each grounded proposal in intake as a draft initiative under work/, list those that exist or could not be grounded",
@@ -7520,7 +7561,7 @@ STEWARD_COMMANDS = [
             commands.Arg(("--profile",), {"help": "the routing profile naming the workspace (default: ~/.config/agent-tools/profile.yaml or $AGENT_TOOLS_PROFILE)"}),
             commands.Arg(("--json",), {"action": "store_true"}),
         ),
-        _steward_draft, False, (),
+        "agent_tools.cli:_steward_draft", False, (),
     ),
 ]
 
@@ -7729,16 +7770,16 @@ HOST_COMMANDS = [
             commands.Arg(("--weight",), {"type": int, "default": 1, "help": "share of new placements"}),
             commands.Arg(("--capabilities",), {"default": "", "help": "comma-separated, e.g. go,rust"}),
         ),
-        _host_add, False, (),
+        "agent_tools.cli:_host_add", False, (),
     ),
-    commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), _host_list, False, ()),
-    commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), _host_drain, False, ()),
+    commands.Command("list", "host", "one line per host: state, capacity, beat age, login", (), "agent_tools.cli:_host_list", False, ()),
+    commands.Command("drain", "host", "stop launching on a host; its live lanes finish", (commands.Arg(("name",)),), "agent_tools.cli:_host_drain", False, ()),
     commands.Command(
         "remove", "host", "delete a drained idle host from the hosts table",
         (commands.Arg(("name",)), commands.Arg(("--dry-run",), {"action": "store_true", "help": "print the row that would be removed; write nothing"})),
-        _host_remove, False, (),
+        "agent_tools.cli:_host_remove", False, (),
     ),
-    commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), _host_activate, False, ()),
+    commands.Command("activate", "host", "make a host a lane host again", (commands.Arg(("name",)),), "agent_tools.cli:_host_activate", False, ()),
     commands.Command(
         "capacity", "host", "change only a host's capacity, leaving ssh, weight and capabilities as they are",
         (
@@ -7746,20 +7787,38 @@ HOST_COMMANDS = [
             commands.Arg(("n",), {"type": int, "help": "lanes the host may run at once; 0 suspends new placement"}),
             commands.Arg(("--json",), {"action": "store_true", "help": "print the row as JSON"}),
         ),
-        _host_capacity, False, (),
+        "agent_tools.cli:_host_capacity", False, (),
     ),
     commands.Command(
         "beat", "host", "record this machine's versions and claude login in the table",
-        (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), _host_beat, False, (),
+        (commands.Arg(("name",), {"nargs": "?", "help": "default: this machine's hostname"}),), "agent_tools.cli:_host_beat", False, (),
     ),
-    commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), _host_doctor, False, ()),
+    commands.Command("doctor", "host", "the table's line for a host, then its doctor over ssh", (commands.Arg(("name",)),), "agent_tools.cli:_host_doctor", False, ()),
     commands.Command(
         "sync", "host", "git pull --ff-only in the harness, cartridges and tools checkouts on a host",
-        (commands.Arg(("name",)),), _host_sync, False, (),
+        (commands.Arg(("name",)),), "agent_tools.cli:_host_sync", False, (),
     ),
 ]
 
-COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
+
+def _dispatch_fn(target: str | None) -> _LazyHandler | None:
+    return None if target is None else _LazyHandler(target)
+
+
+def _dispatch_row(row: commands.Command) -> commands.Command:
+    """The row with its `module:function` handler string, and its children's, bound to a `_LazyHandler`."""
+    return dataclasses.replace(row, handler=_dispatch_fn(row.handler), subcommands=tuple(_dispatch_row(c) for c in row.subcommands))
+
+
+def _dispatch_table(
+    table: list[tuple[commands.Group, list[commands.Command]]],
+) -> list[tuple[commands.Group, list[commands.Command]]]:
+    """Each row and leaf group names its handler as `"dotted.module:function"` data; this binds each one
+    to a `_LazyHandler`, so `cox --help` builds the parser without importing any handler's module."""
+    return [(dataclasses.replace(group, fn=_dispatch_fn(group.fn)), [_dispatch_row(row) for row in rows]) for group, rows in table]
+
+
+COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = _dispatch_table([
     (RUNS_GROUP, RUNS_COMMANDS),
     (COURIER_GROUP, COURIER_COMMANDS),
     (VERSIONS_GROUP, []),
@@ -7781,7 +7840,7 @@ COMMAND_TABLE: list[tuple[commands.Group, list[commands.Command]]] = [
     (ROUTER_GROUP, ROUTER_COMMANDS),
     (STEWARD_GROUP, STEWARD_COMMANDS),
     (SETUP_GROUP, SETUP_COMMANDS),
-]
+])
 
 
 def _table_entry(name: str) -> tuple[commands.Group, list[commands.Command]]:
@@ -7925,4 +7984,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Under `python -m`, this module is `__main__`, not `agent_tools.cli`; the table's "agent_tools.cli:..."
+    # handlers would otherwise import a second copy of this file at dispatch.
+    sys.modules.setdefault("agent_tools.cli", sys.modules[__name__])
     sys.exit(main())
