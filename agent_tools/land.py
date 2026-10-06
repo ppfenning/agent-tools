@@ -474,6 +474,11 @@ def wait_decision(returncode: int, output: str, elapsed_s: float, timeout_s: flo
     return "failed"
 
 
+def merge_expects_check(output: str) -> bool:
+    """Whether a refused merge's output is GitHub's `Required status check "<name>" is expected`; the check name is never matched."""
+    return "Required status check" in output and "is expected" in output
+
+
 def rest_checks_argvs(sha: str) -> tuple[list[str], list[str]]:
     """`gh api --paginate` argvs for a commit's check runs and legacy statuses. REST, so off the GraphQL budget; `gh` fills `{owner}/{repo}` from the cwd's remote."""
     base = f"repos/{{owner}}/{{repo}}/commits/{sha}"
