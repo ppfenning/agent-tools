@@ -3,6 +3,7 @@
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
@@ -25,7 +26,9 @@ from agent_tools.chair_types import (
     StallCandidate,
     stamp,
 )
+from agent_tools.ci_gate import CiGate
 
+_UNPAUSED = CiGate(False, "")
 _LAUNCHES = {"relaunch", "retry", "rescue"}
 _DEAD_PID_SILENCE = timedelta(minutes=10)
 
@@ -433,7 +436,32 @@ def _with_dead_pid_lost(facts: Facts, now: datetime | None) -> Facts:
     return {**facts, "lost_runs": {**_dead_pid_lost(facts, now), **facts.get("lost_runs", {})}}  # type: ignore[return-value]
 
 
-def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
+@dataclass(frozen=True)
+class TickPlan:
+    actions: list[Action]
+    held_for_ci: tuple[str, ...]  # started initiatives waiting only on a land, left unrelaunched while the CI gate is paused
+
+
+def _land_only_ids(initiatives: list[InitiativeFacts], approved: list[ApprovedTask]) -> frozenset[str]:
+    """Started initiatives with no launchable ready task whose every unmet need is an approved task not yet landed."""
+    pending = {(a["initiative"], a["id"]) for a in approved}
+
+    def unmet(i: InitiativeFacts) -> set[str]:
+        return {n for t in [*i["ready_tasks"], *i.get("waiting_tasks", [])] for n in t["needs"] if n not in i["landed"]}
+
+    return frozenset(
+        i["id"]
+        for i in initiatives
+        if i["started"] and _initiative_first_unmet_need(i) is not None and all((i["id"], n) in pending for n in unmet(i))
+    )
+
+
+def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
+    """Drop each held initiative's relaunch and its paired clear_branches; every other action stays."""
+    return [a for a in actions if not (a["kind"] in {"relaunch", "clear_branches"} and a.get("initiative") in held)]
+
+
+def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     lands = plan_lands(facts)
     fetch_exits = _fetch_exit_actions(facts)
@@ -452,7 +480,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recovered = [*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)]
+    recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)], held)
     if facts["limits"]["hard_stop"]:
         return [
             *lands,
@@ -520,12 +548,21 @@ def plan_housekeeping(facts: Facts, now: datetime) -> list[Action]:
     return [{"kind": "housekeeping", "reason": f"housekeeping due: last {facts['last_housekeeping_at'] if last else 'never'}"}]
 
 
-def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
-    """now is the tick's clock; without it no housekeeping or check_login is planned."""
+def plan_tick_held(facts: Facts, now: datetime | None = None, gate: CiGate = _UNPAUSED) -> TickPlan:
+    """now is the tick's clock; without it no housekeeping or check_login is planned.
+
+    While `gate.paused`, a started initiative that waits only on a land not yet completed gets no relaunch and is
+    named in `held_for_ci`; the caller reports it. An unpaused gate, or a tick the lease gates, holds nothing."""
     lease = facts["lease"]
     gated = _lease_gate(lease)
     housekeeping = plan_housekeeping(facts, now) if now is not None else []
     login_checks = _login_check_actions(facts, now)
-    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now), facts) if gated is None else []
+    held = _land_only_ids(facts["initiatives"], facts["approved"]) if gate.paused and gated is None else frozenset()
+    holder = _withhold_blocked_hosts(_plan_as_holder(facts, now, held), facts) if gated is None else []
     actions = [*holder, *housekeeping, *login_checks] if gated is None else gated
-    return [stamp(a, lease["epoch"]) for a in actions]
+    return TickPlan([stamp(a, lease["epoch"]) for a in actions], tuple(sorted(held)))
+
+
+def plan_tick(facts: Facts, now: datetime | None = None) -> list[Action]:
+    """The actions of `plan_tick_held` under an unpaused gate."""
+    return plan_tick_held(facts, now).actions

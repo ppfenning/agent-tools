@@ -2,9 +2,18 @@ import copy
 from datetime import UTC, datetime, timedelta
 
 from agent_tools.chair_facts import initiative_facts
-from agent_tools.chair_plan import _free_lanes, _launch_cap, initiative_homes, plan_idle_stall, plan_stall, plan_tick
+from agent_tools.chair_plan import (
+    _free_lanes,
+    _launch_cap,
+    initiative_homes,
+    plan_idle_stall,
+    plan_stall,
+    plan_tick,
+    plan_tick_held,
+)
 from agent_tools.chair_read_docket import docket_from_rows
 from agent_tools.chair_types import Facts
+from agent_tools.ci_gate import CiGate
 
 _NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
 
@@ -1141,3 +1150,79 @@ def test_facts_without_host_keys_plan_as_before():
         {"kind": "clear_branches", "initiative": "i", "epoch": 7},
         {"kind": "relaunch", "initiative": "i", "epoch": 7},
     ]
+
+
+_PAUSED = CiGate(True, "forge incident")
+_WAITING_ON_LAND = [{"kind": "needs_chair", "initiative": "l", "cause": "waiting on l-a", "epoch": 7}]
+
+
+def _land_only(id: str) -> dict:
+    """Started, nothing ready: its one waiting task needs `<id>-a`, which is approved and not yet landed."""
+    return {
+        "id": id, "started": True, "ready_tasks": [],
+        "waiting_tasks": [{"id": f"{id}-w", "needs": [f"{id}-a"], "requires": []}], "landed": set(),
+    }
+
+
+def _pending_land(id: str) -> dict:
+    return {**_approved(f"{id}-a"), "initiative": id, "phase_done": False}
+
+
+def test_paused_with_a_land_only_initiative_lists_it_in_held_for_ci_and_plans_no_relaunch():
+    facts = _facts(initiatives=[_land_only("l")], approved=[_pending_land("l")], run_exited={"l": True})
+    plan = plan_tick_held(facts, None, _PAUSED)
+    assert plan.held_for_ci == ("l",)
+    assert plan.actions == _WAITING_ON_LAND
+
+
+def test_paused_drops_the_relaunch_pair_a_lost_run_would_plan_for_a_land_only_initiative():
+    facts = _facts(initiatives=[_land_only("l")], approved=[_pending_land("l")], lost_runs={"l": "r1"})
+    assert _kinds(plan_tick_held(facts).actions) == ["needs_chair", "mark_lost", "clear_branches", "relaunch"]
+    plan = plan_tick_held(facts, None, _PAUSED)
+    assert _kinds(plan.actions) == ["needs_chair", "mark_lost"]
+    assert plan.held_for_ci == ("l",)
+
+
+def test_paused_with_an_independent_initiative_still_relaunches_it():
+    facts = _facts(initiatives=[_initiative("i")], run_exited={"i": True})
+    plan = plan_tick_held(facts, None, _PAUSED)
+    assert plan.held_for_ci == ()
+    assert plan.actions == [
+        {"kind": "clear_branches", "initiative": "i", "epoch": 7},
+        {"kind": "relaunch", "initiative": "i", "epoch": 7},
+    ]
+
+
+def test_paused_with_a_land_gated_waiting_task_and_an_independent_ready_task_relaunches_for_the_independent_work():
+    mixed = {**_land_only("m"), "ready_tasks": [{"id": "m-t", "needs": [], "requires": []}]}
+    facts = _facts(initiatives=[mixed], approved=[_pending_land("m")], run_exited={"m": True})
+    plan = plan_tick_held(facts, None, _PAUSED)
+    assert plan.held_for_ci == ()
+    assert _kinds(plan.actions) == ["clear_branches", "relaunch"]
+
+
+def test_paused_with_a_waiting_task_blocked_by_something_other_than_a_land_is_not_held():
+    facts = _facts(initiatives=[_land_only("l")], approved=[], lost_runs={"l": "r1"})
+    plan = plan_tick_held(facts, None, _PAUSED)
+    assert plan.held_for_ci == ()
+    assert _kinds(plan.actions) == ["needs_chair", "mark_lost", "clear_branches", "relaunch"]
+
+
+def test_paused_with_a_fresh_initiative_and_no_pending_land_still_launches_it():
+    plan = plan_tick_held(_facts(initiatives=[_unstarted("f")]), None, _PAUSED)
+    assert plan.held_for_ci == ()
+    assert plan.actions == [{"kind": "launch_epic", "initiative": "f", "epoch": 7}]
+
+
+def test_unpaused_matches_plan_tick_and_holds_nothing():
+    land_only = _facts(initiatives=[_land_only("l")], approved=[_pending_land("l")], lost_runs={"l": "r1"})
+    mixed = _facts(initiatives=[_initiative("i"), _unstarted("f")], run_exited={"i": True})
+    for facts in (land_only, mixed):
+        plan = plan_tick_held(facts, _NOW, CiGate(False, ""))
+        assert plan.actions == plan_tick(facts, _NOW)
+        assert plan.held_for_ci == ()
+
+
+def test_a_tick_the_lease_gates_holds_nothing_even_when_paused():
+    facts = _facts(lease=_lease(), initiatives=[_land_only("l")], approved=[_pending_land("l")])
+    assert plan_tick_held(facts, None, _PAUSED).held_for_ci == ()
