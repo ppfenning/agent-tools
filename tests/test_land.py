@@ -1673,12 +1673,17 @@ def test_wait_checks_reads_the_sha_of_the_repos_own_head_and_runs_gh_there(monke
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None) == (True, "green")
-    assert head != main and len(gh_calls) == 2
-    assert all(head in argv[-1] and main not in argv[-1] and cwd == tmp_path for argv, cwd in gh_calls)
+    # Every gh call, the required-checks reads included, runs in the repo; only the `/commits/` reads name a sha.
+    sha_reads = [argv for argv, _ in gh_calls if "/commits/" in argv[-1]]
+    assert all(cwd == tmp_path for _, cwd in gh_calls)
+    assert head != main and len(sha_reads) == 2
+    assert all(head in argv[-1] and main not in argv[-1] for argv in sha_reads)
     gh_calls.clear()
     assert cli._wait_checks(tmp_path, 180.0, sleep=lambda s: None, ref="main") == (True, "green")
-    assert len(gh_calls) == 2
-    assert all(main in argv[-1] and head not in argv[-1] for argv, _ in gh_calls)
+    sha_reads = [argv for argv, _ in gh_calls if "/commits/" in argv[-1]]
+    assert all(cwd == tmp_path for _, cwd in gh_calls)
+    assert len(sha_reads) == 2
+    assert all(main in argv[-1] and head not in argv[-1] for argv in sha_reads)
 
 
 # --- land.jsonl: one row per applied land that reached its steps ---

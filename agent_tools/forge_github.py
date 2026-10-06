@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -102,16 +103,121 @@ def _read_checks(repo: Path, ref: str = "HEAD"):
     return True, tuple(bodies)
 
 
+def _loads(stdout: str):
+    try:
+        return json.loads(stdout)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_base_ref(stdout: str) -> str | None:
+    """The `baseRefName` of `gh pr view --json baseRefName` output, or None."""
+    data = _loads(stdout)
+    base = data.get("baseRefName") if isinstance(data, dict) else None
+    return base if isinstance(base, str) and base else None
+
+
+def parse_ruleset_contexts(stdout: str) -> tuple[str, ...] | None:
+    """Context names of every `required_status_checks` rule in a `rules/branches/{base}` body; None when unparseable, () when none require any."""
+    data = _loads(stdout)
+    if not isinstance(data, list):
+        return None
+    try:
+        names = [c["context"] for rule in data if isinstance(rule, dict) and rule.get("type") == "required_status_checks"
+                 for c in rule["parameters"]["required_status_checks"]]
+        return tuple(dict.fromkeys(names))
+    except (KeyError, TypeError):
+        return None
+
+
+def parse_protection_contexts(stdout: str) -> tuple[str, ...] | None:
+    """`contexts` and `checks[].context` of a classic `required_status_checks` body; None when unparseable."""
+    data = _loads(stdout)
+    if not isinstance(data, dict):
+        return None
+    contexts, checks = data.get("contexts") or [], data.get("checks") or []
+    if not isinstance(contexts, list) or not isinstance(checks, list):
+        return None
+    try:
+        return tuple(dict.fromkeys([*contexts, *(c["context"] for c in checks)]))
+    except (KeyError, TypeError):
+        return None
+
+
+def rerun_run_ids(check_runs: dict) -> tuple[str, ...]:
+    """Workflow run ids, in order and deduplicated, from the `details_url` of each failed check run. A failure with no `/actions/runs/<id>` url yields none."""
+    urls = [r.get("details_url") or "" for r in check_runs.get("check_runs") or [] if r.get("conclusion") in land._FAILED_CONCLUSIONS]
+    return tuple(dict.fromkeys(m[1] for m in (re.search(r"/actions/runs/(\d+)", u) for u in urls) if m))
+
+
+def failed_check_run_ids(check_runs: dict) -> frozenset:
+    """The `id` of each failed check run. A rerun replaces these, so a failure made only of them is the one already rerun."""
+    return frozenset(r.get("id") for r in check_runs.get("check_runs") or [] if r.get("conclusion") in land._FAILED_CONCLUSIONS)
+
+
+def base_ref_argv(ref: str) -> list[str]:
+    """`gh pr view` for `ref`'s PR. `HEAD` is no branch name, so it is left out and gh reads the checked-out branch."""
+    return ["gh", "pr", "view", *([] if ref == "HEAD" else [ref]), "--json", "baseRefName"]
+
+
+def _gh_text(argv: list[str], repo: Path) -> str | None:
+    """Stdout of `argv`, or None when it cannot run or exits nonzero."""
+    try:
+        r = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
+    except OSError:
+        return None
+    return r.stdout or "" if r.returncode == 0 else None
+
+
+def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
+    """Required check names for the base of `ref`'s PR: the rulesets', else classic branch protection's. () means both were read and require nothing; None means a call failed or a body was unreadable."""
+    base = parse_base_ref(_gh_text(base_ref_argv(ref), repo) or "")
+    if base is None:
+        return None
+    root = "repos/{owner}/{repo}"
+    ruleset = parse_ruleset_contexts(_gh_text(["gh", "api", f"{root}/rules/branches/{base}"], repo) or "")
+    if ruleset != ():  # names, or None for an unreadable ruleset: its contexts are unknown, so protection alone must not stand in
+        return ruleset
+    return parse_protection_contexts(_gh_text(["gh", "api", f"{root}/branches/{base}/protection/required_status_checks"], repo) or "")
+
+
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
+    required = _read_required(repo, ref)
     # Edge bend (A2): a count of consecutive unreadable polls, reset by any readable one.
     errors = 0
+    # Edge bend (A2): `rerun_of` holds the failed check run ids once gh accepted every rerun, and a newer failure is final.
+    # `rerun_tries` counts refused rerun calls, which gh returns while a sibling job still runs.
+    # `stale_polls` counts polls that still show only the rerun failures. Both stop at POLL_ERROR_LIMIT.
+    # `accepted` holds the run ids gh took a rerun for, so a retry after a partial refusal never reruns one twice.
+    rerun_of: frozenset | None = None
+    accepted: frozenset = frozenset()
+    rerun_tries = stale_polls = 0
+
+    def rerun(ids: tuple[str, ...], failed: frozenset) -> tuple[int, str]:
+        nonlocal rerun_of, rerun_tries, accepted
+        todo = [i for i in ids if i not in accepted]
+        refused = [i for i in todo if _gh_text(["gh", "run", "rerun", i, "--failed"], repo) is None]
+        accepted = accepted | frozenset(todo) - frozenset(refused)
+        rerun_tries += bool(refused)
+        rerun_of = None if refused else failed
+        return land.PENDING_RC, (f"rerun refused for runs {', '.join(refused)}, retrying ({rerun_tries}/{land.POLL_ERROR_LIMIT})"
+                                 if refused else f"failed runs rerun once: {', '.join(ids)}")
 
     def poll() -> tuple[int, str]:
-        nonlocal errors
+        nonlocal errors, stale_polls
         ok, value = _read_checks(repo, ref)
         errors = 0 if ok else errors + 1
         if ok:
-            return land.check_poll_result(*value)
+            result = land.check_poll_result(*value, required)
+            failed = failed_check_run_ids(value[0])
+            if result[0] == 0 or not failed:
+                return result
+            if rerun_of is not None:
+                stale = failed <= rerun_of and stale_polls < land.POLL_ERROR_LIMIT
+                stale_polls += stale
+                return (land.PENDING_RC, "rerun not yet registered: " + result[1]) if stale else result
+            ids = rerun_run_ids(value[0])
+            return rerun(ids, failed) if ids and rerun_tries < land.POLL_ERROR_LIMIT else result
         result = land.unreadable_poll(errors, value)
         if land.is_pending(result[0]):
             sleep(land.poll_backoff_s(errors))  # on top of the 15s between polls: a rate limit needs room
