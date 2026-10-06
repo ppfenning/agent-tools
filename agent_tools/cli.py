@@ -4592,6 +4592,30 @@ def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
     return queue_export.export_files(workspace, run_store.read_queue(runs_dir)).skipped
 
 
+def _chair_export_hook(runs_dir: Path, ids: tuple[str, ...]) -> str:
+    """Edge. Export the board, then commit the work/ and intake/ files; returns a tick-line note, "" when nothing is worth saying.
+
+    A git failure raises, so the tick reports it as an export failure."""
+    workspace = runs_dir.parent
+    skipped = _export_board(runs_dir, workspace)
+    git = ["git", "-C", str(workspace)]
+    paths = [name for name in ("work", "intake") if (workspace / name).exists()]  # git add refuses a path that matches nothing
+    if not paths:  # `git add -A --` with no path stages the whole tree
+        return "export: no work/ or intake/ directory to commit"
+    add = subprocess.run([*git, "add", "-A", "--", *paths], capture_output=True, text=True)
+    if add.returncode != 0:
+        raise RuntimeError(f"git add: {add.stderr.strip()}")
+    if subprocess.run([*git, "diff", "--cached", "--quiet", "--", *paths]).returncode == 0:
+        committed = "export: no file changes"
+    else:
+        message = f"chair: export {len(ids)} changed row(s)"
+        commit = subprocess.run([*git, "commit", "-m", message, "--", *paths], capture_output=True, text=True)
+        if commit.returncode != 0:
+            raise RuntimeError(f"git commit: {(commit.stderr or commit.stdout).strip()}")
+        committed = f"export: committed {len(ids)} row(s)"
+    return f"{committed}; skipped {len(skipped)} contentless row(s): {', '.join(skipped)}" if skipped else committed
+
+
 def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:
     """`route.merge_same_phase` on the tickets under `initiative_dir`: the
     same glob-and-`parse_frontmatter` read `_route_lint` used to do alone,
@@ -7331,6 +7355,7 @@ def _chair_run_deps(
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,
         release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
         perform=_chair_perform_with_smoke(runs_dir, chair_exec.perform),
+        export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
     )
 
 
