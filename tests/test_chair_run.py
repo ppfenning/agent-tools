@@ -8,8 +8,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from agent_tools import chair_exec, chair_report
-from agent_tools.chair_plan import plan_tick
-from agent_tools.chair_run import DEFAULT_INTERVAL, RunDeps, as_holder, error_line, land_sink, run, tick
+from agent_tools.chair_plan import TickPlan, plan_tick
+from agent_tools.chair_run import (
+    DEFAULT_INTERVAL,
+    RunDeps,
+    as_holder,
+    error_line,
+    land_sink,
+    next_gate_record,
+    run,
+    tick,
+)
+from agent_tools.ci_gate import CiGate
+from agent_tools.forge_status import StatusReader
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 MINE = {"holder": "me", "host": "box", "epoch": 3, "mine": True, "released": False, "stale": False}
@@ -256,6 +267,161 @@ def test_a_dry_run_installs_no_sigterm_handler():
     rig = Rig(lease=FREE)
     run(True, 60, True, replace(rig.deps(), install_sigterm=lambda: installed.append(True) or (lambda: None)))
     assert installed == []
+
+
+class Forge:
+    """A fake status endpoint and its clock, in epoch seconds."""
+
+    def __init__(self):
+        self.at, self.down, self.fetches = NOW.timestamp(), False, 0
+
+    def fetch(self):
+        self.fetches += 1
+        status = "major_outage" if self.down else "operational"
+        return {"components": [{"name": "Actions", "status": status}], "incidents": [{"name": "Actions outage"}]}
+
+    def reader(self):
+        return StatusReader(self.fetch, lambda: self.at)
+
+    def tick(self, deps, seconds=60):
+        self.at += seconds
+        return tick(deps, False, datetime.fromtimestamp(self.at, UTC))
+
+
+class Performed:
+    """A perform that keeps the actions it was given, one list per tick."""
+
+    def __init__(self):
+        self.ticks = []
+
+    def __call__(self, actions, _deps, _epoch, _dry_run):
+        self.ticks.append([a["kind"] + ":" + a.get("initiative", "") for a in actions])
+        return []
+
+
+def _gated(rig, forge, performed=None, **over):
+    """Dependents `dep` and an independent `ind`; a pause drops the relaunch of `dep` and names it held."""
+    def plan(_facts, _now):
+        return [{"kind": "relaunch", "initiative": "dep", "epoch": 3}, {"kind": "launch_epic", "initiative": "ind", "epoch": 3}]
+
+    def plan_held(_facts, _now, _gate):
+        return TickPlan([{"kind": "launch_epic", "initiative": "ind", "epoch": 3}], ("dep",))
+
+    fields = {"status_reader": forge.reader(), "plan": plan, "plan_held": plan_held}
+    return replace(rig.deps(), **({"perform": performed} if performed else {}), **fields, **over)
+
+
+def _needs_chair(rig):
+    return [a for a in rig.recorded if a.get("kind") == "needs_chair"]
+
+
+def test_a_degraded_forge_holds_the_dependent_relaunch_while_an_independent_launch_continues():
+    forge, performed = Forge(), Performed()
+    deps = _gated(Rig(), forge, performed)
+    forge.tick(deps)
+    forge.down = True
+    forge.tick(deps, 400)
+    assert performed.ticks == [["relaunch:dep", "launch_epic:ind"], ["launch_epic:ind", "needs_chair:ci-gate"]]
+
+
+def test_recovery_on_a_later_tick_resumes_the_relaunch_with_no_extra_record():
+    forge, performed = Forge(), Performed()
+    deps = _gated(Rig(), forge, performed)
+    forge.down = True
+    forge.tick(deps)
+    forge.down = False
+    forge.tick(deps, 400)
+    assert performed.ticks[1] == ["relaunch:dep", "launch_epic:ind"]
+
+
+def test_repeated_degraded_ticks_record_one_needs_chair_naming_the_reason_and_the_held_initiative():
+    rig, forge = Rig(), Forge()
+    deps = _gated(rig, forge)
+    forge.down = True
+    for _ in range(3):
+        forge.tick(deps, 400)
+    [recorded] = _needs_chair(rig)
+    assert "Actions outage" in recorded["cause"] and "held for CI: dep" in recorded["cause"]
+    assert recorded["status"] == "recorded"
+    forge.down = False
+    forge.tick(deps, 400)
+    assert len(_needs_chair(rig)) == 1
+    forge.down = True
+    forge.tick(deps, 400)
+    assert len(_needs_chair(rig)) == 2
+
+
+def test_a_degraded_tick_holds_the_land_and_makes_no_merge_until_the_forge_recovers():
+    rig, forge = Rig(), Forge()
+    ev = threading.Event()
+    sink = land_sink(lambda: None, wait=lambda s: ev.wait(0.01))
+    deps = replace(
+        rig.deps(), status_reader=forge.reader(), set_gate=sink.set_gate, queued_since=sink.queued_since,
+        exec_deps=replace(rig.deps().exec_deps, lands=sink),
+    )
+    forge.down = True
+    forge.tick(deps)
+    assert rig.commands == [] and sink.pending("r")
+    forge.down = False
+    forge.tick(deps, 400)
+    sink._handles["r"][1].wait(5)
+    assert len(rig.commands) == 1
+    assert len(_needs_chair(rig)) == 1
+
+
+def test_a_land_queued_past_the_bound_pauses_an_operational_forge_and_resumes_when_its_checks_start():
+    rig, forge, queued = Rig(), Forge(), [NOW.timestamp() - 1801 + 60]
+    performed = Performed()
+    deps = _gated(rig, forge, performed, queued_since=lambda: tuple(queued))
+    forge.tick(deps)
+    queued.clear()
+    forge.tick(deps, 10)
+    assert performed.ticks[0] == ["launch_epic:ind", "needs_chair:ci-gate"]
+    assert performed.ticks[1] == ["relaunch:dep", "launch_epic:ind"]
+
+
+def test_the_endpoint_is_fetched_once_across_ticks_inside_five_minutes():
+    forge = Forge()
+    deps = _gated(Rig(), forge, Performed())
+    forge.tick(deps)
+    forge.tick(deps)
+    forge.tick(deps, 120)
+    assert forge.fetches == 1
+    forge.tick(deps, 301)
+    assert forge.fetches == 2
+
+
+def test_a_gate_records_only_on_the_tick_that_pauses_it():
+    paused = CiGate(True, "outage")
+    assert next_gate_record(False, paused, ("a", "b"), 3) == {
+        "kind": "needs_chair", "initiative": "ci-gate", "cause": "ci_gate_paused: outage; held for CI: a, b", "epoch": 3,
+    }
+    assert next_gate_record(True, paused, ("a",), 3) is None
+    assert next_gate_record(True, CiGate(False, ""), (), 3) is None
+
+
+def test_a_dry_run_records_no_gate_and_leaves_the_carried_state_alone():
+    rig, forge = Rig(lease=FREE), Forge()
+    deps = _gated(rig, forge)
+    forge.down = True
+    forge.at += 60
+    tick(deps, True, datetime.fromtimestamp(forge.at, UTC))
+    assert _needs_chair(rig) == [] and deps.gate_state.paused is False
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_an_unpaused_tick_reads_no_lease_from_the_facts_and_keeps_the_carried_state(gated):
+    forge, seen = Forge(), []
+    deps = replace(
+        Rig().deps(), gather=lambda _d, _n: {}, plan=lambda f, n: seen.append(f) or [],
+        perform=lambda *_: [], **({"status_reader": forge.reader()} if gated else {}),
+    )
+    forge.tick(deps)
+    assert seen == [{}] and deps.gate_state.paused is False
+
+
+def test_each_chair_carries_its_own_gate_state():
+    assert Rig().deps().gate_state is not Rig().deps().gate_state
 
 
 def _meter_actions(rig):
