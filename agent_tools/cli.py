@@ -2077,13 +2077,33 @@ def _landed_pr(kind: str, ok: bool, detail: str, prior: str) -> str:
     return (_pr_url(detail) or "") if kind == "pr_create" and ok else prior
 
 
+# A conflict, a missing review or a draft can never merge; UNKNOWN is GitHub still computing, so it is re-read, and
+# merges if it stays UNKNOWN (gh's own merge then refuses what cannot merge). UNSTABLE (only optional checks red) and
+# HAS_HOOKS merge, as every land did before this gate (2026-10-06: #1426 and #1430 stopped on UNKNOWN with green checks).
+_MERGE_STOPS = frozenset({"DIRTY", "BLOCKED", "DRAFT"})
+_UNKNOWN_READS = 6
+_UNKNOWN_WAIT_S = 5.0
+
+
 def merge_gate(state: str) -> tuple[str, str]:
-    """`(decision, state)` from a PR's mergeStateStatus: only CLEAN merges and only BEHIND is updated first."""
-    if state == "CLEAN":
-        return "merge", ""
+    """`(decision, state)` from a PR's mergeStateStatus: BEHIND is updated first, DIRTY, BLOCKED and DRAFT stop, and
+    anything else merges."""
     if state == "BEHIND":
         return "update_then_merge", ""
-    return "stop", state
+    if state in _MERGE_STOPS:
+        return "stop", state
+    return "merge", ""
+
+
+def _settled_merge_state(read: Callable[[], str], sleep: Callable[[float], None] | None = None) -> str:
+    """The first state other than UNKNOWN in up to `_UNKNOWN_READS` reads, `_UNKNOWN_WAIT_S` apart; UNKNOWN if it never settles."""
+    state = read()
+    for _ in range(_UNKNOWN_READS - 1):
+        if state != "UNKNOWN":
+            return state
+        (sleep or time.sleep)(_UNKNOWN_WAIT_S)
+        state = read()
+    return state
 
 
 def _pr_number(steps: Sequence[dict], i: int, pr_url: str) -> int | None:
@@ -2110,7 +2130,7 @@ def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, for
     from agent_tools.forge import ForgeError, ForgeNotSupported
 
     try:
-        decision, state = merge_gate(forge_module.merge_state(number, repo=repo))
+        decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
     except ForgeNotSupported:
         return None
     except ForgeError as exc:
