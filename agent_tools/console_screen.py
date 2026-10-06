@@ -1,27 +1,21 @@
-"""Curses edge for `cox console`: gathers drafts, hosts (the local machine
+"""Pure pieces of `cox console`: gathers drafts, hosts (the local machine
 always included, lanes in use over capacity), lanes, the chair's live/stale
-state and the spend header, renders them, and runs the `cox` command
-`console_plan.plan_command` plans for a keypress. `curses` is imported
-inside each function that needs it, so this module imports on a machine
-with no terminal and the pure pieces (`gather`, `render`, `selection_at`,
-`with_local_host`) stay testable without one. `console_screen` never reads
-usage, pacing or the run store's cost directly: the CLI edge computes the
-spend figures and hands them in as a plain dict.
+state and the spend header, and renders them as lines. `console_screen`
+never reads usage, pacing or the run store's cost directly: the CLI edge
+computes the spend figures and hands them in as a plain dict.
 """
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
-import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 
-from agent_tools import chair_facts, chair_read_stale, console_plan, draft_list, run_store, runs_top_screen
+from agent_tools import chair_facts, chair_read_stale, draft_list, run_store, runs_top_screen
 
 _SECTION_ORDER = ("drafts", "hosts", "lanes", "chair", "needs_chair")
 _SELECTABLE_SECTIONS = ("drafts", "hosts", "lanes", "chair")
@@ -311,99 +305,3 @@ def selection_at(sections: dict, index: int) -> dict | None:
     """Pure. The `plan_command` selection for the index-th selectable item; None past the last one."""
     flat = _selectable_rows(sections)
     return _selection(*flat[index]) if 0 <= index < len(flat) else None
-
-
-def _last_line(text: str) -> str | None:
-    lines = [line for line in text.splitlines() if line.strip()]
-    return lines[-1] if lines else None
-
-
-def _draw(stdscr, sections: dict, selected: int, message: str | None, now: datetime, tz: tzinfo) -> None:
-    import curses
-
-    stdscr.clear()
-    height, width = stdscr.getmaxyx()
-    lines = render(sections, selected, width, now, tz)
-    if message is not None:
-        lines = [*lines, message[:width]]
-    for row_i, line in enumerate(lines[:height]):
-        with contextlib.suppress(curses.error):
-            stdscr.addnstr(row_i, 0, line, width)
-    stdscr.refresh()
-
-
-def _act(stdscr, sections: dict, selected: int, key: str) -> str | None:
-    """Edge. Plans, confirms and only on `y` runs the command for `key` on the selected row; None with no command,
-    no selection, or a non-`y` answer."""
-    import curses
-
-    selection = selection_at(sections, selected)
-    if selection is None:
-        return None
-    argv = console_plan.plan_command(selection, key)
-    if argv is None:
-        return None
-    height, width = stdscr.getmaxyx()
-    with contextlib.suppress(curses.error):
-        stdscr.addnstr(height - 1, 0, console_plan.confirm_line(argv)[:width], width)
-    stdscr.refresh()
-    confirm = stdscr.getch()
-    if confirm not in (ord("y"), ord("Y")):
-        return None
-    result = subprocess.run(argv, capture_output=True, text=True)
-    return _last_line(result.stdout) or _last_line(result.stderr)
-
-
-def loop(
-    stdscr, runs_dir: Path, work_dir: Path, local_name: str, local_capacity: int,
-    spend_fn: Callable[[], dict], interval: float,
-) -> int:
-    import curses
-
-    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
-        curses.curs_set(0)
-    stdscr.timeout(int(interval * 1000))
-    selected = 0
-    message: str | None = None
-    while True:
-        now = datetime.now(UTC)
-        tz = now.astimezone().tzinfo
-        sections = gather(runs_dir, work_dir, now.isoformat(), local_name, local_capacity, spend_fn())
-        total = len(_selectable_rows(sections))
-        selected = min(selected, total - 1) if total else 0
-        _draw(stdscr, sections, selected, message, now, tz)
-        message = None
-        ch = stdscr.getch()
-        if ch in (ord("q"), ord("Q")):
-            return 0
-        if ch == curses.KEY_DOWN:
-            selected = min(selected + 1, total - 1) if total else 0
-        elif ch == curses.KEY_UP:
-            selected = max(selected - 1, 0)
-        elif 0 <= ch < 256:
-            message = _act(stdscr, sections, selected, chr(ch))
-        # curses.KEY_RESIZE and a plain timeout both fall through here: the
-        # next iteration redraws against the current sections and size.
-
-
-def main(
-    runs_dir: Path, work_dir: Path, local_name: str, local_capacity: int,
-    spend_fn: Callable[[], dict], interval: float = 5.0,
-) -> int:
-    import curses
-    import signal
-
-    def _hangup(signum, frame):
-        raise KeyboardInterrupt
-
-    previous = signal.signal(signal.SIGHUP, _hangup)
-    try:
-        return curses.wrapper(
-            lambda stdscr: loop(stdscr, runs_dir, work_dir, local_name, local_capacity, spend_fn, interval)
-        )
-    except KeyboardInterrupt:
-        # A closed window sends SIGHUP; raising through the wrapper lets it
-        # restore the terminal before this function returns.
-        return 0
-    finally:
-        signal.signal(signal.SIGHUP, previous)

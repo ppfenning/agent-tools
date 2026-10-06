@@ -1,13 +1,9 @@
-"""Curses edge for `cox runs top`: reads the facts a running harness leaves on
-disk, maps them through the pure `runs_top` model, and draws the result.
-`curses` is imported inside each function that needs it, so this module
-imports on a machine with no terminal and the pure pieces stay testable with
-a fake stdscr.
+"""Edge for `cox runs top`: reads the facts a running harness leaves on
+disk and maps them through the pure `runs_top` model into rows.
 """
 
 from __future__ import annotations
 
-import contextlib
 import datetime
 import json
 import re
@@ -19,7 +15,7 @@ from agent_tools import chair, chair_stall, epic, run_store, runs_top
 from agent_tools import events as events_module
 from agent_tools.records import ceiling_for, load_trace
 
-__all__ = ["chair_now", "draw", "facts", "first_visible", "loop", "main", "rows_now"]
+__all__ = ["chair_now", "facts", "rows_now"]
 
 _STALE_SECONDS = 600
 _TRACE_NAME = re.compile(r"^([A-Za-z0-9_]+)-(\d+)$")
@@ -233,99 +229,6 @@ def rows_now(runs_dir, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES,
     return [*local, *_remote_rows(root, lanes, now)]
 
 
-def _has_colors() -> bool:
-    import curses
-
-    try:
-        return curses.has_colors()
-    except curses.error:
-        return False  # no real terminal behind stdscr, e.g. under test
-
-
-def _attr(row, has_color: bool):
-    import curses
-
-    label = runs_top.highlight(row)
-    if label == "alert":
-        return (curses.color_pair(1) if has_color else 0) | curses.A_BOLD
-    if label == "dim":
-        return curses.A_DIM
-    return curses.A_NORMAL
-
-
-def _chair_attr(chair_state, has_color: bool):
-    import curses
-
-    if runs_top.chair_highlight(chair_state) == "alert":
-        return (curses.color_pair(1) if has_color else 0) | curses.A_BOLD
-    return curses.A_NORMAL
-
-
-def _ordered(rows: list) -> list:
-    return runs_top.order(rows)
-
-
-def _line_kinds(ordered: list, expanded, detail_count: int, has_leader: bool) -> list:
-    """One entry per line `runs_top.render` draws: `None` for the leader line
-    (when `has_leader`), the header, or a detail line, `(row, index)` for a
-    row's own line."""
-    kinds = [None] * (2 if has_leader else 1)
-    for i, r in enumerate(ordered):
-        kinds.append((r, i))
-        if r.run == expanded:
-            kinds.extend([None] * detail_count)
-    return kinds
-
-
-def _scroll_facts(ordered: list, expanded, detail_count: int, cursor: int, has_leader: bool) -> tuple[int, int]:
-    """The cursor's absolute line number and the total line count, for `first_visible`."""
-    kinds = _line_kinds(ordered, expanded, detail_count, has_leader)
-    cursor_line = next(i for i, k in enumerate(kinds) if k is not None and k[1] == cursor)
-    return cursor_line, len(kinds)
-
-
-def first_visible(cursor_index: int, total_lines: int, window_height: int, current_first: int) -> int:
-    """Pure: the scroll offset that keeps `cursor_index` on screen, moving `current_first` no more than it must."""
-    if window_height <= 0:
-        return current_first
-    last_first = max(total_lines - window_height, 0)
-    first = min(current_first, last_first)
-    if cursor_index < first:
-        first = cursor_index
-    elif cursor_index > first + window_height - 1:
-        first = cursor_index - window_height + 1
-    return max(min(first, last_first), 0)
-
-
-def draw(stdscr, rows: list, cursor: int | None = None, chair_state=runs_top.UNSET,
-         expanded=None, detail_lines: tuple = (), first: int = 0) -> None:
-    import curses
-
-    stdscr.clear()
-    height, width = stdscr.getmaxyx()
-    lines = runs_top.render(rows, width, chair_state, expanded, detail_lines)
-    has_leader = chair_state is not runs_top.UNSET
-    ordered = _ordered(rows)
-    kinds = _line_kinds(ordered, expanded, len(detail_lines), has_leader)
-    has_color = _has_colors()
-    if has_color:
-        try:
-            curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
-        except curses.error:
-            has_color = False
-    for row_i, line in enumerate(lines[first:first + height]):
-        i = first + row_i
-        if has_leader and i == 0:
-            attr = _chair_attr(chair_state, has_color)
-        else:
-            kind = kinds[i] if 0 <= i < len(kinds) else None
-            base = _attr(kind[0], has_color) if kind is not None else curses.A_NORMAL
-            attr = base | curses.A_REVERSE if kind is not None and cursor == kind[1] else base
-        with contextlib.suppress(curses.error):
-            stdscr.addnstr(row_i, 0, line, width, attr)
-    stdscr.refresh()
-
-
 def _session_text(root: Path, run: str) -> str:
     """Edge: the newest trace file's assistant message text, one line per text item.
     Tool calls are left out; `facts_for`'s `tail` already carries those into the
@@ -351,61 +254,3 @@ def _accordion_detail(runs_dir, run: str, width: int, now_alive) -> list[str]:
     detail = runs_detail.detail(**runs_detail_screen.facts_for(runs_dir, run, now_alive=now_alive))
     tail = runs_top.tail_lines(_session_text(root, run), 3)
     return [*runs_detail.render(detail, width), *tail]
-
-
-def loop(stdscr, runs_dir, interval: float, tick=rows_now, now_alive=None,
-         heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
-    import curses
-
-    with contextlib.suppress(curses.error):  # no real terminal behind stdscr, e.g. under test
-        curses.curs_set(0)
-    stdscr.timeout(int(interval * 1000))
-    cursor = 0
-    expanded = None
-    first = 0
-    while True:
-        rows = tick(runs_dir)
-        chair_state = chair_now(runs_dir, heartbeat_minutes)
-        ordered = _ordered(rows)
-        cursor = min(cursor, len(ordered) - 1) if ordered else 0
-        expanded = expanded if any(r.run == expanded for r in ordered) else None
-        height, width = stdscr.getmaxyx()
-        is_remote = any(r.run == expanded and r.remote for r in ordered)  # its files are on another machine
-        detail_lines = _accordion_detail(runs_dir, expanded, width, now_alive) if expanded is not None and not is_remote else ()
-        if ordered:
-            cursor_line, total_lines = _scroll_facts(ordered, expanded, len(detail_lines), cursor,
-                                                       chair_state is not runs_top.UNSET)
-            first = first_visible(cursor_line, total_lines, height, first)
-        draw(stdscr, rows, cursor if ordered else None, chair_state, expanded, detail_lines, first)
-        ch = stdscr.getch()
-        if ch in (ord("q"), ord("Q")):
-            return 0
-        if ordered and ch in (ord("j"), curses.KEY_DOWN):
-            cursor = min(cursor + 1, len(ordered) - 1)
-        elif ordered and ch in (ord("k"), curses.KEY_UP):
-            cursor = max(cursor - 1, 0)
-        elif ordered and ch in (10, 13, curses.KEY_ENTER):
-            run = ordered[cursor].run
-            expanded = None if expanded == run else run
-        elif ch == 27:
-            expanded = None
-        # curses.KEY_RESIZE and a plain timeout both fall through here: either
-        # way the next iteration redraws against the current rows and size.
-
-
-def main(runs_dir, interval: float, heartbeat_minutes: int = chair.DEFAULT_HEARTBEAT_MINUTES) -> int:
-    import curses
-    import signal
-
-    def _hangup(signum, frame):
-        raise KeyboardInterrupt
-
-    previous = signal.signal(signal.SIGHUP, _hangup)
-    try:
-        return curses.wrapper(lambda stdscr: loop(stdscr, runs_dir, interval, heartbeat_minutes=heartbeat_minutes))
-    except KeyboardInterrupt:
-        # A closed window sends SIGHUP; raising through the wrapper lets it
-        # restore the terminal before this function returns.
-        return 0
-    finally:
-        signal.signal(signal.SIGHUP, previous)
