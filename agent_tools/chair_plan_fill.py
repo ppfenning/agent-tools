@@ -2,7 +2,7 @@
 
 Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
 """
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from agent_tools import chair_login_watch
 from agent_tools.chair_steer import steer_check
@@ -37,17 +37,37 @@ def _best_host(required: frozenset[str], hosts: Sequence[HostSlot]) -> tuple[str
     return name, [updated if i == idx else host for i, host in enumerate(hosts)]
 
 
-def _place_on_hosts(rest: list[tuple[str, frozenset[str]]], hosts: Sequence[HostSlot]) -> list[Action]:
-    """Each initiative goes to the best-ranked host whose capabilities cover its requires; none eligible, none placed."""
+def _epic_action(initiative_id: str, host: str) -> Action:
+    return {"kind": "launch_epic", "initiative": initiative_id, "host": host}
+
+
+def _decompose_action(intake_id: str, host: str) -> Action:
+    return {"kind": "launch_decompose", "intake_ids": [intake_id], "host": host}
+
+
+def _place_on_hosts(
+    rest: list[tuple[str, frozenset[str]]],
+    hosts: Sequence[HostSlot],
+    make: Callable[[str, str], Action] = _epic_action,
+) -> list[Action]:
+    """Each item goes to the best-ranked host whose capabilities cover its requires; none eligible, none placed."""
     if not rest:
         return []
-    initiative_id, required = rest[0]
+    item_id, required = rest[0]
     placed = _best_host(required, hosts)
     if placed is None:
-        return _place_on_hosts(rest[1:], hosts)
+        return _place_on_hosts(rest[1:], hosts, make)
     name, new_hosts = placed
-    action: Action = {"kind": "launch_epic", "initiative": initiative_id, "host": name}
-    return [action, *_place_on_hosts(rest[1:], new_hosts)]
+    return [make(item_id, name), *_place_on_hosts(rest[1:], new_hosts, make)]
+
+
+def _after_placing(hosts: Sequence[HostSlot], actions: Sequence[Action]) -> list[HostSlot]:
+    """hosts with one free lane taken, and one assignment counted, for each hosted action."""
+    taken = [a["host"] for a in actions if "host" in a]
+    return [
+        (name, weight, capabilities, free - taken.count(name), assigned + taken.count(name))
+        for name, weight, capabilities, free, assigned in hosts
+    ]
 
 
 def _walk_candidates(
@@ -101,12 +121,15 @@ def _epic_launches(
     return [*launches, *steers]
 
 
-def _decompose_launches(facts: Facts, lanes: int) -> list[Action]:
-    """One intake item per free local lane, oldest first."""
-    return [
-        {"kind": "launch_decompose", "intake_ids": [intake_id]}
-        for intake_id in facts["intake"][: max(0, lanes)]
-    ]
+def _decompose_launches(facts: Facts, lanes: int, host_free: Sequence[HostSlot] = ()) -> list[Action]:
+    """One intake item per free local lane, oldest first; the rest go to lane hosts, ranked as epics are.
+
+    A decompose requires no capabilities, so any host with a free lane is eligible, and each hosted one counts
+    toward its host's weighted share for the epics placed after it."""
+    fit = max(0, lanes)
+    local: list[Action] = [{"kind": "launch_decompose", "intake_ids": [i]} for i in facts["intake"][:fit]]
+    overflow = [(intake_id, frozenset[str]()) for intake_id in facts["intake"][fit:]]
+    return [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
 
 
 def _wants_pull(facts: Facts, lanes_left: int) -> bool:
@@ -149,6 +172,7 @@ def plan_fill(
     withheld: frozenset[str] = frozenset(),
     consumed_host_lanes: dict[str, int] | None = None,
     claimed: Sequence[RunningInitiative] = (),
+    hosted_decompose: bool = False,
 ) -> list[Action]:
     """claimed names initiatives launched earlier this tick; they count as running for the overlap check.
 
@@ -156,7 +180,10 @@ def plan_fill(
     tick, so fill never places a fresh launch_epic on a lane that action just filled.
 
     dispatch local_lanes "decompose" keeps the free local lanes for intake decomposes: every epic goes to a
-    lane host, and the decomposes take the local lanes."""
+    lane host, and the decomposes take the local lanes.
+
+    hosted_decompose sends a decompose past the local lanes to a lane host, before epics are placed on hosts.
+    It defaults off: `cox route launch decompose` has no `--on` yet, so a hosted decompose would fail to parse."""
     host_free = host_free_slots(facts)
     if consumed_host_lanes:
         host_free = _less_consumed(host_free, consumed_host_lanes)
@@ -164,9 +191,13 @@ def plan_fill(
         return []
     local_lanes = max(0, free_lanes)
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
-    epics = _epic_launches(facts, 0 if reserved else free_lanes, withheld, host_free, claimed)
-    local_epics = [a for a in epics if a["kind"] == "launch_epic" and "host" not in a]
-    decomposes = _decompose_launches(facts, local_lanes - len(local_epics))
-    lanes_left = local_lanes - len(local_epics) - len(decomposes)
+    epic_lanes = 0 if reserved else free_lanes
+    first_pass = _epic_launches(facts, epic_lanes, withheld, host_free, claimed)
+    local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
+    decomposes = _decompose_launches(facts, local_lanes - len(local_epics), host_free if hosted_decompose else ())
+    # Host lanes a decompose took are gone before epics are placed on hosts; the local epic count is unchanged.
+    epics = _epic_launches(facts, epic_lanes, withheld, _after_placing(host_free, decomposes), claimed)
+    local_decomposes = [a for a in decomposes if "host" not in a]
+    lanes_left = local_lanes - len(local_epics) - len(local_decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []
     return [*epics, *decomposes, *pulls]

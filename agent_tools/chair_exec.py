@@ -247,8 +247,10 @@ def argv_for(action: Action, initiative_id: str = "", ids_mode: str = "slug") ->
         return ["cox", "runs", "fetch", run] if run else None
     if kind == "launch_decompose":
         task_ids = ["--task-ids", "ordinal"] if ids_mode == "sequence" else []
+        decompose_host = action.get("host", "")
         return [
             "cox", "route", "launch", "decompose", "--idea", idea, "--initiative-id", initiative_id, *task_ids, "--no-claim",
+            *(["--on", decompose_host] if decompose_host else []),
         ] if idea and initiative_id else None
     if kind == "rescue":
         return ["cox", "route", "launch", "rescue", "--initiative", f"work/{initiative}", "--task", task, "--no-claim"] if initiative and task else None
