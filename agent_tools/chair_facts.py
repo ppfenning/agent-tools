@@ -129,6 +129,8 @@ class FactsDeps:
         adds (whether landing the phase would add commits over main). Optional, and absent means no stranded phase.
     branch_counts: one row per initiative with a phase branch, keys initiative, phase, branch, ahead, behind, tip,
         counted against main by the git reader. Optional, and absent means no phase branch.
+    landing: the lands in progress on the land worker, keys initiative, phase, repo (`WorkerLands.landing`).
+        Optional, and absent means an empty list.
     """
 
     lease: Callable[[], Row]
@@ -179,6 +181,7 @@ class FactsDeps:
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
+    landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -653,4 +656,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "steer_streaks": steer_streaks_from_actions(list(deps.actions())) if deps.actions is not None else {},
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
+        "landing": list(deps.landing()) if deps.landing is not None else [],
     }

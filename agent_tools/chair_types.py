@@ -99,6 +99,14 @@ class ApprovedTask(TypedDict):
     needs_fetch: bool  # the run is remote and not yet fetched; False without a run
 
 
+class LandingFact(TypedDict):
+    """A land the worker is running now, from the action it was submitted with; a key the action lacked is empty."""
+
+    initiative: str
+    phase: str
+    repo: str
+
+
 class ReviewPr(TypedDict):
     """An approved task whose review PR the forge is asked about; state is "unknown" when the forge said nothing."""
 
@@ -315,6 +323,7 @@ class Facts(TypedDict):
     home: dict[str, str]
     run_hosts: NotRequired[dict[str, str]]  # run id to the host name that ran it; a local run is absent; absent means {}
     review_prs: NotRequired[list[ReviewPr]]  # approved tasks awaiting a review PR; absent means none
+    landing: NotRequired[list[LandingFact]]  # lands in progress on the land worker; absent means none
     running: NotRequired[list[RunningInitiative]]  # initiatives with a live lane on any machine; absent means none
     # Keyed `<candidate>|<other>`: the count of consecutive prior deferrals for that ordered pair; absent means 0.
     steer_streaks: NotRequired[dict[str, int]]

@@ -30,7 +30,7 @@ from agent_tools.forge_status import StatusReader
 
 __all__ = [
     "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
-    "land_sink", "next_gate_record", "no_lands_to_stop", "run", "tick",
+    "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "run", "tick",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -54,6 +54,11 @@ def _read_meter_doc() -> dict | None:
 
 def no_lands_to_stop() -> None:
     """The stop hook of a chair with no land worker."""
+
+
+def no_landing() -> list[dict[str, str]]:
+    """The landing source of a chair with no land worker."""
+    return []
 
 
 def no_gate_change(_gate: CiGate) -> None:
@@ -153,6 +158,14 @@ class WorkerLands:
     def queued_since(self) -> tuple[float, ...]:
         with self._lock:
             return tuple(self._since.values())
+
+    def landing(self) -> list[dict[str, str]]:
+        """One dict per land still in progress, read from the action it was submitted with."""
+        return [
+            {"initiative": a.get("initiative", ""), "phase": a.get("phase", ""), "repo": a.get("repo", "")}
+            for a, h in list(self._handles.values())
+            if h.in_progress()
+        ]
 
     def _timed(self, repo: str, work: Callable[[], Result]) -> Callable[[], Result]:
         def timed() -> Result:

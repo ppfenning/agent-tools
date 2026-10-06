@@ -7074,6 +7074,7 @@ def _chair_run_deps(
         # the tick's own `beat` also clears this tick's fact caches, which a worker thread must never touch.
         sink = chair_run.land_sink(lambda: chair.renew_lease(runs_dir, session, pid, host))
         exec_deps = dataclasses.replace(exec_deps, lands=sink)
+        facts_deps = dataclasses.replace(facts_deps, landing=sink.landing)
         stop_lands = sink.stop
     return chair_run.RunDeps(
         stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
