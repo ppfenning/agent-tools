@@ -162,6 +162,9 @@ def beat(
     return {**record, "heartbeat_at": now.isoformat(), "runs": runs, "claude_session": kept}, ""
 
 
+BEAT_LOOP_DEPRECATION = "chair: beat-loop is deprecated; the chair loop now beats its own lease and this subcommand will be removed in the next release"
+
+
 def beat_loop(
     label: str,
     pid: int,
@@ -179,6 +182,7 @@ def beat_loop(
     `alive` means the pid is alive but unsignallable, same as `pid_alive`."""
     tick = DEFAULT_HEARTBEAT_MINUTES * 60 / 2 if interval is None else interval
     host = socket.gethostname()
+    print(BEAT_LOOP_DEPRECATION, file=sys.stderr)
     while True:
         try:
             alive(pid, 0)
@@ -382,7 +386,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(prog="python -m agent_tools.chair")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
-    beat_loop_parser = subparsers.add_parser("beat-loop", help="beat the chair for --label/--pid until the pid is gone")
+    beat_loop_parser = subparsers.add_parser("beat-loop", help="DEPRECATED: the chair loop beats its own lease; beat the chair for --label/--pid until the pid is gone")
     beat_loop_parser.add_argument("--label", required=True)
     beat_loop_parser.add_argument("--pid", type=int, required=True)
     beat_loop_parser.add_argument("--runs-dir", required=True, type=Path)
