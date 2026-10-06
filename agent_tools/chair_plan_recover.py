@@ -103,8 +103,17 @@ def relaunch_pair(initiative: str) -> list[Action]:
     return [{"kind": "clear_branches", "initiative": initiative}, {"kind": "relaunch", "initiative": initiative}]
 
 
-def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
-    return [action for i in initiatives if _can_relaunch(i, blocked) for action in relaunch_pair(i["id"])]
+def _landing_repos(facts: Facts) -> set[str]:
+    return {landing["repo"] for landing in facts.get("landing", [])}
+
+
+def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str], landing_repos: set[str]) -> list[Action]:
+    return [
+        action
+        for i in initiatives
+        if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos
+        for action in relaunch_pair(i["id"])
+    ]
 
 
 def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
@@ -204,6 +213,8 @@ def plan_recover(facts: Facts) -> list[Action]:
     An initiative in `schema_deaths` gets one schema-version needs_chair carrying the two run ids, and no
     relaunch, retry or rescue. Its quarantines still report their own needs_chair.
 
+    An initiative whose repo has a land in `landing` gets no relaunch pair, so the pair never takes a launch slot.
+
     Every open quarantine blocks its initiative's relaunch except one whose recovery is "none".
     A runaway-ceiling quarantine always reaches the chair, ahead of every other rule: it is never retried or
     rescued, whatever its harness_failures, retry count or approval state.
@@ -220,7 +231,7 @@ def plan_recover(facts: Facts) -> list[Action]:
     return _steered(
         _schema_death_actions(deaths)
         + _without_schema_dead_launches(_quarantine_actions(quarantines, approved), deaths)
-        + _relaunch_actions(facts["initiatives"], blocked)
+        + _relaunch_actions(facts["initiatives"], blocked, _landing_repos(facts))
         + _waiting_actions(facts["initiatives"], blocked),
         facts,
     )

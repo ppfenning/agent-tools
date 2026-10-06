@@ -2,7 +2,7 @@ import copy
 
 from agent_tools.chair_plan_recover import plan_recover
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
-from agent_tools.chair_types import ApprovedTask, Facts, InitiativeFacts, QuarantineFacts
+from agent_tools.chair_types import ApprovedTask, Facts, InitiativeFacts, LandingFact, QuarantineFacts
 
 
 def _initiative(started: bool = True, ready: list[dict] | None = None, landed: set[str] | None = None) -> InitiativeFacts:
@@ -49,8 +49,10 @@ def _facts(
     initiatives: list[InitiativeFacts],
     quarantines: list[QuarantineFacts],
     approved: list[ApprovedTask] | None = None,
+    landing: list[LandingFact] | None = None,
 ) -> Facts:
     return {
+        **({} if landing is None else {"landing": landing}),
         "lease": {"holder": "a", "host": "h", "epoch": 1, "mine": True, "released": False, "stale": False},
         "limits": {"hard_stop": False, "weekly_fraction": 0.1, "hard_stop_fraction": 0.9, "launch_cap": 2, "go_degraded": False},
         "dispatch": {"max_in_flight": 3, "live_runs": 0},
@@ -218,3 +220,31 @@ def test_a_stranded_approved_quarantine_alone_does_not_relaunch_without_ready_ta
         [_initiative(ready=[])], [_quarantine(cause="stranded", task_id="q1")], approved=[_approved(task_id="q1")]
     )
     assert plan_recover(facts) == []
+
+
+def _in_repo(initiative: str, repo: str) -> InitiativeFacts:
+    return {**_initiative(), "id": initiative, "repo": repo}
+
+
+_PAIRS = [
+    {"kind": "clear_branches", "initiative": "a"},
+    {"kind": "relaunch", "initiative": "a"},
+    {"kind": "clear_branches", "initiative": "b"},
+    {"kind": "relaunch", "initiative": "b"},
+]
+
+
+def test_an_initiative_whose_repo_is_landing_gets_no_relaunch_pair():
+    landing: list[LandingFact] = [{"initiative": "x", "phase": "p", "repo": "r1"}]
+    facts = _facts([_in_repo("a", "r1"), _in_repo("b", "r2")], [], landing=landing)
+    assert plan_recover(facts) == _PAIRS[2:]
+
+
+def test_an_empty_landing_list_relaunches_both_initiatives():
+    assert plan_recover(_facts([_in_repo("a", "r1"), _in_repo("b", "r2")], [], landing=[])) == _PAIRS
+
+
+def test_facts_with_no_landing_key_relaunch_both_initiatives():
+    facts = _facts([_in_repo("a", "r1"), _in_repo("b", "r2")], [])
+    assert "landing" not in facts
+    assert plan_recover(facts) == _PAIRS
