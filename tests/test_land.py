@@ -3,6 +3,7 @@ import json
 import os
 import subprocess as sp
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_run_store import phases_table, run_row, runs_table, with_record
@@ -2129,3 +2130,52 @@ def test_cherry_pick_generated_refuses_a_binary_add_add_without_raising(tmp_path
     assert not (root / ".git" / "CHERRY_PICK_HEAD").exists()
     status = sp.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True).stdout
     assert status.strip() == ""
+
+
+# --- merge refused for an expected required check: back to wait_checks once ---
+
+EXPECTED = 'Required status check "test" is expected.'
+CONFLICT = "Pull request is not mergeable: the merge commit cannot be cleanly created"
+
+
+def test_merge_expects_check_accepts_the_github_message_whatever_the_check_name():
+    assert land.merge_expects_check(EXPECTED)
+    assert land.merge_expects_check(EXPECTED.replace("test", "lint / build (3.12)"))
+
+
+def test_merge_expects_check_rejects_a_merge_conflict_message():
+    assert not land.merge_expects_check(CONFLICT)
+
+
+def _walk_merge(tmp_path, merges):
+    calls: list[str] = []
+    results = iter(merges)
+
+    def wait_checks(repo, timeout_s, ref="HEAD"):
+        calls.append("wait_checks")
+        return True, "green"
+
+    def merge(repo, step):
+        calls.append("merge")
+        return next(results)
+
+    forge = SimpleNamespace(wait_checks=wait_checks, merge=merge)
+    steps = [{"kind": "wait_checks", "branch": "pr/x"}, {"kind": "merge", "branch": "pr/x"}]
+    rc, reached, _ = cli._land_walk(tmp_path, steps, steps, None, None, "full", False, forge, [])
+    return rc, calls, reached
+
+
+def test_an_expected_check_refusal_waits_once_more_then_merges(tmp_path):
+    rc, calls, reached = _walk_merge(tmp_path, [(False, EXPECTED), (True, "merged")])
+    assert (rc, calls) == (0, ["wait_checks", "merge", "wait_checks", "merge"])
+    assert reached == calls
+
+
+def test_a_second_expected_check_refusal_stops_the_land(tmp_path):
+    rc, calls, _ = _walk_merge(tmp_path, [(False, EXPECTED), (False, EXPECTED)])
+    assert (rc, calls) == (1, ["wait_checks", "merge", "wait_checks", "merge"])
+
+
+def test_a_different_merge_failure_does_not_loop(tmp_path):
+    rc, calls, _ = _walk_merge(tmp_path, [(False, CONFLICT)])
+    assert (rc, calls) == (1, ["wait_checks", "merge"])

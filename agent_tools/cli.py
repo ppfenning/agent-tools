@@ -2373,12 +2373,15 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
                mode: str = "files", guard: Callable[[str], str | None] | None = None) -> tuple[int, list[str], str]:
     pr = ""
     reached: list[str] = []
-    for i in range(len(steps)):
+    looped = False
+    i = 0
+    while i < len(steps):
         step = steps[i]
         if step["kind"] == "refuse":
             print(f"refused: {step['reason']}")
             return 2, reached, pr
         if step["kind"] == "note":
+            i += 1
             continue
         held = guard(step["kind"]) if guard is not None else None
         if held is not None:
@@ -2414,6 +2417,14 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             # `_execute_land_step` detached it and deleted its branch; the next land's same step removes it.
             built.remove(step["onto"])
             print(f"land: worktree left at {_land_worktree(repo, step['onto'])} for inspection")
+        if not ok and step["kind"] == "merge" and not looped and land.merge_expects_check(detail):
+            # A required check had not reported when the merge ran; wait once more, then retry the merge.
+            waits = [j for j in range(i) if steps[j]["kind"] == "wait_checks"]
+            if waits:
+                looped = True
+                print("land: merge refused for an expected required check; waiting for checks once more")
+                i = waits[-1]
+                continue
         if not ok:
             remaining = [s["kind"] for s in steps[i + 1:]]
             print("stopped; remaining: " + ", ".join(remaining))
@@ -2421,6 +2432,7 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
         if step["kind"] == "wait_checks" and no_merge:
             print("stopping after wait_checks (--no-merge)")
             return 0, reached, pr
+        i += 1
     stop = land.gate_stop(planned, steps, level, pr)
     if stop:
         print(stop)
