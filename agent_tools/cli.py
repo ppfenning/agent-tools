@@ -832,6 +832,21 @@ def _steward_draft(a: argparse.Namespace) -> int:
     return steward_draft.run_draft(Path(profile["workspace_dir"]).expanduser(), as_json=a.json)
 
 
+def _run_slug(run_key: str) -> str:
+    """The initiative slug of a run key: the key with one trailing `-<digits>` removed."""
+    return re.sub(r"-\d+$", "", run_key)
+
+
+def _with_short_ids(rows: Sequence[runs_top.Row], short_ids: Mapping[str, str]) -> list[runs_top.Row]:
+    """Each row with `short_id` set from its slug; a slug with no entry keeps the row's own."""
+    return [dataclasses.replace(r, short_id=short_ids.get(_run_slug(r.run), r.short_id)) for r in rows]
+
+
+def _run_short_ids(run_ids: Sequence[str], short_ids: Mapping[str, str]) -> dict[str, str]:
+    """Run id to short id, from a slug-keyed `short_ids`; a run whose slug has no entry is absent."""
+    return {run_id: short_ids[_run_slug(run_id)] for run_id in run_ids if _run_slug(run_id) in short_ids}
+
+
 def _runs_top(a: argparse.Namespace) -> int:
     """On two terminals with coxtop installed, exec coxtop; otherwise, and always with --once, print the table."""
     # The seams are passed at call time so a test can stub them; launch's own defaults bind at import.
@@ -839,7 +854,8 @@ def _runs_top(a: argparse.Namespace) -> int:
         return 0
     heartbeat_minutes = _leader_heartbeat_minutes()
     chair_state = runs_top_screen.chair_now(a.runs_dir, heartbeat_minutes)
-    print("\n".join(runs_top.render(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), 120, chair_state)))
+    rows = _with_short_ids(runs_top_screen.rows_now(a.runs_dir, heartbeat_minutes), run_store.initiative_short_ids(a.runs_dir))
+    print("\n".join(runs_top.render(rows, 120, chair_state)))
     return 0
 
 
@@ -2737,13 +2753,15 @@ def _intake_groups_for(ws: Path, items: list):
     return _intake_groups(ws, items) if (ws / "intake").is_dir() else None
 
 
-def _status_rows_for(runs_dir: Path) -> list:
+def _status_rows_for(runs_dir: Path, short_ids: Mapping[str, str] | None = None) -> list:
     pids = {p.stem: t for p in sorted(runs_dir.glob("*.pid")) if (t := _read_text_or_none(p)) is not None}
     alive = {run_id: epic.run_live(route.parse_pid(t), runs_dir / f"{run_id}.pid") for run_id, t in pids.items()}
     started = {run_id: _mtime_iso(runs_dir / f"{run_id}.pid") for run_id in pids}
     runs = _with_remote_lanes(runs_dir, route.run_entries(pids, alive, started, _heartbeats(runs_dir, pids)))
     summaries = {p.stem: epic.summarize_log(_read_text_or_none(p) or "") for p in runs_dir.glob("*.log")}
-    return _with_lane_fields(route.status_rows(route.status_entries(runs, summaries)), runs, _now_iso())
+    entries = route.status_entries(runs, summaries)
+    by_run = _run_short_ids([e["id"] for e in entries], short_ids or {})
+    return _with_lane_fields(route.status_rows(entries, by_run), runs, _now_iso())
 
 
 def _route_drift(a: argparse.Namespace) -> int:
@@ -2928,7 +2946,8 @@ def _route_status(a: argparse.Namespace) -> int:
         ws = Path(workspace).expanduser()
         provider_profile = _lake_provider(a)[0]
         work_mode, work_line = work_state.resolve(provider_profile)
-        rows = _status_rows_for(ws / "runs")
+        short_ids = run_store.initiative_short_ids(ws / "runs")
+        rows = _status_rows_for(ws / "runs", short_ids)
         items = _stored_work_items(ws, work_mode)
         groups = _intake_groups_for(ws, items)
         problems = route.state_problems(items)
@@ -2944,7 +2963,10 @@ def _route_status(a: argparse.Namespace) -> int:
             print(json.dumps(doc, indent=2))
         else:
             shown, hidden = (rows, 0) if a.all else route.recent_rows(rows, datetime.datetime.now(datetime.UTC))
-            status = route.render_status(shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden)
+            status = route.render_status(
+                shown, groups, problems, gate_level=_resolved_gate_level(ws / "runs"), hidden=hidden,
+                short_ids=_run_short_ids([r["id"] for r in rows], short_ids),
+            )
             drafts = route.render_drafts(
                 draft_list.read_drafts(ws / "work", datetime.datetime.now(datetime.UTC).isoformat()), draft_list.format_age
             )
