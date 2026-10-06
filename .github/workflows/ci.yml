@@ -32,15 +32,14 @@ jobs:
     # This job installs the extras and a Postgres 16, so those tests run.
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
-    env:
-      COX_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
+        # a random host port, so two of these jobs can share a self-hosted runner's host (graphs #691)
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -48,6 +47,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Point the store tests at the service's host port
+        run: echo "COX_TEST_POSTGRES_URL=postgresql://postgres:postgres@localhost:${{ job.services.postgres.ports['5432'] }}/postgres" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with: { python-version: "3.14" }
       - run: pip install -e ".[dev,postgres,parquet,lake]"
