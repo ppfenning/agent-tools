@@ -615,7 +615,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "dispatch": dispatch,
         "approved": approved,
-        "home": initiative_homes(newest_run_host, unfinished),
+        "home": initiative_homes(newest_run_host, unfinished, deps.host),
         "initiatives": initiatives,
         "quarantines": quarantine_facts(
             quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
