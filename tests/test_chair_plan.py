@@ -1,6 +1,8 @@
 import copy
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from agent_tools.chair_facts import initiative_facts
 from agent_tools.chair_plan import (
     _free_lanes,
@@ -383,6 +385,33 @@ def test_a_stuck_home_with_no_run_to_fetch_does_not_move_and_reaches_the_chair(m
     assert plan_tick(facts) == [
         {"kind": "needs_chair", "initiative": "a", "cause": "home_unfetchable", "epoch": 7},
         {"kind": "needs_chair", "host": "jarvis", "cause": "login_lapsed", "epoch": 7},
+    ]
+
+
+def _chair_homed_facts(**dispatch_extra) -> Facts:
+    return _facts(
+        dispatch={**_two_host_dispatch(), "max_in_flight": 2, **dispatch_extra},
+        run_exited={"a": True},
+        home={"a": ""},
+        approved=[_home_approved("a-3")],
+    )
+
+
+def test_a_chair_homed_relaunch_moves_to_a_lane_host_when_local_lanes_are_decompose(monkeypatch):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    assert plan_tick(_chair_homed_facts(local_lanes="decompose")) == [
+        {"kind": "fetch", "run": "a-3", "repo": "r", "initiative": "a", "epoch": 7},
+        {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "host": "jarvis", "epoch": 7},
+    ]
+
+
+@pytest.mark.parametrize("dispatch_extra", [{}, {"local_lanes": "any"}])
+def test_a_chair_homed_relaunch_stays_local_when_the_setting_is_absent_or_not_decompose(monkeypatch, dispatch_extra):
+    _recovering(monkeypatch, [{"kind": "clear_branches", "initiative": "a"}, {"kind": "relaunch", "initiative": "a"}])
+    assert plan_tick(_chair_homed_facts(**dispatch_extra)) == [
+        {"kind": "clear_branches", "initiative": "a", "carry": ["p"], "epoch": 7},
+        {"kind": "relaunch", "initiative": "a", "epoch": 7},
     ]
 
 
