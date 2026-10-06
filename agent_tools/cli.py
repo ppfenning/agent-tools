@@ -2110,7 +2110,7 @@ def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, for
     from agent_tools.forge import ForgeError, ForgeNotSupported
 
     try:
-        decision, state = merge_gate(forge_module.merge_state(number))
+        decision, state = merge_gate(forge_module.merge_state(number, repo=repo))
     except ForgeNotSupported:
         return None
     except ForgeError as exc:
@@ -2121,7 +2121,7 @@ def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, for
         return f"merge: pull request #{number} is {state}; not merging"
     branch = steps[i]["branch"]
     try:
-        forge_module.update_branch(number)
+        forge_module.update_branch(number, repo=repo)
     except ForgeError as exc:
         return f"merge: cannot update pull request #{number}: {exc}"
     print(f"land: pull request #{number} was BEHIND; updated its branch, waiting for checks again")

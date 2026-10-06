@@ -7,13 +7,16 @@ class FakeForge:
         self.state = state
         self.waits = iter(waits)
         self.calls = []
+        self.repos = []
 
-    def merge_state(self, pr):
+    def merge_state(self, pr, *, repo=None):
         self.calls.append("merge_state")
+        self.repos.append(repo)
         return self.state
 
-    def update_branch(self, pr):
+    def update_branch(self, pr, *, repo=None):
         self.calls.append("update_branch")
+        self.repos.append(repo)
 
     def wait_checks(self, repo, timeout_s, ref="HEAD"):
         self.calls.append("wait_checks")
@@ -37,6 +40,7 @@ def test_behind_updates_waits_again_then_merges(tmp_path, monkeypatch):
     rc, _, _ = _walk(tmp_path, monkeypatch, forge)
     assert rc == 0
     assert forge.calls == ["wait_checks", "merge_state", "update_branch", "wait_checks", "merge"]
+    assert forge.repos == [tmp_path, tmp_path]  # gh runs in the land's repo, never the chair's working directory
 
 
 def test_behind_with_a_failing_rewait_stops_before_merge(tmp_path, monkeypatch, capsys):
