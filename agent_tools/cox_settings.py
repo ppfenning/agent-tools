@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -150,9 +151,14 @@ def run_get(profile_path: Path, as_json: bool) -> int:
     return 0
 
 
-def commit_message(scope: str, key: str, value: str, author: str) -> str:
-    """One line naming the setting, the raw value given, and the caller."""
-    return f"settings: set {scope}:{key} = {value} (by {author})"
+def commit_message(key: str, value: str) -> str:
+    """`settings: <key> = <value>`, with the value exactly as given on the command line."""
+    return f"settings: {key} = {value}"
+
+
+def commit_command(path_name: str, message: str) -> str:
+    """The shell-quoted `git commit` that `--commit` runs for `path_name`; printed by `--dry-run`."""
+    return f"git commit -m {shlex.quote(message)} -- {shlex.quote(path_name)}"
 
 
 def target_path(scope: str, profile_path: Path, profile: dict) -> Path | None:
@@ -224,10 +230,10 @@ def _run_set_host(profile_path: Path, key: str, value: str, dry_run: bool) -> in
     return _host_capacity(argparse.Namespace(profile=str(profile_path), name=host, n=n, json=False))
 
 
-def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool) -> int:
+def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool, commit: bool = False) -> int:
     """Edge. Plan the change against the target file's text and print the diff. Unless `dry_run`, write
-    it, and commit it as the caller when git tracks the file; a machine-local file is written only.
-    The `host` scope writes the hosts table instead of a file."""
+    it; with `commit`, also commit it when it is a git-tracked cartridge. Profile files are machine-local
+    and never committed. The `host` scope writes the hosts table instead of a file."""
     if scope == "host":
         return _run_set_host(profile_path, key, value, dry_run)
     profile_text = _read_text_or_none(profile_path)
@@ -246,11 +252,15 @@ def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool)
         print(f"no change: {scope}:{key} already has this value in {path.name}")
         return 0
     print(plan.diff, end="")
+    will_commit = commit and scope != "profile" and git_tracked(path)
+    message = commit_message(key, value)
     if dry_run:
+        if will_commit:
+            print(commit_command(path.name, message))
+        elif commit:
+            print("no commit would be made (machine-local file)")
         return 0
-    tracked = git_tracked(path)
-    author = git_user_name(path.parent) if tracked else None
-    if tracked and author is None:
+    if will_commit and git_user_name(path.parent) is None:
         print("error: git config user.name is not set; nothing was written")
         return 1
     try:
@@ -258,12 +268,13 @@ def run_set(profile_path: Path, scope: str, key: str, value: str, dry_run: bool)
     except OSError as exc:
         print(f"error: cannot write {path}: {exc}")
         return 1
-    if author is None:
-        print(f"wrote {path}; no commit was made (machine-local file)")
+    if not will_commit:
+        reason = "machine-local file" if commit else "--commit not given"
+        print(f"wrote {path}; no commit was made ({reason})")
         return 0
-    failure = git_commit(path, commit_message(scope, key, value, author))
+    failure = git_commit(path, message)
     if failure is not None:
         print(f"error: wrote {path} but the commit failed: {failure}")
         return 1
-    print(f"wrote {path} and committed it as {author}")
+    print(f"wrote {path} and committed it")
     return 0

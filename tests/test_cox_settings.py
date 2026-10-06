@@ -109,12 +109,6 @@ def _workspace(tmp_path: Path, track: bool) -> tuple[Path, Path]:
     return profile, cartridge
 
 
-def test_commit_message_names_the_caller():
-    assert cox_settings.commit_message("cartridge", "policy.dispatch.max_in_flight", "4", "Casey Caller") == (
-        "settings: set cartridge:policy.dispatch.max_in_flight = 4 (by Casey Caller)"
-    )
-
-
 def test_target_path_by_scope():
     profile = {"team": "pat", "cartridges_dir": "/c"}
     assert cox_settings.target_path("profile", Path("/p/profile.yaml"), profile) == Path("/p/profile.yaml")
@@ -136,16 +130,14 @@ def test_dry_run_prints_the_diff_and_writes_nothing(tmp_path, capsys):
 
 def test_set_on_a_tracked_file_commits_as_the_caller(tmp_path, capsys):
     profile, cartridge = _workspace(tmp_path, track=True)
-    code = cox_settings.run_set(profile, "cartridge", "policy.dispatch.max_in_flight", "4", dry_run=False)
+    code = cox_settings.run_set(profile, "cartridge", "policy.dispatch.max_in_flight", "4", dry_run=False, commit=True)
     assert code == 0
     assert "max_in_flight: 4" in cartridge.read_text(encoding="utf-8")
     assert _git(cartridge.parent, "rev-list", "--count", "HEAD") == "2"
     assert _git(cartridge.parent, "log", "-1", "--format=%an") == "Casey Caller"
-    assert _git(cartridge.parent, "log", "-1", "--format=%s") == (
-        "settings: set cartridge:policy.dispatch.max_in_flight = 4 (by Casey Caller)"
-    )
+    assert _git(cartridge.parent, "log", "-1", "--format=%s") == "settings: policy.dispatch.max_in_flight = 4"
     assert _git(cartridge.parent, "status", "--porcelain") == ""
-    assert "committed it as Casey Caller" in capsys.readouterr().out
+    assert "and committed it" in capsys.readouterr().out
 
 
 def test_set_on_a_machine_local_file_writes_without_a_commit(tmp_path, capsys):
@@ -167,7 +159,7 @@ def test_an_error_result_prints_and_writes_nothing(tmp_path, capsys):
 
 def test_a_pat_only_setting_prints_the_notice_before_the_diff_and_proceeds(tmp_path, capsys):
     profile, cartridge = _workspace(tmp_path, track=True)
-    code = cox_settings.run_set(profile, "cartridge", "policy.review_tier", "sonnet", dry_run=False)
+    code = cox_settings.run_set(profile, "cartridge", "policy.review_tier", "sonnet", dry_run=False, commit=True)
     out = capsys.readouterr().out
     assert code == 0
     assert out.index("Pat-only") < out.index("--- a/cartridge.yaml")
