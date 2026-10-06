@@ -4,9 +4,10 @@ from __future__ import annotations
 import contextlib
 import json
 import signal
+import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -21,13 +22,15 @@ from agent_tools import (
 )
 from agent_tools.chair_exec import Result
 from agent_tools.chair_facts import FactsDeps, gather_facts
-from agent_tools.chair_plan import plan_tick
+from agent_tools.chair_plan import TickPlan, plan_tick, plan_tick_held
 from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_types import Action, Facts, PlanTick
+from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
+from agent_tools.forge_status import StatusReader
 
 __all__ = [
-    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land", "land_sink",
-    "no_lands_to_stop", "run", "tick",
+    "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
+    "land_sink", "next_gate_record", "no_lands_to_stop", "run", "tick",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -35,6 +38,7 @@ LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at leas
 
 Gather = Callable[[FactsDeps, datetime], Facts]
 Perform = Callable[[list[Action], chair_exec.Deps, Callable[[], int], bool], list[Result]]
+PlanHeld = Callable[[Facts, datetime, CiGate], TickPlan]
 
 
 def _read_meter_doc() -> dict | None:
@@ -52,6 +56,15 @@ def no_lands_to_stop() -> None:
     """The stop hook of a chair with no land worker."""
 
 
+def no_gate_change(_gate: CiGate) -> None:
+    """The set_gate hook of a chair with no land worker."""
+
+
+def no_queued_lands() -> tuple[float, ...]:
+    """The queued-since source of a chair with no land worker."""
+    return ()
+
+
 def sigterm_as_interrupt() -> Callable[[], None]:
     """Edge. SIGTERM raises KeyboardInterrupt in the main thread; the callable returned puts the old handler back."""
 
@@ -65,9 +78,20 @@ def sigterm_as_interrupt() -> Callable[[], None]:
     return lambda: signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
 
 
+@dataclass
+class GateState:
+    """What the CI gate was when the last acting tick finished; the one thing a tick carries to the next."""
+
+    paused: bool = False
+
+
 @dataclass(frozen=True)
 class RunDeps:
-    """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next."""
+    """`beat` renews the store lease; a lost renewal reaches the tick through the lease that `gather` reads next.
+
+    `status_reader` is None for a chair with no CI gate; its fetch and clock are injected where it is built.
+    `queued_since` lists epoch seconds, one per land waiting on checks; `set_gate` hands the verdict to the land worker.
+    """
 
     facts_deps: FactsDeps
     exec_deps: chair_exec.Deps
@@ -87,6 +111,11 @@ class RunDeps:
     runs_dir: Path | None = None  # None writes no tick status to the lease
     read_action: Callable[[Path], dict | None] = dash_chair_action.read_current_action
     write_tick_status: Callable[[Path, int, str], bool] = chair_tick_status.write_tick_status
+    status_reader: StatusReader | None = None
+    queued_since: Callable[[], tuple[float, ...]] = no_queued_lands
+    set_gate: Callable[[CiGate], object] = no_gate_change
+    plan_held: PlanHeld = plan_tick_held
+    gate_state: GateState = field(default_factory=GateState)
 
 
 def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None) -> Result:
@@ -102,18 +131,47 @@ def finished_land(action: Action, outcome: chair_land.LandResult[Result] | None)
 
 
 class WorkerLands:
-    """Edge. Lands handed to a LandWorker, one handle per repository, held until the next tick collects them."""
+    """Edge. Lands handed to a LandWorker, one handle per repository, held until the next tick collects them.
 
-    def __init__(self, worker: chair_land.LandWorker) -> None:
+    A land waits on checks from the moment its work starts until it returns, so `queued_since` lists the start
+    times, in epoch seconds, of the lands running now. A land held by a paused gate has not started and has none.
+    """
+
+    def __init__(self, worker: chair_land.LandWorker, stamp: Callable[[], float] = time.time) -> None:
         self._worker = worker
+        self._stamp = stamp
         self._handles: dict[str, tuple[Action, chair_land.LandHandle[Result]]] = {}
+        self._gate = chair_land.UNPAUSED
+        self._since: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def set_gate(self, gate: CiGate) -> None:
+        """Holds later lands while `gate` is paused; an unpaused gate starts the lands it held."""
+        self._gate = gate
+        self._worker.tick(gate)
+
+    def queued_since(self) -> tuple[float, ...]:
+        with self._lock:
+            return tuple(self._since.values())
+
+    def _timed(self, repo: str, work: Callable[[], Result]) -> Callable[[], Result]:
+        def timed() -> Result:
+            with self._lock:
+                self._since[repo] = self._stamp()
+            try:
+                return work()
+            finally:
+                with self._lock:
+                    self._since.pop(repo, None)
+
+        return timed
 
     def pending(self, repo: str) -> bool:
         return repo in self._handles
 
     def submit(self, action: Action, work: Callable[[], Result]) -> Result:
         repo = action.get("repo", "")
-        submitted = self._worker.submit(repo, work)
+        submitted = self._worker.submit(repo, self._timed(repo, work), self._gate)
         if submitted.handle is None:
             holder = submitted.outcome.holder if isinstance(submitted.outcome, chair_land.Refused) else None
             reason = land_repo_lease.refusal_message(repo, holder or "another land")
@@ -132,9 +190,10 @@ class WorkerLands:
 
 def land_sink(
     beat: Callable[[], None], clock: Callable[[], float] = time.monotonic, wait: Callable[[float], None] = time.sleep,
+    stamp: Callable[[], float] = time.time,
 ) -> WorkerLands:
     """Edge. The worker beats the chair lease through `beat` every LAND_BEAT_INTERVAL while any land runs."""
-    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait))
+    return WorkerLands(chair_land.LandWorker(beat, LAND_BEAT_INTERVAL, clock, wait), stamp)
 
 
 def error_line(exc: Exception, now: datetime, results: Sequence[Result] = ()) -> str:
@@ -185,18 +244,42 @@ def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime)
         deps.write_tick_status(deps.runs_dir, deps.current_epoch(), text)
 
 
+def next_gate_record(was_paused: bool, gate: CiGate, held: tuple[str, ...], epoch: int) -> Action | None:
+    """The one needs_chair for a gate that has just paused; the cause carries the reason, as perform records no reason."""
+    if was_paused or not gate.paused:
+        return None
+    named = f"; held for CI: {', '.join(held)}" if held else ""
+    return {"kind": "needs_chair", "initiative": "ci-gate", "cause": f"ci_gate_paused: {gate.reason}{named}", "epoch": epoch}
+
+
+def _evaluate_gate(deps: RunDeps, now: datetime) -> CiGate:
+    if deps.status_reader is None:
+        return chair_land.UNPAUSED
+    return evaluate_gate(deps.status_reader.read(), deps.queued_since(), now.timestamp(), DEFAULT_QUEUED_BOUND_SECONDS)
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
     A dry run never takes the lease, so it plans as the holder would to show the actions a live tick would take.
     The meter is published right after the beat, so a gather, plan or perform that raises cannot skip it.
+    A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
+    is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     """
     deps.beat()
     _publish_meter(deps, dry_run, now)
     gathered = deps.gather(deps.facts_deps, now)
     facts = as_holder(gathered) if dry_run else gathered
-    actions = deps.plan(facts, now)
+    gate = _evaluate_gate(deps, now)
+    if not dry_run:
+        deps.set_gate(gate)
+    planned = deps.plan_held(facts, now, gate) if gate.paused else TickPlan(deps.plan(facts, now), ())
+    acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
+    notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
+    actions = [*planned.actions, notice] if notice is not None else planned.actions
     results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
+    if acting and gate.paused != deps.gate_state.paused:
+        deps.gate_state.paused = gate.paused
     try:
         return format_status(facts, actions, results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
