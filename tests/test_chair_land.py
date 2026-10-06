@@ -2,6 +2,9 @@ import threading
 from pathlib import Path
 
 from agent_tools import chair_land, land_repo_lease, store_cli
+from agent_tools.ci_gate import CiGate
+
+PAUSED = CiGate(True, "forge incident")
 
 
 class FakeTime:
@@ -127,6 +130,54 @@ def test_a_land_that_raises_anything_is_captured_in_its_result():
 def test_may_start_decides_from_plain_data():
     assert chair_land.may_start(False, 0) == chair_land.Started()
     assert chair_land.may_start(True, 2) == chair_land.Queued(3)
+    assert chair_land.may_start(False, 0, PAUSED) == chair_land.Queued(1)
+
+
+def test_a_paused_gate_leaves_a_queued_land_unstarted_across_beats_and_an_unpaused_one_starts_it():
+    beats: list[float] = []
+    worker, fake_time = make_worker(lambda: beats.append(fake_time.now))
+    calls: list[str] = []
+
+    def land() -> str:
+        calls.append("landed")
+        return "landed"
+
+    submitted = worker.submit("/repo", land, PAUSED)
+    for _ in range(3):
+        worker.tick(PAUSED)
+        fake_time.ticks.release()
+    assert submitted.outcome == chair_land.Queued(1)
+    assert (calls, beats, fake_time.now) == ([], [], 0.0)
+    assert submitted.handle.in_progress()
+    assert submitted.handle.result() is None
+
+    worker.tick(chair_land.UNPAUSED)
+    assert submitted.handle.wait(5)
+    fake_time.ticks.release(10)
+    assert calls == ["landed"]
+    assert submitted.handle.result() == chair_land.LandResult("landed", None, None)
+
+
+def test_a_land_already_running_is_not_interrupted_by_a_pause_and_the_land_behind_it_is_held():
+    worker, fake_time = make_worker(lambda: None)
+    release = threading.Event()
+    calls: list[str] = []
+    running = worker.submit("/repo", lambda: release.wait(5))
+    behind = worker.submit("/repo", lambda: calls.append("behind") or "behind", PAUSED)
+    worker.tick(PAUSED)
+    assert (running.outcome, behind.outcome) == (chair_land.Started(), chair_land.Queued(1))
+    assert running.handle.in_progress()
+
+    release.set()
+    assert running.handle.wait(5)
+    assert running.handle.result() == chair_land.LandResult(True, None, None)
+    assert calls == []
+    assert behind.handle.in_progress()
+
+    worker.tick(chair_land.UNPAUSED)
+    assert behind.handle.wait(5)
+    fake_time.ticks.release(10)
+    assert behind.handle.result() == chair_land.LandResult("behind", None, None)
 
 
 def test_beat_due_needs_a_running_land_and_an_elapsed_interval():
