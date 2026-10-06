@@ -1,4 +1,4 @@
-"""`cox inbox [--json]`, `cox inbox accept <id>` and `cox inbox deny <id>`; v1 lists drafts, approvals and PRs only."""
+"""`cox inbox [--json]`, `cox inbox accept <id>` and `cox inbox deny <id>`; lists drafts, approvals, PRs, needs-chair rows and refused lands."""
 
 from __future__ import annotations
 
@@ -27,7 +27,9 @@ from agent_tools.inbox import (
 )
 from agent_tools.inbox_approvals import approvals_to_items, load_approval_records
 from agent_tools.inbox_drafts import drafts_to_items, load_draft_records
+from agent_tools.inbox_needs_chair import load_needs_chair_records, needs_chair_to_items
 from agent_tools.inbox_prs import load_pr_records, pr_errors, prs_to_items
+from agent_tools.inbox_refused import load_refused_rows, refused_to_items
 
 Records = Callable[[], Sequence[Mapping]]
 
@@ -59,12 +61,20 @@ def parse_argv(argv: Sequence[str]) -> Listing | Act | None:
 
 
 def gather(
-    drafts: Sequence[Mapping], approvals: Sequence[Mapping], prs: Sequence[Mapping]
+    drafts: Sequence[Mapping],
+    approvals: Sequence[Mapping],
+    prs: Sequence[Mapping],
+    needs_chair: Sequence[Mapping],
+    refused: Sequence[Mapping],
 ) -> tuple[InboxItem, ...]:
-    """Oldest first, one item per accept command; a draft and an approval for one initiative keep the draft."""
+    """Oldest first; drafts, approvals and PRs keep one item per accept command, so a draft beats its approval.
+
+    Needs-chair and refused items skip that dedup: needs-chair rows naming no task share one placeholder accept argv.
+    """
     candidates = drafts_to_items(drafts) + approvals_to_items(approvals) + prs_to_items(prs)
     firsts = {i.accept_cmd: i for i in reversed(candidates)}
-    return sort_oldest_first(tuple(firsts.values()))
+    kept = tuple(firsts.values()) + needs_chair_to_items(needs_chair) + refused_to_items(refused)
+    return sort_oldest_first(kept)
 
 
 def run_inbox(
@@ -73,6 +83,8 @@ def run_inbox(
     load_drafts: Records,
     load_approvals: Records,
     load_prs: Records,
+    load_needs_chair: Records,
+    load_refused: Records,
     run: Callable[[Sequence[str]], int],
     tz: tzinfo,
 ) -> int:
@@ -85,7 +97,7 @@ def run_inbox(
     errors = pr_errors(pr_records)
     for line in errors:
         print(f"cox inbox: could not read PR {line}", file=sys.stderr)
-    items = gather(load_drafts(), load_approvals(), pr_records)
+    items = gather(load_drafts(), load_approvals(), pr_records, load_needs_chair(), load_refused())
     if isinstance(request, Listing):
         print(json.dumps(render_json(items), indent=2) if request.as_json else render_text(items, tz))
         return 1 if errors else 0
@@ -152,6 +164,8 @@ def main(argv: Sequence[str]) -> int:
         load_drafts=lambda: load_draft_records(workspace / "work", now.isoformat()) if workspace else [],
         load_approvals=load_approval_records,
         load_prs=lambda: load_pr_records(workspace / "runs") if workspace else [],
+        load_needs_chair=lambda: load_needs_chair_records(workspace / "runs") if workspace else [],
+        load_refused=lambda: load_refused_rows(workspace / "runs") if workspace else [],
         run=subprocess_runner,
         tz=LocalTime(),
     )
