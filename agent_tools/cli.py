@@ -6602,6 +6602,11 @@ ROUTE_COMMANDS = [
         "agent_tools.cli:_route_import", False, (),
     ),
     commands.Command(
+        "store-fill", "route", "fill the store's work_items from the workspace files",
+        (commands.Arg(("--profile",)), commands.Arg(("--workspace",))),
+        "agent_tools.store_fill:main", False, (),
+    ),
+    commands.Command(
         "approve", "route", "approve a draft initiative's todo tickets: todo becomes ready",
         (
             commands.Arg(("initiative",)), commands.Arg(("--task",), {"help": "approve this one task only"}),

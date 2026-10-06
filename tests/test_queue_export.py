@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_tools.queue_export import export_files, export_rows, plan_export
+from agent_tools.queue_export import export_files, export_rows, is_contentless, plan_export, skipped_ids
 from agent_tools.queue_rows import render_item, row_path
 
 TASK_ROW = {
@@ -45,6 +45,18 @@ INITIATIVE_ROW = {
     },
 }
 STAMPED_ROW = {**INTAKE_ROW, "state": "done", "extra": {"initiative": "queue"}}
+EMPTY_ROW = {
+    "kind": None,
+    "initiative": None,
+    "task_id": "ghost",
+    "phase": None,
+    "state": None,
+    "needs": None,
+    "title": None,
+    "surfaces": None,
+    "body": None,
+    "extra": None,
+}
 
 
 def test_export_rows_initiative() -> None:
@@ -118,19 +130,82 @@ def test_export_files_second_export_is_noop(tmp_path: Path) -> None:
     (tmp_path / "work" / "queue").mkdir(parents=True)
     (tmp_path / "work" / "queue" / "initiative.md").write_text("# Queue\n")
 
-    first = export_files(tmp_path, rows)
+    first, skipped = export_files(tmp_path, rows)
+    assert skipped == []
     assert first == sorted([row_path(TASK_ROW), row_path(INTAKE_ROW)])
     assert (tmp_path / row_path(TASK_ROW)).read_text() == render_item(TASK_ROW)
     assert (tmp_path / row_path(INTAKE_ROW)).read_text() == render_item(INTAKE_ROW)
     assert (tmp_path / "work" / "queue" / "initiative.md").read_text() == "# Queue\n"
 
-    second = export_files(tmp_path, rows)
-    assert second == []
+    assert export_files(tmp_path, rows) == ([], [])
 
 
 def test_export_files_empty_rows_is_noop(tmp_path: Path) -> None:
     (tmp_path / "intake").mkdir()
     (tmp_path / "intake" / "stale.md").write_text("---\ntitle: Stale\n---\n")
 
-    assert export_files(tmp_path, []) == []
+    assert export_files(tmp_path, []) == ([], [])
     assert (tmp_path / "intake" / "stale.md").exists()
+
+
+def test_is_contentless() -> None:
+    assert is_contentless(EMPTY_ROW)
+    assert is_contentless({**TASK_ROW, "kind": None})
+    assert not any(is_contentless(row) for row in (TASK_ROW, INTAKE_ROW, INITIATIVE_ROW))
+
+
+def test_skipped_ids_names_contentless_rows() -> None:
+    assert skipped_ids([TASK_ROW, EMPTY_ROW]) == ["ghost"]
+    assert skipped_ids([{**EMPTY_ROW, "task_id": None}, TASK_ROW, {**EMPTY_ROW, "task_id": None}]) == ["#0", "#2"]
+
+
+def test_export_rows_fills_partly_empty_row() -> None:
+    row = {**TASK_ROW, "extra": None, "body": None, "needs": None}
+    assert export_rows([row]) == {row_path(TASK_ROW): render_item({**TASK_ROW, "body": "", "needs": []})}
+
+
+def test_export_files_only_contentless_rows_changes_nothing(tmp_path: Path) -> None:
+    (tmp_path / "intake").mkdir()
+    (tmp_path / "intake" / "stray.md").write_text("---\ntitle: T\n---\n")
+    assert export_files(tmp_path, [EMPTY_ROW]) == ([], ["ghost"])
+    assert (tmp_path / "intake" / "stray.md").exists()
+
+
+def test_export_files_keeps_file_named_by_skipped_row(tmp_path: Path) -> None:
+    hollow = {**TASK_ROW, "title": None, "body": None, "extra": None}
+    (tmp_path / row_path(TASK_ROW)).parent.mkdir(parents=True)
+    (tmp_path / row_path(TASK_ROW)).write_text("last copy\n")
+    touched, skipped = export_files(tmp_path, [INTAKE_ROW, hollow])
+    assert skipped == ["codec"]
+    assert touched == [row_path(INTAKE_ROW)]
+    assert (tmp_path / row_path(TASK_ROW)).read_text() == "last copy\n"
+
+
+def test_export_rows_skips_contentless_row() -> None:
+    assert list(export_rows([TASK_ROW, EMPTY_ROW])) == [row_path(TASK_ROW)]
+
+
+def test_plan_export_spares_held_and_done() -> None:
+    files_on_disk = {"intake/held/a.md": "x", "intake/done/b.md": "y", "intake/stray.md": "z"}
+    _, deletes = plan_export([TASK_ROW], files_on_disk)
+    assert deletes == ["intake/stray.md"]
+
+
+def test_export_files_skips_contentless_row(tmp_path: Path) -> None:
+    touched, skipped = export_files(tmp_path, [TASK_ROW, EMPTY_ROW])
+    assert skipped == ["ghost"]
+    assert touched == [row_path(TASK_ROW)]
+    assert (tmp_path / row_path(TASK_ROW)).read_text() == render_item(TASK_ROW)
+
+
+def test_export_files_keeps_held_and_done_deletes_stray(tmp_path: Path) -> None:
+    for name in ("held/h.md", "done/d.md", "stray.md"):
+        path = tmp_path / "intake" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\ntitle: T\n---\n")
+
+    touched, _ = export_files(tmp_path, [TASK_ROW])
+    assert (tmp_path / "intake" / "held" / "h.md").exists()
+    assert (tmp_path / "intake" / "done" / "d.md").exists()
+    assert not (tmp_path / "intake" / "stray.md").exists()
+    assert "intake/stray.md" in touched
