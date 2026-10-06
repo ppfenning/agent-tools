@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agent_tools.queue_export import export_files, plan_export
+from agent_tools.queue_export import export_files, export_rows, plan_export
 from agent_tools.queue_rows import render_item, row_path
 
 TASK_ROW = {
@@ -28,6 +28,52 @@ INTAKE_ROW = {
     "extra": {},
 }
 DONE_ROW = {**INTAKE_ROW, "state": "done"}
+INITIATIVE_ROW = {
+    "kind": "initiative",
+    "initiative": "queue",
+    "task_id": "queue",
+    "phase": "",
+    "state": "todo",
+    "needs": [],
+    "title": "Queue",
+    "surfaces": [],
+    "body": "Why.\n",
+    "extra": {
+        "id": "queue",
+        "intake": "intake/idea.md",
+        "phases": [{"id": "q", "goal": "Build it"}],
+    },
+}
+STAMPED_ROW = {**INTAKE_ROW, "state": "done", "extra": {"initiative": "queue"}}
+
+
+def test_export_rows_initiative() -> None:
+    assert export_rows([INITIATIVE_ROW]) == {
+        "work/queue/initiative.md": (
+            "---\ntitle: Queue\nid: queue\nintake: intake/idea.md\nphases:\n- id: q\n  goal: Build it\n---\nWhy.\n"
+        )
+    }
+
+
+def test_export_rows_task_with_needs_and_surfaces() -> None:
+    assert export_rows([TASK_ROW]) == {
+        "work/queue/q/codec.md": (
+            "---\nstate: doing\ntitle: 'Codec: rows'\nneeds:\n- a-1\nsurfaces:\n- agent_tools/x.py\n---\nBody line.\n"
+        )
+    }
+
+
+def test_export_rows_stamped_intake() -> None:
+    assert export_rows([STAMPED_ROW]) == {
+        "intake/done/idea.md": "---\ntitle: Idea\ninitiative: queue\n---\nSome idea.\n"
+    }
+
+
+def test_export_rows_is_deterministic() -> None:
+    rows = [INITIATIVE_ROW, TASK_ROW, STAMPED_ROW]
+    before = [dict(row) for row in rows]
+    assert export_rows(rows) == export_rows(rows)
+    assert rows == before
 
 
 def test_plan_export_new_file() -> None:
