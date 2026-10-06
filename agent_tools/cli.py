@@ -134,6 +134,7 @@ notify = _LazyModule("agent_tools.notify")
 pacing = _LazyModule("agent_tools.pacing")
 plan = _LazyModule("agent_tools.plan")
 provenance = _LazyModule("agent_tools.provenance")
+queue_export = _LazyModule("agent_tools.queue_export")
 queue_rows = _LazyModule("agent_tools.queue_rows")
 records = _LazyModule("agent_tools.records")
 remote_argv = _LazyModule("agent_tools.remote_argv")
@@ -2077,13 +2078,33 @@ def _landed_pr(kind: str, ok: bool, detail: str, prior: str) -> str:
     return (_pr_url(detail) or "") if kind == "pr_create" and ok else prior
 
 
+# A conflict, a missing review or a draft can never merge; UNKNOWN is GitHub still computing, so it is re-read, and
+# merges if it stays UNKNOWN (gh's own merge then refuses what cannot merge). UNSTABLE (only optional checks red) and
+# HAS_HOOKS merge, as every land did before this gate (2026-10-06: #1426 and #1430 stopped on UNKNOWN with green checks).
+_MERGE_STOPS = frozenset({"DIRTY", "BLOCKED", "DRAFT"})
+_UNKNOWN_READS = 6
+_UNKNOWN_WAIT_S = 5.0
+
+
 def merge_gate(state: str) -> tuple[str, str]:
-    """`(decision, state)` from a PR's mergeStateStatus: only CLEAN merges and only BEHIND is updated first."""
-    if state == "CLEAN":
-        return "merge", ""
+    """`(decision, state)` from a PR's mergeStateStatus: BEHIND is updated first, DIRTY, BLOCKED and DRAFT stop, and
+    anything else merges."""
     if state == "BEHIND":
         return "update_then_merge", ""
-    return "stop", state
+    if state in _MERGE_STOPS:
+        return "stop", state
+    return "merge", ""
+
+
+def _settled_merge_state(read: Callable[[], str], sleep: Callable[[float], None] | None = None) -> str:
+    """The first state other than UNKNOWN in up to `_UNKNOWN_READS` reads, `_UNKNOWN_WAIT_S` apart; UNKNOWN if it never settles."""
+    state = read()
+    for _ in range(_UNKNOWN_READS - 1):
+        if state != "UNKNOWN":
+            return state
+        (sleep or time.sleep)(_UNKNOWN_WAIT_S)
+        state = read()
+    return state
 
 
 def _pr_number(steps: Sequence[dict], i: int, pr_url: str) -> int | None:
@@ -2110,7 +2131,7 @@ def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, for
     from agent_tools.forge import ForgeError, ForgeNotSupported
 
     try:
-        decision, state = merge_gate(forge_module.merge_state(number))
+        decision, state = merge_gate(_settled_merge_state(lambda: forge_module.merge_state(number, repo=repo)))
     except ForgeNotSupported:
         return None
     except ForgeError as exc:
@@ -2121,7 +2142,7 @@ def _merge_preflight(repo: Path, steps: Sequence[dict], i: int, pr_url: str, for
         return f"merge: pull request #{number} is {state}; not merging"
     branch = steps[i]["branch"]
     try:
-        forge_module.update_branch(number)
+        forge_module.update_branch(number, repo=repo)
     except ForgeError as exc:
         return f"merge: cannot update pull request #{number}: {exc}"
     print(f"land: pull request #{number} was BEHIND; updated its branch, waiting for checks again")
@@ -3985,9 +4006,18 @@ def _route_launch(a: argparse.Namespace) -> int:
     runs_dir = Path(profile["workspace_dir"]).expanduser() / "runs"
     launch_dir = _initiative_path(runs_dir, a.initiative) if a.graph in ("epic", "rescue") else None
     if a.graph == "epic":
+        initiative_id = launch_dir.name
+        if work_state.work_state_mode(_lake_provider(a)[0]) == "store":
+            rows_code, rows_lines, _ = route.launch_from_rows(runs_dir, initiative_id, a.repo)
+            if rows_code:
+                for line in rows_lines:
+                    print(line)
+                return rows_code
+            skipped = _export_board(runs_dir, runs_dir.parent)
+            if skipped:
+                print(f"export: skipped {len(skipped)} contentless row(s): {', '.join(skipped)}")
         _merge_initiative_tickets(launch_dir)
         # Only --include-blocked lifts this guard; --force never does.
-        initiative_id = launch_dir.name
         held = route.launch_blockers([
             item for item in _work_items(runs_dir.parent) if item["initiative"] == initiative_id
         ])
@@ -4553,6 +4583,13 @@ def _runs_fetch(a: argparse.Namespace) -> int:
     outcome, lines, _ = _fetch_one(runs_dir, hosts, a.run_id, mode, by)
     print("\n".join(lines))
     return 0 if outcome == "fetched" else 2
+
+
+def _export_board(runs_dir: Path, workspace: Path) -> list[str]:
+    """Edge. Write the whole store board under `workspace` and return the ids of the contentless rows skipped.
+
+    The whole board, never one initiative: `export_files` deletes every intake/ and work/ file its rows do not name."""
+    return queue_export.export_files(workspace, run_store.read_queue(runs_dir)).skipped
 
 
 def _merge_initiative_tickets(initiative_dir: Path) -> list[dict]:

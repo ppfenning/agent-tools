@@ -42,12 +42,16 @@ def wait_checks(repo: Path | str, timeout_s: float, *, ref: str = "HEAD") -> tup
     return forge_of(repo).wait_checks(Path(repo), timeout_s, ref=ref)
 
 
-def merge_state(pr: int) -> str:
-    raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
+    if repo is None:
+        raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+    return forge_of(repo).merge_state(pr, repo=repo)
 
 
-def update_branch(pr: int) -> None:
-    raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
+    if repo is None:
+        raise ForgeNotSupported("auto forge: a PR number alone does not name a repository, so it cannot pick a forge")
+    forge_of(repo).update_branch(pr, repo=repo)
 
 
 def merge(repo: Path | str, step: Mapping[str, Any]) -> tuple[bool, str]:

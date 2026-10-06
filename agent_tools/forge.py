@@ -26,11 +26,11 @@ A forge is a module that defines these five functions. Each returns
         through this module's `pr_state(module, url)`, which answers `unknown`
         for a forge without a pull-request host or without this function.
 
-    merge_state(pr: int) -> str
+    merge_state(pr: int, *, repo=None) -> str
         GitHub's `mergeStateStatus` for PR `pr`, unchanged and upper case: CLEAN,
         BEHIND, DIRTY, BLOCKED, UNSTABLE and the rest. Raises `ForgeError` when it
-        cannot be read.
-    update_branch(pr: int) -> None
+        cannot be read. `repo` is the repository the call runs in, so the host's tool finds its remote.
+    update_branch(pr: int, *, repo=None) -> None
         Merge the base branch into the head of PR `pr`. Raises `ForgeError`, with
         the host's message, on failure.
 

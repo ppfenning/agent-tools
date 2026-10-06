@@ -105,10 +105,11 @@ def update_branch_argv(pr: int) -> list[str]:
     return ["gh", "pr", "update-branch", str(pr)]
 
 
-def _gh_run(argv: list[str]) -> subprocess.CompletedProcess:
-    """`argv` run through gh; ForgeError with gh's stderr when it cannot run or exits nonzero."""
+def _gh_run(argv: list[str], cwd: Path | str | None = None) -> subprocess.CompletedProcess:
+    """`argv` run through gh in `cwd` (the repository, so gh finds its GitHub remote); ForgeError with gh's stderr
+    when it cannot run or exits nonzero."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True)
+        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
     except OSError as exc:
         raise ForgeError(f"{' '.join(argv)}: {exc}") from exc
     if r.returncode != 0:
@@ -116,12 +117,12 @@ def _gh_run(argv: list[str]) -> subprocess.CompletedProcess:
     return r
 
 
-def merge_state(pr: int) -> str:
-    return parse_merge_state(_gh_run(merge_state_argv(pr)).stdout or "")
+def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
+    return parse_merge_state(_gh_run(merge_state_argv(pr), repo).stdout or "")
 
 
-def update_branch(pr: int) -> None:
-    _gh_run(update_branch_argv(pr))
+def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
+    _gh_run(update_branch_argv(pr), repo)
 
 
 def _read_checks(repo: Path, ref: str = "HEAD"):
