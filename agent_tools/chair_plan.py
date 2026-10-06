@@ -6,6 +6,7 @@ from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
 
 from agent_tools import chair_login_watch, chair_plan_prune, chair_stall
+from agent_tools.chair_idle_stall import diagnose, is_stalled
 from agent_tools.chair_plan_fill import HostSlot, _place_on_hosts, _required_capabilities, host_free_slots, plan_fill
 from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
@@ -16,6 +17,7 @@ from agent_tools.chair_types import (
     ApprovedTask,
     DispatchFacts,
     Facts,
+    IdleStallInputs,
     InitiativeFacts,
     LastCall,
     LeaseFacts,
@@ -368,6 +370,24 @@ def plan_stall(candidates: list[StallCandidate], now: datetime) -> list[Action]:
     return actions
 
 
+def plan_idle_stall(inputs: IdleStallInputs | None, now: datetime) -> list[Action]:
+    """One needs_chair for a stall whose diagnosis signature is not already the open item's."""
+    if inputs is None or not is_stalled(inputs, now):
+        return []
+    diagnosis = diagnose(inputs)
+    if inputs["open_signature"] == diagnosis["signature"]:
+        return []
+    return [
+        {  # type: ignore[typeddict-unknown-key]  # Action has no signature field yet
+            "kind": "needs_chair",
+            "initiative": diagnosis["subject"],
+            "cause": "idle_stall",
+            "reason": diagnosis["text"],
+            "signature": diagnosis["signature"],
+        }
+    ]
+
+
 def _silent_dead_pid(entry: object, now: datetime) -> bool:
     """alive is False and an aware last_beat_at at least _DEAD_PID_SILENCE before now."""
     if not isinstance(entry, Mapping) or entry.get("alive") is not False:
@@ -421,6 +441,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
     lost = frozenset(facts.get("lost_runs", {}))
     stale = plan_stale(facts, now) if now is not None else []
     stall = plan_stall(facts.get("stall_candidates", []), now) if now is not None else []
+    idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
     recover_actions = plan_recover(facts)
@@ -435,6 +456,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
             *fetch_exits,
             *stale,
             *stall,
+            *idle_stall,
             *_needs_chair_only(recovered),
             *login_needs_chair,
             *empty_decompose_needs_chair,
@@ -468,6 +490,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None) -> list[Action]:
         *fetch_exits,
         *stale,
         *stall,
+        *idle_stall,
         *capped,
         *filled,
         *login_needs_chair,
