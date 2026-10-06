@@ -7,6 +7,7 @@ from functools import reduce
 from typing import Literal
 
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
+from agent_tools.chair_remedy import remedy_for, trim_reason
 from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, QuarantineFacts, ReadyTask, RunningInitiative
 from agent_tools.run_death_cause import SCHEMA_VERSION_CAUSE
@@ -37,9 +38,27 @@ def _recovery(q: QuarantineFacts, approved: set[tuple[str, str]]) -> Recovery:
     return "retry"
 
 
+def _first_cause(q: QuarantineFacts) -> str:
+    """The oldest attempt's cause on the current body; the fact's own cause when it lists none."""
+    causes = q.get("causes") or []
+    return causes[0] if causes else q["cause"]
+
+
 def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
-    if kind == "needs_chair":
+    if kind == "needs_chair" and "reason" not in q:
+        # A fact that carries no row reason keeps the old shape: there is nothing to record beyond the cause.
         return {"kind": "needs_chair", "initiative": q["initiative"], "cause": q["cause"]}
+    if kind == "needs_chair":
+        cause = _first_cause(q)
+        remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""))
+        return {
+            "kind": "needs_chair",
+            "initiative": q["initiative"],
+            "cause": cause,
+            "reason": trim_reason(q.get("reason")),
+            "remedy": remedy["kind"],
+            "command": remedy["command"],
+        }
     return {"kind": kind, "task_id": q["task_id"], "initiative": q["initiative"]}
 
 
