@@ -40,6 +40,14 @@ def test_a_stale_to_draft_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     assert (is_fenced(stale_to_draft, 3), is_fenced(stale_to_draft, 4)) == (False, True)
 
 
+def test_a_tune_lanes_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    tune_lanes = stamp(
+        {"kind": "tune_lanes", "host": "h1", "from_lanes": 2, "to_lanes": 3, "reason": "weekly use under pace", "evidence": {}},
+        3,
+    )
+    assert (is_fenced(tune_lanes, 3), is_fenced(tune_lanes, 4)) == (False, True)
+
+
 def test_stamp_applied_to_a_land_phase_action_returns_a_new_dict_carrying_the_epoch():
     action: Action = {"kind": "land_phase", "initiative": "i", "phase": "p1", "repo": "r", "run": "run1"}
     stamped = stamp(action, 5)

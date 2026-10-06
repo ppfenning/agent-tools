@@ -3,7 +3,7 @@
 Pure shapes and two pure helpers. No I/O and no harness or store imports. The edge gathers
 the facts and executes the actions; the planners in between are pure. `stale_candidates` is
 filled in by the facts edge and consumed by the stale planner; `stall_candidates` likewise,
-consumed by the stall planner.
+consumed by the stall planner. `tuning` likewise, consumed by the lane-tuning and tier-proposal planners.
 """
 from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
@@ -252,6 +252,30 @@ class IdleStallInputs(TypedDict):
     open_diagnosis: str | None  # that item's diagnosis text
 
 
+class HostTuning(TypedDict):
+    """One lane host's current lanes and the cartridge's bounds for it."""
+
+    lanes: int  # the host's current lane count
+    min_lanes: int  # the cartridge's floor for this host
+    max_lanes: int  # the cartridge's ceiling for this host
+
+
+class MeterFacts(TypedDict):
+    """The weekly meter reading the tuning rules compare; nothing here is computed."""
+
+    weekly_fraction_used: float  # the fraction of the weekly allowance used so far
+    week_elapsed_fraction: float  # the fraction of the weekly window already elapsed
+
+
+class TuningFacts(TypedDict):
+    """Filled in by the facts edge for the lane-tuning and tier-proposal rules; nothing here is computed."""
+
+    stats: list[dict[str, object]]  # the 7-day stats rows the two rules take
+    meter: MeterFacts
+    hosts: dict[str, HostTuning]  # host name to its current lanes and the cartridge's min and max
+    last_tuned_at: str | None  # ISO of the newest recorded tune_lanes or propose_tiers chair action; None when none
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -293,6 +317,7 @@ class Facts(TypedDict):
     stranded: NotRequired[list[StrandedPhase]]  # phases with approved work not landed; absent means none
     phase_branches: NotRequired[list[PhaseBranch]]  # phase branches against main; absent means none
     idle_stall: IdleStallInputs  # idle-lanes stall inputs; a later task fills it
+    tuning: NotRequired[TuningFacts]  # filled in later by the facts edge; absent means no tuning inputs
 
 
 ActionKind = Literal[
@@ -320,6 +345,8 @@ ActionKind = Literal[
     "steer_clear",
     "carry_phase",
     "rebase_phase",
+    "tune_lanes",
+    "propose_tiers",
 ]
 
 
@@ -333,7 +360,8 @@ class Action(TypedDict, total=False):
     review_landed carries initiative, phase, task_id, repo, url and merged_at. steer_clear carries
     initiative, other and paths: the launch of initiative is deferred because it shares paths with other.
     carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
-    tip and base."""
+    tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
+    proposals and body and is propose-only: no action kind applies a tier or model change."""
 
     kind: ActionKind
     epoch: int
@@ -360,6 +388,11 @@ class Action(TypedDict, total=False):
     branch: str  # a rebase_phase names the phase branch it rebases
     tip: str  # a rebase_phase names the tip being replaced, for the backup ref
     base: str  # a rebase_phase names the commit or ref it rebases onto
+    from_lanes: int  # a tune_lanes names the host's lane count before the change
+    to_lanes: int  # a tune_lanes names the lane count it sets
+    evidence: dict[str, object]  # a tune_lanes carries the stats and meter figures that justify the change
+    proposals: list[dict[str, object]]  # a propose_tiers lists one entry per role
+    body: str  # a propose_tiers carries the rendered inbox text
 
 
 class PlanLands(Protocol):
