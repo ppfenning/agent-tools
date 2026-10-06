@@ -98,15 +98,20 @@ def _drained_hosts(login_hosts: Sequence[Mapping]) -> frozenset[str]:
 
 def _stuck_homes(actions: list[Action], launch_at: list[int], home: Mapping[str, str], facts: Facts) -> set[int]:
     """Indices whose home host is drained, login-lapsed, or whose lane is lost: these relocate instead of
-    routing home."""
+    routing home. While local lanes are decompose-only, a relaunch or retry homed on "" is stuck too."""
     login_hosts = facts.get("login_hosts", [])
     stuck_hosts = chair_login_watch.login_blocked(login_hosts) | _drained_hosts(login_hosts)
     lost = frozenset(facts.get("lost_runs", {}))
+    decompose_only = facts.get("dispatch", {}).get("local_lanes") == "decompose"
     return {
         n
         for n in launch_at
         if actions[n]["initiative"] in home
-        and (home[actions[n]["initiative"]] in stuck_hosts or actions[n]["initiative"] in lost)
+        and (
+            home[actions[n]["initiative"]] in stuck_hosts
+            or actions[n]["initiative"] in lost
+            or (decompose_only and home[actions[n]["initiative"]] == "" and actions[n]["kind"] in ("relaunch", "retry"))
+        )
     }
 
 
@@ -125,7 +130,7 @@ def _cap_launches(
     facts: Facts,
 ) -> tuple[list[Action], dict[str, int]]:
     """An initiative in `home` routes only there: see _route_homed. A homed initiative whose host is drained,
-    login-lapsed, or whose lane is lost is relocated instead: routed like a homeless relaunch or retry (ranked
+    login-lapsed, or whose lane is lost, or a "" home while local lanes are decompose-only, is relocated instead: routed like a homeless relaunch or retry (ranked
     by _place_on_hosts, its own old home host excluded from the candidates, never a local lane), with a fetch
     for its newest run's branches planned right before its own first action; with no run to fetch it is dropped
     and a needs_chair names it instead. An initiative with no home, and no
