@@ -174,6 +174,10 @@ class QuarantineFacts(TypedDict):
     harness_failures: int  # counted from run history by the edge
     has_patch: bool  # the task record in the store holds a non-blank build.patch
     rescue_failed: bool  # an earlier rescue_failed attempt exists for this task on the current ticket version
+    reason: NotRequired[str]  # the newest attempt's stored reason, uncut; absent means none
+    causes: NotRequired[list[str]]  # every quarantine cause on the current body, oldest attempt first; absent means just `cause`
+    run: NotRequired[str]  # the run the remedy command names; absent means unknown
+    repo: NotRequired[str]  # the repository the remedy command names; absent means unknown
 
 
 class EmptyDecomposeFacts(TypedDict):
@@ -375,7 +379,9 @@ class Action(TypedDict, total=False):
     holder: str
     host: str
     until: str  # a standby names when the holder's takeover window ends
-    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string
+    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair carries the trimmed reason, at most 600 characters
+    remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
+    command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
     since: str  # a stale_to_draft names the ISO timestamp the staleness was detected
     carry: list[str]  # the phases a clear_branches keeps and merges main into

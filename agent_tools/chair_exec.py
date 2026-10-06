@@ -765,8 +765,10 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _lease(action, deps)
     if kind == "check_login":
         return _check_login(action, deps)
-    if kind in ("standby", "needs_chair", "mark_lost"):
+    if kind in ("standby", "mark_lost"):
         return _result(action, "recorded")
+    if kind == "needs_chair":
+        return _result(action, "recorded", action.get("reason", ""))  # `_recorded` overwrites reason, so carry it in the result
     if kind == "steer_clear":
         return _result(action, "recorded", _steer_reason(action))
     if kind == "fetch_exit":
