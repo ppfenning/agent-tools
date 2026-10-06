@@ -501,8 +501,17 @@ def merge_pages(text: str, key: str) -> dict[str, Any] | None:
     return {**pages[0], key: [row for page in pages for row in page.get(key) or []]}
 
 
-def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any]) -> tuple[int, str]:
-    """The `(returncode, output)` pair `wait_decision` reads, from the two REST bodies. A failure beats pending, as `--fail-fast` did. Fewer rows than `total_count` is pending, never green."""
+_REQUIRED_UNREADABLE = "required checks could not be read; result follows the old rule"
+
+
+def _noted(returncode: int, output: str, required: tuple[str, ...] | None) -> tuple[int, str]:
+    """The poll pair, with the unreadable-required note on its own line when `required` is None."""
+    note = [_REQUIRED_UNREADABLE] if required is None else []
+    return returncode, "\n".join([*([output] if output else []), *note])
+
+
+def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any], required: tuple[str, ...] | None = None) -> tuple[int, str]:
+    """The `(returncode, output)` pair `wait_decision` reads, from the two REST bodies. A failure beats pending, as `--fail-fast` did. Fewer rows than `total_count` is pending, never green. `required` names the base branch's required contexts, each pending until seen; None means the required-checks call was unreadable, so the old rule applies and the output says so."""
     runs = [(r.get("name", ""), r.get("status"), r.get("conclusion")) for r in check_runs.get("check_runs") or []]
     statuses = [(s.get("context", ""), s.get("state")) for s in status.get("statuses") or []]
     runs_total, statuses_total = check_runs.get("total_count") or 0, status.get("total_count") or 0
@@ -511,14 +520,16 @@ def check_poll_result(check_runs: dict[str, Any], status: dict[str, Any]) -> tup
         [n for n, st in statuses if st in ("failure", "error")] or combined_failed)
     unread = ([f"{len(runs)} of {runs_total} check runs read"] if len(runs) < runs_total else []) + (
         [f"{len(statuses)} of {statuses_total} statuses read"] if len(statuses) < statuses_total else [])
-    pending = [n for n, st, _ in runs if st != "completed"] + [n for n, st in statuses if st == "pending"] + unread
+    seen = {n for n, _, _ in runs} | {n for n, _ in statuses}
+    missing = [n for n in required or () if n not in seen]
+    pending = [n for n, st, _ in runs if st != "completed"] + [n for n, st in statuses if st == "pending"] + unread + missing
     if failed:
-        return 1, f"failing checks: {', '.join(failed)}"
+        return _noted(1, f"failing checks: {', '.join(failed)}", required)
     if pending:
-        return PENDING_RC, f"checks pending: {', '.join(pending)}"
+        return _noted(PENDING_RC, f"checks pending: {', '.join(pending)}", required)
     if not runs and not statuses:
-        return 1, _NO_CHECKS
-    return 0, ""
+        return _noted(1, _NO_CHECKS, required)
+    return _noted(0, "", required)
 
 
 def poll_backoff_s(errors: int) -> float:
