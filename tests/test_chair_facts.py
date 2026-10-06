@@ -425,7 +425,8 @@ def test_lease_is_mine_only_for_this_holder_on_a_live_lease():
 def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
-    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
+    # idle_stall is declared on Facts but not yet filled: a later task fills it in gather_facts.
+    assert set(facts) == (set(Facts.__annotations__) - {"idle_stall"}) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
