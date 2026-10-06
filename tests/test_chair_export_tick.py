@@ -1,6 +1,7 @@
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,18 +123,17 @@ def test_the_cli_hook_commits_the_exported_files_with_the_row_count(tmp_path, mo
     assert _git(tmp_path, "rev-list", "--count", "HEAD") == "1"
 
 
-def test_the_cli_hook_fills_the_store_from_files_before_it_exports(tmp_path, monkeypatch):
+def test_export_board_fills_the_store_from_files_before_it_exports(tmp_path, monkeypatch):
     from agent_tools import store_fill
     order = []
     monkeypatch.setattr(store_fill, "fill_workspace", lambda ws: order.append(("fill", ws)) or "")
-    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: order.append(("export", ws)) or [])
-    _git(tmp_path, "init", "-q")
-    (tmp_path / "runs").mkdir()
-    cli._chair_export_hook(tmp_path / "runs", ("t1",))
-    assert order == [("fill", tmp_path), ("export", tmp_path)]
+    monkeypatch.setattr(cli.run_store, "read_queue", lambda runs_dir: order.append(("read", runs_dir)) or [])
+    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows: order.append(("export", ws)) or SimpleNamespace(skipped=[]))
+    cli._export_board(tmp_path / "runs", tmp_path)
+    assert order == [("fill", tmp_path), ("read", tmp_path / "runs"), ("export", tmp_path)]
 
 
-def test_a_failed_fill_stops_the_hook_before_any_export(tmp_path, monkeypatch):
+def test_a_failed_fill_stops_the_export_before_anything_is_written(tmp_path, monkeypatch):
     from agent_tools import store_fill
 
     def unreadable(ws):
@@ -141,7 +141,7 @@ def test_a_failed_fill_stops_the_hook_before_any_export(tmp_path, monkeypatch):
 
     exported = []
     monkeypatch.setattr(store_fill, "fill_workspace", unreadable)
-    monkeypatch.setattr(cli, "_export_board", lambda runs_dir, ws: exported.append(ws) or [])
+    monkeypatch.setattr(cli.queue_export, "export_files", lambda ws, rows: exported.append(ws))
     with pytest.raises(RuntimeError, match="could not be read"):
-        cli._chair_export_hook(tmp_path / "runs", ("t1",))
+        cli._export_board(tmp_path / "runs", tmp_path)
     assert exported == []

@@ -1,9 +1,15 @@
 import pytest
 from test_route_cli import _init_repo, _unmeasured_window, _write_harness, _write_launch_profile
 
-from agent_tools import queue_export, usage_window
+from agent_tools import queue_export, store_fill, usage_window
 from agent_tools.cli import _export_board, main
 from agent_tools.queue_rows import render_item
+
+
+@pytest.fixture(autouse=True)
+def _no_store_fill(monkeypatch):
+    """The export fills the store from files first; these tests fake the board, so the fill is stubbed."""
+    monkeypatch.setattr(store_fill, "fill_workspace", lambda ws: "")
 
 
 def _row(kind, initiative, task_id="", phase="", title="T"):
