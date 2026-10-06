@@ -7105,6 +7105,7 @@ def _chair_run_deps(
     return chair_run.RunDeps(
         stop_lands=stop_lands, facts_deps=facts_deps, exec_deps=exec_deps, report_deps=chair_report.Deps(echo=echo),
         beat=beat, current_epoch=epoch,
+        lease_beat=lambda: chair.renew_lease(runs_dir, session, pid, host),
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,
         release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
         perform=_chair_perform_with_smoke(runs_dir, chair_exec.perform),
