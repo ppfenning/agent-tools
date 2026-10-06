@@ -31,6 +31,7 @@ __all__ = [
     "current_priority",
     "harness_argv",
     "initiative_files",
+    "initiative_repo",
     "initiative_summaries",
     "intake_entries",
     "intake_file",
@@ -38,7 +39,9 @@ __all__ = [
     "launch_blockers",
     "launch_claim",
     "launch_claim_gate",
+    "launch_from_rows",
     "launch_gate",
+    "launch_input",
     "lint_items",
     "merge_same_phase",
     "next_priority",
@@ -50,6 +53,7 @@ __all__ = [
     "parse_profile",
     "priority_text",
     "pull_plan",
+    "ready_tasks",
     "render_context",
     "render_status",
     "review_argv",
@@ -1406,6 +1410,67 @@ def decompose_into_rows(
         if detail:
             return 1, [f"routing: store refused {row['kind']} row {row['task_id']}: {detail}"]
     return 0, [f"routing: wrote {len(rows)} rows for {plan['id']}"]
+
+
+def ready_tasks(task_rows: Sequence[Mapping]) -> list[Mapping]:
+    """The `ready` task rows whose every need names a done or dropped row, in the order given."""
+    done_ids = {r["task_id"] for r in task_rows if r.get("state") in TERMINAL}
+    return [r for r in task_rows if r.get("state") == "ready" and all(n in done_ids for n in r.get("needs") or [])]
+
+
+def initiative_repo(initiative_row: Mapping, intake_rows: Sequence[Mapping]) -> str:
+    """The repo an initiative's rows name: its own `extra.repo`, else the repo of the intake row it came from; "" for neither.
+
+    Decompose's initiative row holds no repo: queue_rows.plan_to_rows writes id, intake and phases only. The idea's
+    `repo:` stays in the intake row's `extra`, matched by the `intake/<id>.md` path or by the `initiative` its stamp records.
+    """
+    extra = initiative_row.get("extra") or {}
+    intake_id = Path(str(extra.get("intake") or "")).stem
+    linked = next(
+        (
+            r for r in intake_rows
+            if (intake_id and r.get("task_id") == intake_id)
+            or (r.get("extra") or {}).get("initiative") == initiative_row["task_id"]
+        ),
+        None,
+    )
+    linked_repo = str((linked.get("extra") or {}).get("repo") or "") if linked is not None else ""
+    return str(extra.get("repo") or "") or linked_repo
+
+
+def launch_input(initiative_row: Mapping, task_rows: Sequence[Mapping], repo: str) -> dict:
+    """The plain data an epic launch takes in place of `work/<id>/`: repo, phases, every ticket, and the ids ready now."""
+    extra = initiative_row.get("extra") or {}
+    return {
+        "initiative": initiative_row["task_id"],
+        "repo": repo,
+        "phases": list(extra.get("phases") or []),
+        "tasks": [
+            {
+                "id": r["task_id"], "phase": r["phase"], "state": r["state"], "needs": list(r.get("needs") or []),
+                "surfaces": list(r.get("surfaces") or []), "body": r["body"],
+            }
+            for r in task_rows
+        ],
+        "ready": [r["task_id"] for r in ready_tasks(task_rows)],
+    }
+
+
+def launch_from_rows(runs_dir: Path, initiative_id: str, repo_flag: str | None = None) -> tuple[int, list[str], dict | None]:
+    """Edge for store mode: `(exit code, lines to print, launch input)` read from work_items rows only.
+
+    A missing initiative row, or a repo named by neither the flag nor the rows, gives code 2 and no input.
+    `read_queue` returns [] for an unreachable store too, so the missing-row message names both causes.
+    No workspace file is opened.
+    """
+    rows = run_store.read_queue(runs_dir, initiative_id)
+    head = next((r for r in rows if r.get("kind") == "initiative"), None)
+    if head is None:
+        return 2, [f"routing: no initiative row {initiative_id} in the store, or the store is unavailable"], None
+    repo = repo_flag or initiative_repo(head, run_store.read_queue(runs_dir, kind="intake"))
+    if not repo:
+        return 2, [f"routing: no --repo given and no repo in the rows for {initiative_id} or its intake"], None
+    return 0, [], launch_input(head, [r for r in rows if r.get("kind") == "task"], repo)
 
 
 def next_priority(current: int, flag: int | str) -> int:
