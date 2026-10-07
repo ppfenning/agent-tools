@@ -462,6 +462,11 @@ def test_a_missing_or_stale_meter_reading_records_no_meter_action(reading):
     assert _meter_actions(rig) == []
 
 
+def test_a_dry_run_status_line_says_remote_lanes_were_not_probed_and_a_live_one_does_not():
+    assert tick(Rig().deps(), True, NOW).endswith(f" | {chair_exec.NOT_PROBED}")
+    assert chair_exec.NOT_PROBED not in tick(Rig().deps(), False, NOW)
+
+
 def test_a_dry_run_records_no_meter_action_even_when_fresh():
     rig = Rig()
     tick(replace(rig.deps(), meter_doc=lambda: _meter_doc(5)), True, NOW)
