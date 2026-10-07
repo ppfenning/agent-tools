@@ -494,6 +494,21 @@ def _short_id(slug: str | None, ids: Mapping[str, str]) -> str | None:
     return ids.get(slug) if slug else None
 
 
+def _projects(rows: Sequence[Mapping]) -> dict[str, str | None]:
+    """Initiative slug to the basename of its repository; None for a missing or empty repo."""
+    def basename(row: Mapping) -> str | None:
+        extra = row.get("extra")
+        repo = extra.get("repo") if isinstance(extra, Mapping) else None
+        return os.path.basename(str(repo).rstrip("/")) or None if repo else None
+
+    return {row["initiative"]: basename(row) for row in rows if row.get("initiative")}
+
+
+def _project(slug: str | None, projects: Mapping[str, str | None]) -> str | None:
+    """The project `projects` holds for an initiative slug; None for no slug or a slug `projects` lacks."""
+    return projects.get(slug) if slug else None
+
+
 def _run_slug(run: str) -> str:
     """The initiative slug of a run key: the key with its trailing `-<digits>` removed."""
     return re.sub(r"-\d+$", "", run)
@@ -507,28 +522,32 @@ def _task_slug(target: str, ids: Mapping[str, str]) -> str | None:
 def _runs_v1(
     lanes: Sequence[console_screen.LaneRow], local_name: str, records: Sequence[Mapping], now: datetime,
     calls_by_run: Mapping[str, Sequence[Mapping]] | None = None, short_ids: Mapping[str, str] | None = None,
+    projects: Mapping[str, str | None] | None = None,
 ) -> list[dict]:
     """The live lanes as running rows, then the newest finished runs; a finished record of a live lane is dropped.
     Each row gains `cost_series` from its run's entry in `calls_by_run`; a run with no entry gets `[]`.
-    Each row gains `short_id` from `short_ids` by its run key's initiative slug."""
+    Each row gains `short_id` from `short_ids` and `project` from `projects`, by its run key's initiative slug."""
     aware = now if now.tzinfo else now.replace(tzinfo=UTC)
     rows = [*(_run_v1(lane, local_name) for lane in lanes), *finished_runs(records, {lane.run for lane in lanes}, aware)]
     by_run = calls_by_run or {}
     ids = short_ids or {}
+    named = projects or {}
     return [
         {
             **row,
             "cost_series": run_cost_series(_call_points(by_run.get(row["run"], ()))),
             "short_id": _short_id(_run_slug(row["run"]), ids),
+            "project": _project(_run_slug(row["run"]), named),
         }
         for row in rows
     ]
 
 
-def _queue_v1(row: dict, ids: Mapping[str, str]) -> dict:
+def _queue_v1(row: dict, ids: Mapping[str, str], projects: Mapping[str, str | None]) -> dict:
     return {
         **row, "priority": int(row.get("priority") or 0), "current_phase": str(row.get("current_phase") or ""),
         "short_id": _short_id(row.get("initiative"), ids),
+        "project": _project(row.get("initiative"), projects),
     }
 
 
@@ -672,21 +691,32 @@ def _chair_section(runs_dir: Path, row: dict, entries: list[dict], drafts: list,
     return _chair_from_store_v1(lease, rows, _chair_record(runs_dir), at, needs_chair_open, last_housekeeping_at, people, drafts)
 
 
-def _history_v1(rows: Mapping, at: datetime, ids: Mapping[str, str]) -> tuple[list[dict], dict]:
+def _history_v1(
+    rows: Mapping, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+) -> tuple[list[dict], dict]:
     """`history` and `history_today` from store rows, counting a day in the chair's zone.
-    Each history row gains `short_id` by its `initiative`."""
+    Each history row gains `short_id` and `project` by its `initiative`."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     args = (rows["runs"], rows["task_records"], rows["node_calls"])
-    history = [{**row, "short_id": _short_id(row.get("initiative"), ids)} for row in build_history(*args)]
+    history = [
+        {
+            **row,
+            "short_id": _short_id(row.get("initiative"), ids),
+            "project": _project(row.get("initiative"), projects),
+        }
+        for row in build_history(*args)
+    ]
     return history, _history_today(*args, at, timezone(offset))
 
 
-def _history_edge(runs_dir: Path, at: datetime, ids: Mapping[str, str]) -> tuple[list[dict], dict]:
+def _history_edge(
+    runs_dir: Path, at: datetime, ids: Mapping[str, str], projects: Mapping[str, str | None],
+) -> tuple[list[dict], dict]:
     """Edge: the feed's history from the store alone. An unreadable store gives no history and zero counts."""
     offset = at.astimezone(EASTERN).utcoffset() or timedelta(0)
     since = local_midnight(at, offset).astimezone(UTC).isoformat()
     try:
-        return _history_v1(read_history_rows(runs_dir, since), at, ids)
+        return _history_v1(read_history_rows(runs_dir, since), at, ids, projects)
     except Exception:  # the history is garnish: a store failure must not take the feed down
         return [], dict(_ZERO_HISTORY_TODAY)
 
@@ -694,8 +724,9 @@ def _history_edge(runs_dir: Path, at: datetime, ids: Mapping[str, str]) -> tuple
 def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None = None) -> dict:
     """Edge: the live schema-1 snapshot from the fleet's existing readers, every section mapped to the shape
     tests/fixtures/dash_feed_v1.json fixes (the contract coxtop parses), with no nulls and nothing json can't write,
-    except a machine's `login_ok`, which is null while its login is unchecked, and a row's `short_id`, which is
-    null when its initiative has none. `profile` is the parsed profile
+    except a machine's `login_ok`, which is null while its login is unchecked, a row's `short_id`, which is
+    null when its initiative has none, and a row's `project`, which is null when its initiative has no known
+    repository. `profile` is the parsed profile
     the capacity chain reads the team cartridge from."""
     runs_dir, work_dir = Path(runs_dir), Path(work_dir)
     at = _parse_now(now)
@@ -719,14 +750,15 @@ def gather_feed(runs_dir: Path, work_dir: Path, now: str, profile: dict | None =
         **{record["run"]: record["calls"] for record in records},
     }
     short_ids = run_store.initiative_short_ids(runs_dir)
-    history, today = _history_edge(runs_dir, at, short_ids)
+    projects = _projects(run_store.read_queue(runs_dir, kind="initiative"))
+    history, today = _history_edge(runs_dir, at, short_ids, projects)
     return snapshot(
         now,
         _chair_section(runs_dir, chair_row, entries, read_drafts(work_dir, now), at),
         _spend_v1(sections["spend"]),
         [_machine_v1(row, at) for row in sections["hosts"]],
-        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run, short_ids),
-        [_queue_v1(row, short_ids) for row in queue],
+        _runs_v1(sections["lanes"], local_name, records, at, calls_by_run, short_ids, projects),
+        [_queue_v1(row, short_ids, projects) for row in queue],
         queue_total,
         [*(_inbox_v1(entry, short_ids) for entry in inbox), *_review_inbox_v1(review_prs, short_ids)],
         inbox_total + len(review_prs),
