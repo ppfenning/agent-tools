@@ -6,11 +6,11 @@ Reuses `chair_read_quarantined.read_work_items` to list the board, `chair_read_a
 
 import subprocess
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_tools import run_store
-from agent_tools.chair_facts import HARNESS_CAUSE, Key, _key
+from agent_tools.chair_facts import HARNESS_CAUSE, LAUNCH_KINDS, Key, _key
 from agent_tools.chair_read_attempts import read_attempts
 from agent_tools.chair_read_quarantined import WorkFiles, attempts_on_current_body, item_body, read_work_items
 from agent_tools.chair_types import StaleCandidate
@@ -18,6 +18,9 @@ from agent_tools.chair_types import StaleCandidate
 Row = Mapping[str, object]
 
 _EXCLUDED_STATES = frozenset({"done", "dropped", "draft"})
+ACTIONS_WINDOW_DAYS = 7
+# Read at any age: needs_chair dedupes decompose_stalled for good, and steer_clear plus launches make the steer streak.
+_KEPT_KINDS = ("needs_chair", "steer_clear", *sorted(LAUNCH_KINDS))
 
 
 def _iso(value: object) -> str:
@@ -59,8 +62,19 @@ def last_chair_action_at(actions: Sequence[Row], key: Key) -> str | None:
     return max(on_task or on_initiative, default=None)
 
 
-def read_chair_actions(runs_dir: Path) -> list[dict]:
-    """Edge. Every `chair_actions` row; `[]` with no store, no table, or the driver absent.
+def actions_query(token: str, now: datetime | None, window_days: int = ACTIONS_WINDOW_DAYS) -> tuple[str, tuple[str, ...]]:
+    """The `chair_actions` SELECT and its bind values. With `now`, rows from `window_days` back, by date prefix so
+    every ISO `ts` form sorts right, plus every row of `_KEPT_KINDS`; with no `now`, every row."""
+    if now is None:
+        return "SELECT * FROM chair_actions", ()
+    marks = ", ".join(["{p}"] * len(_KEPT_KINDS))
+    cutoff = (now - timedelta(days=window_days)).date().isoformat()
+    return run_store._sql(f"SELECT * FROM chair_actions WHERE ts >= {{p}} OR kind IN ({marks})", token), (cutoff, *_KEPT_KINDS)
+
+
+def read_chair_actions(runs_dir: Path, now: datetime | None = None, window_days: int = ACTIONS_WINDOW_DAYS) -> list[dict]:
+    """Edge. The `chair_actions` rows from the last `window_days` before `now`; every row when `now` is None.
+    `[]` with no store, no table, or the driver absent.
 
     A table with no `target` column raises: read as `[]` it would make every task look staler than it is."""
     try:
@@ -69,9 +83,10 @@ def read_chair_actions(runs_dir: Path) -> list[dict]:
         return []
     if opened is None:
         return []
-    conn, _ = opened
+    conn, token = opened
+    sql, params = actions_query(token, now, window_days)
     try:
-        cursor = conn.execute("SELECT * FROM chair_actions")
+        cursor = conn.execute(sql, params)
         columns = [d[0] for d in cursor.description]
         rows = [dict(r) for r in cursor.fetchall()]
     except run_store._DB_ERRORS:  # no chair_actions table yet, so no history
@@ -121,13 +136,18 @@ def _candidate(
 
 
 def read_stale_candidates(
-    workspace_dir: Path, now: datetime, files: WorkFiles | None = None, attempts: list[dict] | None = None,
+    workspace_dir: Path,
+    now: datetime,
+    files: WorkFiles | None = None,
+    attempts: list[dict] | None = None,
+    actions: Sequence[Row] | None = None,
 ) -> list[StaleCandidate]:
     """Edge. One row per board task not done, dropped or draft. `now` computes no age; `chair_stale.stale_reason` does.
 
-    `files` and `attempts` stand in for the work-file and attempts reads when a tick already holds them."""
+    `files`, `attempts` and `actions` stand in for the work-file, attempts and `chair_actions` reads when a tick already
+    holds them. Given `actions`, the caller owns the window; it must reach back at least `stale_days`."""
     attempts = attempts if attempts is not None else read_attempts(workspace_dir, files)
-    actions = read_chair_actions(workspace_dir / "runs")
+    actions = actions if actions is not None else read_chair_actions(workspace_dir / "runs")
     return [
         _candidate(workspace_dir, (item["initiative"], p.parts[-2], p.stem), item["state"], item_body(text), attempts, actions)
         for p, text, item in read_work_items(workspace_dir, "files", files)
