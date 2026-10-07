@@ -1501,7 +1501,63 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
         return decision
     files = sorted({f for t in existing if t != expected
                     for f in (_git_out(repo, "diff-tree", "-r", "--name-only", expected, t) or "").split()})
-    return {**decision, "reason": decision["reason"] + (f"; files differing: {', '.join(files)}" if files else "")}
+    refused = {**decision, "reason": decision["reason"] + (f"; files differing: {', '.join(files)}" if files else "")}
+    # Carried for `_land_leftover`, so it need not run the generator a second time.
+    return {**refused, "local_tree": local, "expected_tree": expected} if local not in (None, expected) else refused
+
+
+def _remote_branch_exists(repo: Path, branch: str) -> bool:
+    """Edge. Whether `origin` has `branch`. Fails closed: only a repo with no `origin`, or `ls-remote` exiting 2
+    (reached the remote, no such ref), says absent. A failed fetch is not absence, and absence leads to a delete."""
+    if _git_out(repo, "config", "--get", "remote.origin.url") is None:
+        return False
+    listed = subprocess.run(["git", "-C", str(repo), "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
+                            capture_output=True, text=True)
+    return listed.returncode != 2
+
+
+def _branch_checked_out(repo: Path, branch: str) -> bool:
+    """Edge. Whether any worktree has `branch` checked out. Its uncommitted state is not the land's to discard."""
+    listing = _git_out(repo, "worktree", "list", "--porcelain")
+    return listing is None or f"branch refs/heads/{branch}" in listing.splitlines()
+
+
+def _open_pr_exists(repo: Path, branch: str, forge_module=forge_github) -> bool | str:
+    """Edge. Whether an open pull request has `branch` as its head, or the reason the forge could not say."""
+    prs = _open_prs_for(repo, branch, forge_module)
+    return prs if isinstance(prs, str) else bool(prs)
+
+
+def _land_leftover(repo: Path, cherry_pick: dict, decision: dict, forge_module=forge_github) -> dict:
+    """Edge, read-only. A `_land_resume` refusal over a local-only `pr/<initiative>--<phase>` whose tree differs, and
+    that no worktree has checked out, is a leftover. `land.leftover_branch_decision` then turns it into a `fresh`
+    carrying the backup ref, the old commit and the refusal's reason, for `_land_rebuild` to act on under the repo
+    lease. Any other decision comes back unchanged."""
+    if decision["kind"] != "refuse" or "local_tree" not in decision:
+        return decision
+    branch = cherry_pick["onto"]
+    open_pr = _open_pr_exists(repo, branch, forge_module)
+    tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if isinstance(open_pr, str) or tip is None or _branch_checked_out(repo, branch):
+        return decision
+    leftover = land.leftover_branch_decision(branch, _remote_branch_exists(repo, branch), open_pr, decision["local_tree"],
+                                             decision["expected_tree"], local_commit=tip)
+    if leftover["kind"] != "back_up_and_rebuild":
+        return decision
+    return {"kind": "fresh", "backup_ref": leftover["backup_ref"], "old_commit": leftover["old_commit"], "reason": decision["reason"]}
+
+
+def _land_rebuild(repo: Path, branch: str, rebuild: dict) -> str | None:
+    """Edge. Point `backup_ref` at `old_commit`, overwriting an older backup, then delete `branch` only if it still
+    sits at `old_commit` and no worktree holds it. Runs under the repo lease. The reason it stopped, or None."""
+    if _branch_checked_out(repo, branch):
+        return f"{branch} is now checked out in a worktree"
+    saved = subprocess.run(["git", "-C", str(repo), "update-ref", rebuild["backup_ref"], rebuild["old_commit"]], capture_output=True, text=True)
+    if saved.returncode != 0:
+        return f"could not back up to {rebuild['backup_ref']}: {saved.stderr.strip()}"
+    dropped = subprocess.run(["git", "-C", str(repo), "update-ref", "-d", f"refs/heads/{branch}", rebuild["old_commit"]],
+                             capture_output=True, text=True)
+    return f"{branch} moved off {rebuild['old_commit'][:8]}: {dropped.stderr.strip()}" if dropped.returncode != 0 else None
 
 
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
@@ -2484,11 +2540,12 @@ def _runs_land(a: argparse.Namespace) -> int:
     elif sync == "refuse":
         print(f"land: refusing, {sync_detail}")
         return 2
-    cherry_pick = next((s for s in steps if s["kind"] == "cherry_pick"), None)
+    cherry_pick, rebuild = next((s for s in steps if s["kind"] == "cherry_pick"), None), None
     if cherry_pick is not None:
         # An existing pr/<task> is not necessarily stale or foreign: a retried
         # push can leave a same-tree branch behind, and the rerun should reuse it.
-        decision = _land_resume(repo, cherry_pick, forge_module)
+        decision = _land_leftover(repo, cherry_pick, _land_resume(repo, cherry_pick, forge_module), forge_module)
+        rebuild = decision if "backup_ref" in decision else None
         if decision["kind"] == "refuse":
             print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {decision['reason']}")
             return 2
@@ -2498,11 +2555,21 @@ def _runs_land(a: argparse.Namespace) -> int:
         planned = land.resume_steps(planned, decision, cherry_pick["onto"])
     # Steps start here: every return from now on is logged. Earlier returns are not.
     def walk(guard):
+        # The leftover rebuild deletes a branch, so it runs only once the repo lease is held: a concurrent
+        # land mid-walk owns that branch, and the lease is what refuses this one before it touches it.
+        failed = ("no repo lease to rebuild under" if not leased else _land_rebuild(repo, cherry_pick["onto"], rebuild)) if rebuild else None
+        if failed:
+            print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {rebuild['reason']}")
+            print(f"land: not rebuilt: {failed}")
+            return 2, [], ""
+        if rebuild:
+            print(f"land: backed up {rebuild['old_commit'][:8]} to {rebuild['backup_ref']}, rebuilding {cherry_pick['onto']}")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
                              mode=land_mode, guard=guard)
 
     repo_holder = f"{_holder_label(a)}@{socket.gethostname()}:{os.getpid()}"
     got = land_repo_lease.acquire(runs_dir, str(repo), repo_holder, 1200)
+    leased = isinstance(got, store_cli.LeaseGranted)
     if isinstance(got, store_cli.LeaseRefused):
         print(land_repo_lease.refusal_message(str(repo), got.holder or "another land"))
         walked = None
