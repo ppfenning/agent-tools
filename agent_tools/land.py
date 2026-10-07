@@ -50,6 +50,7 @@ __all__ = [
     "land_plan",
     "merge_pages",
     "phase_landable",
+    "phase_landed_tasks",
     "phase_pr_body",
     "phase_pr_title",
     "poll_backoff_s",
@@ -59,6 +60,7 @@ __all__ = [
     "rest_checks_argvs",
     "set_state_stop",
     "skip_line",
+    "task_gather_status",
     "unreadable_poll",
     "wait_decision",
 ]
@@ -263,11 +265,34 @@ def _gather_one(record: dict[str, Any], branches: Mapping[str, list[str]], run_h
     return [{"kind": "refuse", "reason": f"{task}: {branch} is gone and the record holds no build.patch to apply"}]
 
 
+def task_gather_status(facts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Task id to `already_present`, `gather_from_branch`, `gather_from_patch` or `missing`. Each fact is
+    `{task, reachable, branch_exists, has_patch}`: the task's agent-branch commit is reachable from the phase
+    branch, that branch exists, the record carries a `build.patch`. Reachable wins, then the branch, then the patch."""
+    def one(f: Mapping[str, Any]) -> str:
+        if f.get("reachable"):
+            return "already_present"
+        if f.get("branch_exists"):
+            return "gather_from_branch"
+        if f.get("has_patch"):
+            return "gather_from_patch"
+        return "missing"
+    return {f["task"]: one(f) for f in facts}
+
+
+def phase_landed_tasks(steps: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """Task ids whose work the plan puts on the PR branch: a `squash_phase` step's `tasks` plus each gather step's `task`."""
+    squashed = [t for s in steps if s.get("kind") == "squash_phase" for t in s.get("tasks", [])]
+    gathered = [s["task"] for s in steps if s.get("kind") in ("cherry_pick", "patch_apply") and "task" in s]
+    return frozenset([*squashed, *gathered])
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main",
                 pr_facts: dict[str, Any] | None = None, *, branches: Mapping[str, list[str]] | None = None,
                 repo: str = "", run_hosts: Mapping[str, str] | None = None,
-                fetched_missing: Collection[str] = ()) -> list[dict[str, Any]]:
+                fetched_missing: Collection[str] = (),
+                task_facts: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """§1's phase step list, or a one-step `refuse` from `phase_landable`. The
     phase branch is squashed onto a fresh `default_branch` in its own PR
     branch, the way a task land builds its PR, since a coxswain repo requires
@@ -278,7 +303,10 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
     `branches` lists the phase branch with no commits over `default_branch`
     and an approved task is unlanded, the squash is replaced by a gather of
     each task's own commit or `build.patch`; a branch absent from `branches`
-    is unknown and squashes."""
+    is unknown and squashes. `task_facts` (see `task_gather_status`), one per
+    approved task, makes the plan refuse naming every `missing` task, and
+    gathers each task the phase branch lacks onto the PR branch after the
+    squash of the ones it holds."""
     records = {r.get("task"): r for r in task_records}
     refusal = phase_landable(items, records)
     if refusal is not None:
@@ -311,10 +339,36 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         return [{"kind": "wait_checks", "branch": f"origin/{pr_branch}", "pr": decision["pr"]}, *after_pr]
     known = branches or {}
     approved = [records[i["id"]] for i in items if i.get("status") == "approved" and i.get("id") in records]
-    if approved and phase_branch in known and not known[phase_branch]:
-        gather = [s for r in approved for s in _gather_one(
-            r, known, run_hosts or {}, fetched_missing, repo=repo, initiative=initiative, pr_branch=pr_branch,
+    statuses = task_gather_status(task_facts or [])
+    missing = [t for t, s in statuses.items() if s == "missing"]
+    if missing:
+        return [{"kind": "refuse", "reason": f"{', '.join(missing)}: no agent branch and no build.patch to gather the work from; nothing merged"}]
+    present = [t for t, s in statuses.items() if s == "already_present"]
+    lacking = [records[t] for t, s in statuses.items() if s.startswith("gather_") and t in records]
+    from_branch = {f"agents/{records[t].get('run')}/{t}": [] for t, s in statuses.items() if s == "gather_from_branch" and t in records}
+
+    def gather_for(recs: list[dict[str, Any]], seen: Mapping[str, list[str]]) -> list[dict[str, Any]]:
+        return [s for r in recs for s in _gather_one(
+            r, seen, run_hosts or {}, fetched_missing, repo=repo, initiative=initiative, pr_branch=pr_branch,
             default_branch=default_branch)]
+
+    if task_facts is not None:
+        squash_step = {**squash_step, "tasks": present}
+    if lacking:
+        gather = gather_for(lacking, {**known, **from_branch})
+        refused = [s for s in gather if s["kind"] == "refuse"]
+        if refused:
+            return refused[:1]
+        if present:
+            held = [f for f in squash_step.get("approved_files", []) if f["task"] in present]
+            held_step = {**{k: v for k, v in squash_step.items() if k != "approved_files"}, **({"approved_files": held} if held else {})}
+            build_steps = [{"kind": "pick_branch", "branch": phase_branch, "commit_subject": f"phase {phase}"}, held_step, *gather]
+        else:
+            first = next(i for i, s in enumerate(gather) if s["kind"] != "fetch")
+            flagged = {"worktree_flag": "-B"} if decision["kind"] == "recreate" else {}
+            build_steps = [{**s, **flagged} if i == first else s for i, s in enumerate(gather)]
+    elif approved and phase_branch in known and not known[phase_branch]:
+        gather = gather_for(approved, known)
         refused = [s for s in gather if s["kind"] == "refuse"]
         if refused:
             return refused[:1]
@@ -362,17 +416,19 @@ def land_plan(record: dict[str, Any], branches: dict[str, list[str]], default_br
               task_records: list[dict[str, Any]] | None = None, tracker: str | None = None,
               issue: str | None = None, phase_pr: dict[str, Any] | None = None, repo: str = "",
               run_hosts: Mapping[str, str] | None = None,
-              fetched_missing: Collection[str] = ()) -> list[dict[str, Any]]:
+              fetched_missing: Collection[str] = (),
+              task_facts: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
     """The ordered steps to land `record`, or a one-step `refuse`. Phase mode
     (`items` given) lands the whole phase off its own branch instead of one
-    task's commit; `phase_pr` there is `phase_resume`'s facts, and `repo`,
+    task's commit; `phase_pr` there is `phase_resume`'s facts, `task_facts`
+    is `task_gather_status`'s input, and `repo`,
     `run_hosts` (run to host) and `fetched_missing` (task ids a fetch found
-    nothing for) feed the gather of an empty phase branch. Task mode only: `tracker` other than None or `none` adds a
+    nothing for) feed the gather. Task mode only: `tracker` other than None or `none` adds a
     closing `route_sync`, and `issue` adds `Closes #n` to the PR body; `none`
     plans neither and says so in a note."""
     if items is not None:
         return _phase_plan(record, items, task_records or [], repo_facts, default_branch, phase_pr, branches=branches,
-                           repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing)
+                           repo=repo, run_hosts=run_hosts, fetched_missing=fetched_missing, task_facts=task_facts)
     if _proposal(record, "draft_pr_create") is None:
         return [{"kind": "refuse", "reason": "no draft_pr_create proposal in record"}]
     refusal = _approved(record)

@@ -1400,6 +1400,32 @@ def _land_branches(repo: Path, record: dict, default_branch: str) -> dict[str, l
     return branches
 
 
+def _phase_task_facts(repo: Path, phase_branch: str, items: list[dict], task_records: list[dict]) -> list[dict] | None:
+    """Edge. Per approved task, the facts `land.task_gather_status` reads: its `agents/<run>/<task>` commit is an
+    ancestor of `phase_branch`, that branch exists, the record carries a non-blank `build.patch`. A task with none
+    of those but a `build.files_touched` counts as reachable. None when
+    `phase_branch` does not resolve, so a land with no phase branch to compare against plans as it always did."""
+    def git_ok(*args: str) -> bool:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).returncode == 0
+    if not git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{phase_branch}"):
+        return None
+    approved = {i["id"] for i in items if i.get("status") == "approved"}
+    facts = []
+    for record in task_records:
+        task = record.get("task")
+        if task not in approved:
+            continue
+        branch = f"agents/{record.get('run')}/{task}"
+        exists = git_ok("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+        build = record.get("build") or {}
+        has_patch = isinstance(build.get("patch"), str) and bool(build["patch"].strip())
+        # No branch and no patch but recorded files: the squash's files check, not this plan, says if they landed.
+        deferred = not exists and not has_patch and bool(build.get("files_touched"))
+        facts.append({"task": task, "branch_exists": exists, "has_patch": has_patch,
+                      "reachable": deferred or (exists and git_ok("merge-base", "--is-ancestor", branch, phase_branch))})
+    return facts
+
+
 def _recover_branches(repo: Path, record: dict, phase_branch: str) -> dict[str, list[str]]:
     """Commit subjects ahead of the phase branch, per recover candidate
     branch — the same `git log --no-merges` shape `_land_branches` uses, but
@@ -2403,6 +2429,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         plan_steps = land.land_plan(
             {**phase_record, "initiative": initiative, "initiative_title": initiative_title}, {}, default_branch,
             repo_facts, items=items, task_records=task_records, phase_pr=phase_pr,
+            task_facts=_phase_task_facts(repo, f"epic/{initiative}/{phase}", items, task_records),
         )
         steps = _land_enrich(plan_steps, path=searched, worktree_root=a.worktree_root, task_paths=task_paths,
                               umbrella=profile.get("umbrella_dir"), task_items=_phase_task_items(items))
