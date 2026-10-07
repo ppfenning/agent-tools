@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the daily store-backup units as systemd USER units. Needs no root.
+# Install the daily store-backup and monthly restore-drill units as systemd USER units. Needs no root.
 # The interpreter is resolved here and written into ExecStart as an absolute
 # path, because the user manager's PATH has no venv and often no `python`.
 # Safe to rerun: a file is written only when its content differs, and
@@ -11,6 +11,8 @@ root=$(cd "$here/../.." && pwd)
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 service=coxswain-store-backup.service
 timer=coxswain-store-backup.timer
+drill_service=coxswain-store-drill.service
+drill_timer=coxswain-store-drill.timer
 
 die() {
     printf 'install.sh: %s\n' "$1" >&2
@@ -53,18 +55,22 @@ install_if_changed() {
 
 # Both values passed the safe-set check above, so neither holds a sed metacharacter.
 sed -e "s|@REPO_ROOT@|$root|" -e "s|@PYTHON@|$python|" "$here/$service" >"$work/$service"
+sed -e "s|@REPO_ROOT@|$root|" -e "s|@PYTHON@|$python|" "$here/$drill_service" >"$work/$drill_service"
 
 install_if_changed "$work/$service" "$unit_dir/$service"
 install_if_changed "$here/$timer" "$unit_dir/$timer"
+install_if_changed "$work/$drill_service" "$unit_dir/$drill_service"
+install_if_changed "$here/$drill_timer" "$unit_dir/$drill_timer"
 
 if [ "$changed" -eq 1 ]; then
     systemctl --user daemon-reload
 fi
 # --now starts the timer today, not at the next login; both are no-ops when already done.
 systemctl --user enable --now "$timer"
+systemctl --user enable --now "$drill_timer"
 
 # A user timer stops at logout unless the user lingers.
 linger=$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null || true)
 if [ "$linger" != "yes" ]; then
-    printf 'install.sh: linger is off, so the backup timer stops at logout. Run: loginctl enable-linger %s\n' "$(id -un)" >&2
+    printf 'install.sh: linger is off, so the timers stop at logout. Run: loginctl enable-linger %s\n' "$(id -un)" >&2
 fi
