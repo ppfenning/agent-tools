@@ -2595,6 +2595,8 @@ def _land_walk(repo: Path, steps: list[dict], planned: list[dict], record: dict 
             print(f"refused: {step['reason']}")
             return 2, reached, pr
         if step["kind"] == "note":
+            if step.get("unmerged"):
+                print(step["reason"])
             i += 1
             continue
         held = guard(step["kind"]) if guard is not None else None

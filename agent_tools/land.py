@@ -48,6 +48,7 @@ __all__ = [
     "issue_closes",
     "land_log_row",
     "land_plan",
+    "mark_done",
     "merge_pages",
     "phase_landable",
     "phase_landed_tasks",
@@ -287,6 +288,11 @@ def phase_landed_tasks(steps: Sequence[Mapping[str, Any]]) -> frozenset[str]:
     return frozenset([*squashed, *gathered])
 
 
+def mark_done(tasks: Sequence[str], merged: Collection[str]) -> list[str]:
+    """The ids in `tasks` whose work is in `merged`, in `tasks` order; the others are left as they are."""
+    return [t for t in tasks if t in merged]
+
+
 def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_records: list[dict[str, Any]],
                 repo_facts: dict[str, Any] | None, default_branch: str = "main",
                 pr_facts: dict[str, Any] | None = None, *, branches: Mapping[str, list[str]] | None = None,
@@ -328,15 +334,22 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         return [{"kind": "refuse", "reason": decision["reason"]}]
     if decision["kind"] == "recreate":
         squash_step = {**squash_step, "worktree_flag": "-B"}
-    after_pr = [
-        {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
-         "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
-        {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
-        *[{"kind": "mark_done", "task": t} for t in landed_tasks],
-    ]
+    def after_pr(merged: Collection[str]) -> list[dict[str, Any]]:
+        marked = mark_done(landed_tasks, merged)
+        unmerged = [t for t in landed_tasks if t not in marked]
+        left = [{"kind": "note", "unmerged": unmerged,
+                 "reason": f"{', '.join(unmerged)}: work not in the merged PR; left in current state"}] if unmerged else []
+        return [
+            {"kind": "merge", "squash": True, "delete_branch": True, "branch": pr_branch,
+             "default_branch": default_branch, "subject": f"epic {initiative}: {phase}"},
+            {"kind": "clean_phase", "run": run, "phase_branch": phase_branch, "pr_branch": pr_branch, "tasks": landed_tasks},
+            *left,
+            *[{"kind": "mark_done", "task": t} for t in marked],
+        ]
     if decision["kind"] == "wait":
+        # No gather is planned on a resume, so no merged set exists: every landed task is marked, as before.
         # `origin/` ref: the local branch may be absent, and its tip is the PR head when present.
-        return [{"kind": "wait_checks", "branch": f"origin/{pr_branch}", "pr": decision["pr"]}, *after_pr]
+        return [{"kind": "wait_checks", "branch": f"origin/{pr_branch}", "pr": decision["pr"]}, *after_pr(landed_tasks)]
     known = branches or {}
     approved = [records[i["id"]] for i in items if i.get("status") == "approved" and i.get("id") in records]
     statuses = task_gather_status(task_facts or [])
@@ -384,7 +397,9 @@ def _phase_plan(phase_record: dict[str, Any], items: list[dict[str, Any]], task_
         {"kind": "pr_create", "title": phase_pr_title(initiative, phase, phase_record.get("initiative_title", "")),
          "body": phase_pr_body(phase_record, task_records), "head": pr_branch, "base": default_branch},
         {"kind": "wait_checks", "branch": pr_branch},
-        *after_pr,
+        # Without `task_facts` there is no merged set, so every landed task is marked as before. A task with no
+        # fact (not approved) was never gathered and keeps being marked too.
+        *after_pr(landed_tasks if task_facts is None else phase_landed_tasks(build_steps) | (set(landed_tasks) - set(statuses))),
     ]
 
 
