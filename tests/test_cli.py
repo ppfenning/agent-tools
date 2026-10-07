@@ -817,7 +817,7 @@ def test_chair_perform_with_smoke_skips_smoke_for_a_landed_umbrella_repo(monkeyp
     assert calls == []
 
 
-def test_chair_perform_with_smoke_holds_and_reverts_on_a_traceback(monkeypatch, tmp_path):
+def test_chair_perform_with_smoke_holds_on_a_traceback_and_opens_no_revert_pr(monkeypatch, tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     monkeypatch.setattr(
@@ -827,19 +827,19 @@ def test_chair_perform_with_smoke_holds_and_reverts_on_a_traceback(monkeypatch, 
             _failing_smoke_result(["cox", "runs", "top", "--once"]),
         ],
     )
-    reverted = []
-    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", reverted.append)
+
+    def _fail_if_called(argv):
+        raise AssertionError("run_revert_pr must not be called")
+
+    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", _fail_if_called)
     land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
-    land_result["action"] = {**land_result["action"], "run": "r-9"}
-    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: [land_result])
+    results = [land_result]
+    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: results)
 
-    wrapped([], object(), lambda: 1, False)
+    got = wrapped([], object(), lambda: 1, False)
 
-    held = cli.chair_smoke.read_hold(str(runs_dir))
-    assert held["cause"] == "smoke_failed"
-    assert len(reverted) == 1
-    pr_create = reverted[0]["pr_create"]
-    assert pr_create[pr_create.index("--body") + 1].endswith(" · run r-9")
+    assert cli.chair_smoke.read_hold(str(runs_dir))["cause"] == "smoke_failed"
+    assert got == [land_result]
 
 
 def test_chair_perform_with_smoke_clears_an_existing_hold_on_a_later_clean_pass(monkeypatch, tmp_path):
@@ -865,36 +865,111 @@ def test_chair_perform_with_smoke_clears_an_existing_hold_on_a_later_clean_pass(
     assert cli.chair_smoke.read_hold(str(runs_dir)) is None
 
 
-def test_chair_perform_with_smoke_keeps_the_hold_and_the_land_result_when_the_revert_pr_fails(monkeypatch, tmp_path):
+def test_chair_perform_with_smoke_watches_a_landed_phase_land_and_a_plain_land(monkeypatch, tmp_path):
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    monkeypatch.setattr(
-        cli.chair_smoke, "run_smoke_commands",
-        lambda repo_dir: [_failing_smoke_result(["cox", "runs", "top", "--once"])],
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda repo_dir: [_ok_smoke_result(["cox"])])
+    phase_land = _land_result("/repos/coxswain-tools", pr=9, commit="c1")
+    phase_land["action"] = {**phase_land["action"], "kind": "land_phase", "initiative": "i1", "phase": "p1"}
+    task_land = _land_result("/repos/coxswain-tools", pr=10, commit="c2")
+    task_land["action"] = {**task_land["action"], "initiative": "i2", "task_id": "t7"}
+    commitless = {**_land_result("/repos/x"), "commit": ""}
+    not_landed = {**_land_result("/repos/x", commit="c3"), "status": "not_landed"}
+    tickets = [{"id": "t7", "initiative": "i2", "phase": "p9"}, {"id": "t7", "initiative": "i3", "phase": "pz"}]
+    watched: list = []
+    wrapped = cli._chair_perform_with_smoke(
+        runs_dir, lambda *a: [phase_land, task_land, commitless, not_landed],
+        watch=watched.append, tickets=lambda: tickets,
     )
 
-    def _raise_called_process_error(argv):
-        raise sp.CalledProcessError(1, argv)
+    wrapped([], object(), lambda: 1, False)
 
-    monkeypatch.setattr(cli.chair_smoke, "run_revert_pr", _raise_called_process_error)
-    land_result = _land_result("/repos/coxswain-tools", pr=9, commit="deadbeef")
-    # a land_phase, the shape `chair_plan_land.plan_lands` actually emits: it carries `phase` and no `task_id`.
-    land_result["action"] = {
-        **land_result["action"], "kind": "land_phase", "initiative": "smoke-init", "phase": "3-wiring", "epoch": 4,
-    }
-    wrapped = cli._chair_perform_with_smoke(runs_dir, lambda *a: [land_result])
+    assert watched == [
+        {"initiative": "i1", "phase": "p1", "repo": "/repos/coxswain-tools", "pr": 9, "commit": "c1"},
+        {"initiative": "i2", "phase": "p9", "repo": "/repos/coxswain-tools", "pr": 10, "commit": "c2"},
+    ]
 
-    got = wrapped([], object(), lambda: 1, False)
 
-    assert land_result in got
-    needs_chair = [r for r in got if r["action"].get("kind") == "needs_chair"]
-    assert len(needs_chair) == 1
-    assert needs_chair[0]["action"]["cause"] == "smoke_failed"
-    assert needs_chair[0]["action"]["initiative"] == "smoke-init"
-    assert needs_chair[0]["action"]["phase"] == "3-wiring"
-    assert "could not be opened" in needs_chair[0]["reason"]
-    held = cli.chair_smoke.read_hold(str(runs_dir))
-    assert held["cause"] == "smoke_failed"
+def test_chair_perform_with_smoke_dry_run_calls_neither_watch_nor_held(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    monkeypatch.setattr(cli.chair_smoke, "run_smoke_commands", lambda repo_dir: [_ok_smoke_result(["cox"])])
+    calls: list = []
+    wrapped = cli._chair_perform_with_smoke(
+        runs_dir, lambda *a: [_land_result("/repos/coxswain-tools")],
+        watch=lambda w: calls.append("watch"), held=lambda: calls.append("held"),
+    )
+
+    wrapped([], object(), lambda: 1, True)
+
+    assert calls == []
+
+
+def test_chair_perform_with_smoke_calls_held_after_the_smoke_step(monkeypatch, tmp_path):
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    calls: list = []
+    monkeypatch.setattr(
+        cli.chair_smoke, "run_smoke_commands", lambda repo_dir: calls.append("smoke") or [_ok_smoke_result(["cox"])],
+    )
+    wrapped = cli._chair_perform_with_smoke(
+        runs_dir, lambda *a: [_land_result("/repos/coxswain-tools")],
+        watch=lambda w: calls.append("watch"), held=lambda: calls.append("held"),
+    )
+
+    wrapped([], object(), lambda: 1, False)
+
+    assert calls == ["watch", "smoke", "held"]
+
+
+def _held_from_deps(monkeypatch, tmp_path, rows, ci_by_commit, hold):
+    """Builds real chair deps, then runs the `held` its perform wrapper calls, with the actions, the CI reader and the hold faked."""
+    reads: list[tuple[str, str]] = []
+
+    def reader(repo: str, commit: str) -> tuple[str, str]:
+        reads.append((repo, commit))
+        return ci_by_commit[commit], ""
+
+    reader.cache = {}
+    resolved: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli, "_main_ci_reader", lambda runner: reader)
+    monkeypatch.setattr(cli.chair_read_stale, "read_chair_actions", lambda runs_dir: rows)
+    monkeypatch.setattr(cli.chair_smoke, "read_hold", lambda runs_dir: hold)
+    monkeypatch.setattr(cli.chair_revert_watch, "resolve_watch", lambda write, c, outcome: resolved.append((c, outcome)))
+    monkeypatch.setattr(cli.chair_exec, "perform", lambda *a: [])
+    deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", False, print, tmp_path / "profile.yaml", "files")
+    deps.perform([], deps.exec_deps, lambda: 1, False)
+    return resolved, reads
+
+
+def _pending_row(commit: str) -> dict:
+    return {"kind": "revert_watch", "initiative": "i1", "phase": "p1", "repo": "o/r", "pr": 1, "commit": commit}
+
+
+def test_chair_run_deps_held_resolves_a_green_watch_with_no_hold_and_leaves_the_rest(monkeypatch, tmp_path):
+    rows = [_pending_row("g1"), _pending_row("r1"), _pending_row("p1"), _pending_row("h1")]
+    ci = {"g1": "green", "r1": "red", "p1": "pending", "h1": "green"}
+    hold = {"land": {"repo": "o/r", "pr": 4, "commit": "h1"}, "cause": "smoke_failed"}
+
+    resolved, reads = _held_from_deps(monkeypatch, tmp_path, rows, ci, hold)
+
+    assert resolved == [("g1", "held")]
+    assert [c for _, c in reads] == ["g1", "r1", "p1", "h1"]
+
+
+def test_chair_run_deps_held_resolves_a_green_watch_when_there_is_no_hold(monkeypatch, tmp_path):
+    resolved, reads = _held_from_deps(monkeypatch, tmp_path, [_pending_row("g1")], {"g1": "green"}, None)
+
+    assert resolved == [("g1", "held")]
+    assert reads == [("o/r", "g1")]
+
+
+def test_chair_run_deps_held_resolves_a_green_watch_when_the_hold_names_another_commit(monkeypatch, tmp_path):
+    hold = {"land": {"repo": "o/r", "pr": 4, "commit": "other"}, "cause": "smoke_failed"}
+
+    resolved, _ = _held_from_deps(monkeypatch, tmp_path, [_pending_row("g1")], {"g1": "green"}, hold)
+
+    assert resolved == [("g1", "held")]
 
 
 def test_dash_once_prints_the_gathered_feed_as_one_json_line(monkeypatch, tmp_path, capsys):

@@ -7076,58 +7076,55 @@ def _record_beat_wanted(dry_run: bool, lost: str) -> bool:
     return lost == ""
 
 
-def _smoke_revert_failure_result(
-    source: chair_exec.Action, land: chair_smoke.LandTrigger, exc: Exception,
-) -> chair_exec.Result:
-    """The needs_chair Result appended when `run_revert_pr` itself fails. It takes initiative, task_id and epoch
-    from the land action `source`, the initiative-and-cause shape `Action` documents, so the status line names it.
-    `source` is as often a land_phase as a plain land, and a land_phase carries no task_id; `chair_exec._phase_of`
-    folds in `phase` instead, the same way `escalation()` does, so a phase land's needs_chair still names it."""
-    reason = f"revert PR for {land['repo']} #{land['pr']} could not be opened: {exc}"
-    action: chair_exec.Action = {
-        "kind": "needs_chair", "initiative": source.get("initiative", ""), "task_id": source.get("task_id", ""),
-        "cause": "smoke_failed", "epoch": source.get("epoch", 0), "reason": reason, **chair_exec._phase_of(source),
-    }
-    return {"action": action, "status": "escalated", "reason": reason}
+def _land_watches(results: list[chair_exec.Result], tickets: Callable[[], Sequence[Mapping]]) -> list[dict]:
+    """One watch per landed result that carries a commit. A land_phase names its phase; a plain land takes it from its ticket.
+    The tickets are read only when a land needs them."""
+    if not any(r["status"] == "landed" and r.get("commit") for r in results):
+        return []
+    phase_of = {(t.get("initiative", ""), t.get("id", "")): t.get("phase", "") for t in tickets()}
+    return [
+        {
+            "initiative": r["action"].get("initiative", ""),
+            "phase": r["action"].get("phase")
+            or phase_of.get((r["action"].get("initiative", ""), r["action"].get("task_id", "")), ""),
+            "repo": r["action"].get("repo", ""),
+            "pr": chair_exec._pr_from_reason(r["reason"]),
+            "commit": r["commit"],
+        }
+        for r in results
+        if r["status"] == "landed" and r.get("commit")
+    ]
 
 
-def _land_action_for(results: list[chair_exec.Result], land: chair_smoke.LandTrigger) -> chair_exec.Action:
-    """The action of the first landed result in `land`'s repo, the one `smoke_targets` built `land` from."""
-    return next(r["action"] for r in results if r["status"] == "landed" and r["action"].get("repo", "") == land["repo"])
-
-
-def _chair_perform_with_smoke(runs_dir: Path, perform: chair_run.Perform) -> chair_run.Perform:
-    """Wraps `perform` with the post-land smoke: a landed coxswain-tools/-graphs PR runs the fixed smoke
-    commands once against the first triggering land's repo. A failure holds a `HoldRecord` and opens (never
-    merges) a revert PR; a pass clears an existing hold, which is how the hold clears on a later good land.
-
-    The revert itself can fail (`run_revert_pr` raises `CalledProcessError` at its first failing step, or
-    `OSError` when a command is missing). That failure is caught here and reported as an extra needs_chair
-    result rather than left to escape: `tick`'s own try block wraps only `format_status`, so an exception out
-    of `deps.perform` would drop every result already performed this tick, including the land that triggered
-    the smoke. The hold already written stays, so the land stays reverted-pending until a human intervenes.
+def _chair_perform_with_smoke(
+    runs_dir: Path, perform: chair_run.Perform,
+    watch: Callable[[Mapping], None] = lambda _w: None, held: Callable[[], None] = lambda: None,
+    tickets: Callable[[], Sequence[Mapping]] = lambda: [],
+) -> chair_run.Perform:
+    """Wraps `perform` with the post-land watch and smoke. A live run records a watch for every landed commit, then a
+    landed coxswain-tools/-graphs PR runs the fixed smoke commands once against the first triggering land's repo.
+    A failure holds a `HoldRecord` and opens no revert PR: the hold makes `landed_main` report smoke failed for that
+    commit, so the next tick's plan emits `revert_land`. A pass clears an existing hold. `held` runs last, to resolve
+    the watches whose main went green. A dry run calls neither `watch` nor `held`.
     """
 
     def wrapped(
         actions: list[chair_exec.Action], deps: chair_exec.Deps, current_epoch: Callable[[], int], dry_run_: bool,
     ) -> list[chair_exec.Result]:
         results = perform(actions, deps, current_epoch, dry_run_)
+        if not dry_run_:
+            for w in _land_watches(results, tickets):
+                watch(w)
         triggers = chair_exec.smoke_targets(results)
-        if not triggers:
-            return results
-        land = triggers[0]
-        smoke_results = chair_smoke.run_smoke_commands(land["repo"])
-        ok, failing = chair_smoke.smoke_verdict(smoke_results)
-        if not ok:
-            record = chair_smoke.hold_record(land, failing)
-            chair_smoke.write_hold(str(runs_dir), record)
-            try:
-                run = _land_action_for(results, land).get("run") or None
-                chair_smoke.run_revert_pr(chair_smoke.revert_pr_argv(land, record["tail"], run))
-            except (subprocess.CalledProcessError, OSError) as exc:
-                return [*results, _smoke_revert_failure_result(_land_action_for(results, land), land, exc)]
-        elif chair_smoke.read_hold(str(runs_dir)) is not None:
-            chair_smoke.clear_hold(str(runs_dir))
+        if triggers:
+            land = triggers[0]
+            ok, failing = chair_smoke.smoke_verdict(chair_smoke.run_smoke_commands(land["repo"]))
+            if not ok:
+                chair_smoke.write_hold(str(runs_dir), chair_smoke.hold_record(land, failing))
+            elif chair_smoke.read_hold(str(runs_dir)) is not None:
+                chair_smoke.clear_hold(str(runs_dir))
+        if not dry_run_:
+            held()
         return results
 
     return wrapped
@@ -7486,6 +7483,14 @@ def _chair_run_deps(
         ),
         resolve_land=_resolve_land_with(actions, record),
     )
+    def held() -> None:
+        """Resolves each pending watch whose commit is green on main and that the smoke hold does not name."""
+        for w in chair_revert_watch.pending_watches(actions):
+            (ci, _) = main_ci(w["repo"], w["commit"])
+            hold = chair_smoke.read_hold(str(runs_dir))
+            if ci == "green" and (hold is None or hold["land"]["commit"] != w["commit"]):
+                chair_revert_watch.resolve_watch(record, w["commit"], "held")
+
     stop_lands = chair_run.no_lands_to_stop
     if not dry_run:
         # Lands run behind the tick on the land worker (tools #1287), which beats only the chair lease while one runs:
@@ -7500,7 +7505,11 @@ def _chair_run_deps(
         lease_beat=lambda: chair.renew_lease(runs_dir, session, pid, host),
         holds=lambda: chair._read_lease(runs_dir, holder) is not None,
         release=lambda: chair.release_lease(runs_dir, session, pid, host), sleep=time.sleep, now=now,
-        perform=_chair_perform_with_smoke(runs_dir, chair_exec.perform),
+        perform=_chair_perform_with_smoke(
+            runs_dir, chair_exec.perform,
+            watch=lambda w: chair_revert_watch.record_watch(record, w), held=held,
+            tickets=lambda: chair_facts.read_ticket_items(ws, mode),
+        ),
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
     )
 
