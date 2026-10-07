@@ -25,6 +25,15 @@ def test_an_approved_unlanded_record_with_a_ready_item_is_listed_with_its_remedy
                       "remedy": "cox runs land r1 --task t1 --repo /repo/acme"}]
 
 
+def test_an_approved_record_a_code_or_ticket_quarantine_superseded_is_not_stranded():
+    for cause in ("code", "ticket"):
+        assert runs_stranded.stranded([_record(cause=cause)], [_item("ready")]) == []
+
+
+def test_an_approved_record_with_a_harness_cause_is_still_stranded():
+    assert [r["task"] for r in runs_stranded.stranded([_record(cause="harness")], [_item("ready")])] == ["t1"]
+
+
 def test_a_null_arbitration_record_with_both_reviewers_approving_is_stranded():
     record = _record(arbitration=None, adversary={"verdict": "approve"})
     assert [r["task"] for r in runs_stranded.stranded([record], [_item("ready")])] == ["t1"]
