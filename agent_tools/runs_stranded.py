@@ -24,9 +24,20 @@ def _scoped_item(record: dict, candidates: list[dict]) -> dict | None:
     return in_initiative[0] if not scoped and len(in_initiative) == 1 else None
 
 
+# A record quarantined after its approval for one of these causes holds work that was judged wrong (its full
+# checks failed, or its ticket forbade what the change needed); the chair re-grounds the ticket and relaunches
+# it, so the old approval is not stranded work. A harness cause keeps its approval: rescue lands that patch.
+_SUPERSEDING_CAUSES = frozenset({"code", "ticket"})
+
+
 def _approved_and_unlanded(record: dict) -> bool:
-    """The land's own approval rule, so a unanimously approved record (no arbiter ran) counts too."""
-    return land_approved(record) is None and not record.get("landed")
+    """The land's own approval rule, so a unanimously approved record (no arbiter ran) counts too, less a
+    record whose approval a later code or ticket quarantine superseded."""
+    return (
+        land_approved(record) is None
+        and not record.get("landed")
+        and record.get("cause") not in _SUPERSEDING_CAUSES
+    )
 
 
 def _remedy(record: dict, item: dict | None) -> str | None:
