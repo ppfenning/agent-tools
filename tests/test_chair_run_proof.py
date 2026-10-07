@@ -54,7 +54,7 @@ def test_the_real_deps_over_a_populated_workspace_name_no_unwired_source(tmp_pat
     assert [row["started"] for row in facts.docket()["initiatives"]] == [True]
 
 
-def test_chair_run_once_dry_run_prints_one_line_and_takes_no_lease(monkeypatch, tmp_path, capsys) -> None:
+def test_chair_run_once_dry_run_prints_a_timing_line_then_one_status_line_and_takes_no_lease(monkeypatch, tmp_path, capsys) -> None:
     runs_dir, profile_path = _workspace(tmp_path)
     monkeypatch.setattr(cli.chair, "renew_lease", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("lease renewed")))
     monkeypatch.setattr(cli.chair, "release_lease", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("lease released")))
@@ -63,5 +63,7 @@ def test_chair_run_once_dry_run_prints_one_line_and_takes_no_lease(monkeypatch, 
     monkeypatch.setenv("AGENT_TOOLS_PROFILE", str(profile_path))
     args = cli.build_parser().parse_args(["chair", "run", "--once", "--dry-run"])
     assert args.fn(args) == 0
-    assert len(capsys.readouterr().out.strip().splitlines()) == 1
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 2 and out[0].startswith("timing: ") and "export=skipped" in out[0]
+    assert not out[1].startswith("timing: ")
     assert list(runs_dir.iterdir()) == []

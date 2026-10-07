@@ -513,8 +513,8 @@ def test_a_tick_writes_its_status_line_and_now_to_the_lease_once_under_the_held_
     assert len(calls) == 1
     runs_dir, epoch, text = calls[0]
     assert (runs_dir, epoch) == (tmp_path, 7)
-    assert json.loads(text) == {"tick_at": "2026-10-05T12:30:15Z", "status": echoed[0], "current_action": None}
-    assert echoed[0].strip()
+    assert json.loads(text) == {"tick_at": "2026-10-05T12:30:15Z", "status": echoed[1], "current_action": None}
+    assert echoed[1].strip()
 
 
 def test_a_dry_run_tick_writes_no_tick_status(tmp_path) -> None:
@@ -538,7 +538,7 @@ def test_a_writer_returning_false_neither_stops_the_tick_nor_skips_the_local_rec
 
     assert len(calls) == 1
     assert [r["kind"] for r in recorded] == ["status"]
-    assert recorded[0]["line"] == echoed[0]
+    assert recorded[0]["line"] == echoed[1]
 
 
 def test_a_writer_that_raises_does_not_stop_the_tick(tmp_path) -> None:
@@ -552,4 +552,4 @@ def test_a_writer_that_raises_does_not_stop_the_tick(tmp_path) -> None:
     chair_run._attempt(deps, False)
 
     assert len(recorded) == 1
-    assert len(echoed) == 1
+    assert len(echoed) == 2

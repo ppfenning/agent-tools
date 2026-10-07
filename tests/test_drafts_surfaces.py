@@ -45,7 +45,7 @@ def _tick(ws: Path) -> tuple[str, list[str]]:
     real = cli._chair_run_deps(ws / "runs", {}, "chair", 1, "h", True, lines.append, ws / "profile.yaml", "files")
     deps = dataclasses.replace(real, plan=plan, facts_deps=dataclasses.replace(real.facts_deps, lease=lambda: FREE))
     chair_run.run(True, 60, True, deps)
-    return lines[0], kinds
+    return lines[-1], kinds  # the timing line comes first; the status line is the last one echoed
 
 
 def test_a_draft_shows_in_the_status_line_and_the_chair_plans_no_launch_for_it(tmp_path) -> None:
