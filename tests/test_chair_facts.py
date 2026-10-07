@@ -464,9 +464,7 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
-    # launch_history, max_launches_per_hour and relaunch_loop_reported are declared, but gather-backoff-facts fills them.
-    backoff = {"launch_history", "max_launches_per_hour", "relaunch_loop_reported"}
-    assert set(facts) == (set(Facts.__annotations__) - backoff) | {"login_hosts"}
+    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
