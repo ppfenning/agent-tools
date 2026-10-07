@@ -1,6 +1,13 @@
 import subprocess
 
-from agent_tools import doctor, forge, forge_auto, forge_github, forge_local
+import pytest
+
+from agent_tools import doctor, forge, forge_auto, forge_forgejo, forge_github, forge_local
+
+
+@pytest.fixture(autouse=True)
+def _no_forgejo_base_url(monkeypatch):
+    monkeypatch.delenv("FORGEJO_BASE_URL", raising=False)
 
 
 def _repo(tmp_path, origin=None):
@@ -23,6 +30,23 @@ def test_a_github_origin_lands_through_the_github_forge(tmp_path):
 def test_any_other_origin_and_no_origin_land_through_the_local_forge(tmp_path):
     assert forge_auto.forge_of(_repo(tmp_path / "lan", "git@git.example:me/widgets.git")) is forge_local
     assert forge_auto.forge_of(_repo(tmp_path / "bare")) is forge_local
+
+
+def test_an_origin_on_the_forgejo_base_url_host_lands_through_the_forgejo_forge(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORGEJO_BASE_URL", "http://git.lan:3000")
+    assert forge_auto.forge_of(_repo(tmp_path, "git@git.lan:ppfenning/workspace.git")) is forge_forgejo
+    assert forge_auto.forge_of(_repo(tmp_path / "http", "http://git.lan:3000/o/r.git")) is forge_forgejo
+
+
+def test_a_github_origin_stays_github_with_forgejo_base_url_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORGEJO_BASE_URL", "http://git.lan:3000")
+    assert forge_auto.forge_of(_repo(tmp_path, "git@github.com:acme/widgets.git")) is forge_github
+
+
+def test_the_forgejo_host_without_forgejo_base_url_and_other_hosts_stay_local(tmp_path, monkeypatch):
+    assert forge_auto.forge_of(_repo(tmp_path, "git@git.lan:ppfenning/workspace.git")) is forge_local
+    monkeypatch.setenv("FORGEJO_BASE_URL", "http://git.lan:3000")
+    assert forge_auto.forge_of(_repo(tmp_path / "other", "git@git.example:me/widgets.git")) is forge_local
 
 
 def test_calls_go_to_the_chosen_forge(tmp_path, monkeypatch):
