@@ -25,6 +25,9 @@ parquet = ["pyarrow"]
 # The Iceberg lake: a SQL catalog on sqlite or Postgres, queried with duckdb; pyiceberg-core does the day partitioning. Never a base dependency.
 lake = ["pyiceberg[sql-sqlite,sql-postgres,pyiceberg-core]>=0.9", "duckdb>=1.0"]
 
+# Optional on purpose: `analytics_snapshot.query` falls back to the Postgres query when duckdb is absent.
+analytics = ["duckdb>=1.0"]
+
 [project.scripts]
 cox = "agent_tools.cli:main"
 agent-tools = "agent_tools.cli:main"

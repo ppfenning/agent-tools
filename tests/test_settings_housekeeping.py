@@ -19,6 +19,13 @@ def test_absent_key_yields_no_row_and_no_default():
     ]
 
 
+def test_analytics_snapshot_max_age_is_a_housekeeping_row():
+    profile = {"analytics": {"snapshot_max_age_s": 60}}
+    assert housekeeping_rows(profile, {}) == [
+        SettingRow("housekeeping", "profile", "analytics.snapshot_max_age_s", 60, "profile.yaml", False),
+    ]
+
+
 def test_no_chair_mapping_yields_no_rows():
     assert housekeeping_rows({"team": "pat"}, TRACKED) == []
     assert housekeeping_rows({"chair": None}, TRACKED) == []
