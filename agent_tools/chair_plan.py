@@ -20,7 +20,7 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
+from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_lands
 from agent_tools.chair_plan_recover import (
     _initiative_first_unmet_need,
     claimed_by,
@@ -634,7 +634,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
-    lands = _without_carried_lands(plan_lands(facts), carries)
+    lands = _without_carried_lands(plan_lands(facts, now), carries)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -697,6 +697,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         | _landing_initiatives(facts, lands)
         # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
         | refused_launches(facts, now)
+        | backoff_held(facts, now)
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(
