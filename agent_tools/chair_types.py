@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
+from agent_tools.chair_decompose_streak import DecomposeStreak
+
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
 
@@ -331,6 +333,10 @@ class Facts(TypedDict):
     # An entry only for a remote run whose host has a fresh beat and whose pid was probed; a stale host or a failed or timed-out probe has none.
     pid_probe: dict[str, PidProbeFact]
     empty_decompose: list[EmptyDecomposeFacts]  # decomposed intakes whose ended decompose run left zero stored task items
+    # An intake path, as it appears in `intake`, to its empty-decompose streak; only intakes at the limit. Absent means {}.
+    decompose_streaks: NotRequired[dict[str, DecomposeStreak]]
+    # `<initiative>|<newest run id>` of each decompose_stalled needs_chair already in the action log. Absent means [].
+    decompose_stalled_reported: NotRequired[list[str]]
     # Each initiative's newest run's host, "" meaning the local machine; an initiative absent here has no run yet.
     newest_run_host: dict[str, str]
     # An initiative with unfinished work from its newest run (a carried partial phase or an approved task not yet

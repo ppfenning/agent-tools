@@ -2,6 +2,7 @@
 
 Pure. Takes the facts and the tick's clock, returns actions each stamped with the lease epoch. No I/O.
 """
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -451,6 +452,33 @@ def _empty_decompose_needs_chair_actions(facts: Facts) -> list[Action]:
     ]
 
 
+def _decompose_gate(facts: Facts) -> tuple[frozenset[str], list[Action]]:
+    """Intake paths whose decompose is at the empty-run limit, and one needs_chair for each not yet reported.
+
+    The initiative is the newest run id without its `-<n>` suffix, as `chair_facts.run_initiative` takes it;
+    chair_facts imports this module, so the pattern is repeated here rather than imported."""
+    streaks = facts.get("decompose_streaks", {})
+    reported = set(facts.get("decompose_stalled_reported", []))
+    keyed = [
+        (path, s, re.sub(r"-\d+$", "", s.run_ids[-1]), s.run_ids[-1]) for path, s in streaks.items() if s.run_ids
+    ]
+    actions: list[Action] = [
+        {
+            "kind": "needs_chair",
+            "initiative": initiative,
+            "run": run,
+            "cause": "decompose_stalled",
+            "reason": (
+                f"decompose of {path} wrote no task items in {len(s.run_ids)} runs: {', '.join(s.run_ids)}. "
+                f"{s.first_refusal or 'no refusal line was printed'}"
+            ),
+        }
+        for path, s, initiative, run in keyed
+        if f"{initiative}|{run}" not in reported
+    ]
+    return frozenset(streaks), actions
+
+
 def _login_check_actions(facts: Facts, now: datetime | None) -> list[Action]:
     """One check_login per due host; requires the tick's clock, like housekeeping."""
     if now is None:
@@ -587,6 +615,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
+    stalled_intake, decompose_stalled_needs_chair = _decompose_gate(facts)
     review = plan_review(facts)
     unstarted_waiting_chair = _unstarted_waiting_chair(facts["initiatives"])
     lost = frozenset(facts.get("lost_runs", {}))
@@ -615,6 +644,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *_needs_chair_only(recovered),
             *login_needs_chair,
             *empty_decompose_needs_chair,
+            *decompose_stalled_needs_chair,
             *review,
             *unstarted_waiting_chair,
         ]
@@ -639,7 +669,9 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         | _unmet_needs_ids(facts["initiatives"])
     )
     claimed = claimed_by(recover_actions, facts)
-    filled = plan_fill(facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed)
+    filled = plan_fill(
+        facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed, stalled=stalled_intake
+    )
     launches = [*capped, *filled]
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.
     relaunching = frozenset(a["initiative"] for a in [*recovered, *launches] if _is_launch(a))
@@ -656,6 +688,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *_with_rebases(launches, rebases),
         *login_needs_chair,
         *empty_decompose_needs_chair,
+        *decompose_stalled_needs_chair,
         *review,
         *unstarted_waiting_chair,
     ]

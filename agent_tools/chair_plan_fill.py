@@ -121,14 +121,20 @@ def _epic_launches(
     return [*launches, *steers]
 
 
-def _decompose_launches(facts: Facts, lanes: int, host_free: Sequence[HostSlot] = ()) -> list[Action]:
+def _decompose_launches(
+    facts: Facts,
+    lanes: int,
+    host_free: Sequence[HostSlot] = (),
+    stalled: frozenset[str] = frozenset(),
+) -> list[Action]:
     """One intake item per free local lane, oldest first; the rest go to lane hosts, ranked as epics are.
 
     A decompose requires no capabilities, so any host with a free lane is eligible, and each hosted one counts
-    toward its host's weighted share for the epics placed after it."""
+    toward its host's weighted share for the epics placed after it. A stalled intake is never launched."""
     fit = max(0, lanes)
-    local: list[Action] = [{"kind": "launch_decompose", "intake_ids": [i]} for i in facts["intake"][:fit]]
-    overflow = [(intake_id, frozenset[str]()) for intake_id in facts["intake"][fit:]]
+    open_intake = [i for i in facts["intake"] if i not in stalled]
+    local: list[Action] = [{"kind": "launch_decompose", "intake_ids": [i]} for i in open_intake[:fit]]
+    overflow = [(intake_id, frozenset[str]()) for intake_id in open_intake[fit:]]
     return [*local, *_place_on_hosts(overflow, host_free, _decompose_action)]
 
 
@@ -173,6 +179,7 @@ def plan_fill(
     consumed_host_lanes: dict[str, int] | None = None,
     claimed: Sequence[RunningInitiative] = (),
     hosted_decompose: bool = False,
+    stalled: frozenset[str] = frozenset(),
 ) -> list[Action]:
     """claimed names initiatives launched earlier this tick; they count as running for the overlap check.
 
@@ -183,7 +190,10 @@ def plan_fill(
     lane host, and the decomposes take the local lanes.
 
     hosted_decompose sends a decompose past the local lanes to a lane host, before epics are placed on hosts.
-    It defaults off: `cox route launch decompose` has no `--on` yet, so a hosted decompose would fail to parse."""
+    It defaults off: `cox route launch decompose` has no `--on` yet, so a hosted decompose would fail to parse.
+
+    stalled names intake paths at the empty-decompose limit. They stay in facts["intake"], so no pull is planned,
+    but no launch_decompose is built for them."""
     host_free = host_free_slots(facts)
     if consumed_host_lanes:
         host_free = _less_consumed(host_free, consumed_host_lanes)
@@ -194,7 +204,9 @@ def plan_fill(
     epic_lanes = 0 if reserved else free_lanes
     first_pass = _epic_launches(facts, epic_lanes, withheld, host_free, claimed)
     local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
-    decomposes = _decompose_launches(facts, local_lanes - len(local_epics), host_free if hosted_decompose else ())
+    decomposes = _decompose_launches(
+        facts, local_lanes - len(local_epics), host_free if hosted_decompose else (), stalled
+    )
     # Host lanes a decompose took are gone before epics are placed on hosts; the local epic count is unchanged.
     epics = _epic_launches(facts, epic_lanes, withheld, _after_placing(host_free, decomposes), claimed)
     local_decomposes = [a for a in decomposes if "host" not in a]

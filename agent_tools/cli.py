@@ -73,6 +73,7 @@ class _LazyHandler:
 
 chair = _LazyModule("agent_tools.chair")
 chair_capacity = _LazyModule("agent_tools.chair_capacity")
+chair_decompose_runs = _LazyModule("agent_tools.chair_decompose_runs")
 chair_exec = _LazyModule("agent_tools.chair_exec")
 chair_facts = _LazyModule("agent_tools.chair_facts")
 chair_pid_probe = _LazyModule("agent_tools.chair_pid_probe")
@@ -7449,6 +7450,11 @@ def _chair_run_deps(
         read_main_ci=main_ci,
         land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
         land_outcomes=lambda: chair_revert_watch.outcomes(actions),
+        decompose_runs=lambda path: (
+            []
+            if isinstance(iid := chair_exec.decompose_id(path, chair_exec.read_intake_id(ws, path)), chair_exec.Refusal)
+            else chair_decompose_runs.read_decompose_runs(Path(runs_dir), iid)
+        ),
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
