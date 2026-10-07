@@ -1502,8 +1502,9 @@ def _land_resume(repo: Path, cherry_pick: dict, forge_module=forge_github) -> di
     files = sorted({f for t in existing if t != expected
                     for f in (_git_out(repo, "diff-tree", "-r", "--name-only", expected, t) or "").split()})
     refused = {**decision, "reason": decision["reason"] + (f"; files differing: {', '.join(files)}" if files else "")}
-    # Carried for `_land_leftover`, so it need not run the generator a second time.
-    return {**refused, "local_tree": local, "expected_tree": expected} if local not in (None, expected) else refused
+    # Carried for `_land_leftover`, so it need not run the generator a second time. A refusal over an open PR has
+    # every tree equal to `expected` and carries nothing.
+    return {**refused, "local_tree": local, "remote_tree": remote, "expected_tree": expected} if any(t != expected for t in existing) else refused
 
 
 def _remote_branch_exists(repo: Path, branch: str) -> bool:
@@ -1529,35 +1530,54 @@ def _open_pr_exists(repo: Path, branch: str, forge_module=forge_github) -> bool 
 
 
 def _land_leftover(repo: Path, cherry_pick: dict, decision: dict, forge_module=forge_github) -> dict:
-    """Edge, read-only. A `_land_resume` refusal over a local-only `pr/<initiative>--<phase>` whose tree differs, and
-    that no worktree has checked out, is a leftover. `land.leftover_branch_decision` then turns it into a `fresh`
-    carrying the backup ref, the old commit and the refusal's reason, for `_land_rebuild` to act on under the repo
-    lease. Any other decision comes back unchanged."""
-    if decision["kind"] != "refuse" or "local_tree" not in decision:
+    """Edge, read-only. A `_land_resume` refusal over a `pr/<initiative>--<phase>` whose local or pushed tree differs,
+    that has no open PR and that no worktree has checked out, is a leftover. `land.leftover_branch_decision` then
+    turns it into a `fresh` carrying its `backup_refs`, both tips and the refusal's reason, for `_land_rebuild` to
+    act on under the repo lease. Any other decision, or a remote the fetch and `ls-remote` disagree about, comes
+    back unchanged."""
+    if decision["kind"] != "refuse" or "expected_tree" not in decision:
         return decision
     branch = cherry_pick["onto"]
     open_pr = _open_pr_exists(repo, branch, forge_module)
-    tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    if isinstance(open_pr, str) or tip is None or _branch_checked_out(repo, branch):
+    local_tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    remote_tip = _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}") if decision["remote_tree"] else None
+    remote_exists = _remote_branch_exists(repo, branch)
+    if (isinstance(open_pr, str) or (local_tip is None) != (decision["local_tree"] is None)
+            or remote_exists != (remote_tip is not None) or _branch_checked_out(repo, branch)):
         return decision
-    leftover = land.leftover_branch_decision(branch, _remote_branch_exists(repo, branch), open_pr, decision["local_tree"],
-                                             decision["expected_tree"], local_commit=tip)
+    leftover = land.leftover_branch_decision(branch, remote_exists, open_pr, decision["local_tree"], decision["expected_tree"],
+                                             local_commit=local_tip, remote_commit=remote_tip, remote_tree=decision["remote_tree"])
     if leftover["kind"] != "back_up_and_rebuild":
         return decision
-    return {"kind": "fresh", "backup_ref": leftover["backup_ref"], "old_commit": leftover["old_commit"], "reason": decision["reason"]}
+    return {**leftover, "kind": "fresh", "reason": decision["reason"]}
+
+
+def _git_failure(repo: Path, *args: str) -> str | None:
+    """Edge. Run a git command that writes; its stderr when it exits non-zero, else None."""
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return None if done.returncode == 0 else done.stderr.strip() or f"git {args[0]} exited {done.returncode}"
 
 
 def _land_rebuild(repo: Path, branch: str, rebuild: dict) -> str | None:
-    """Edge. Point `backup_ref` at `old_commit`, overwriting an older backup, then delete `branch` only if it still
-    sits at `old_commit` and no worktree holds it. Runs under the repo lease. The reason it stopped, or None."""
+    """Edge. Point each `backup_refs` ref at its tip and push it to origin, a rerun finding the same ref already
+    there. Only once every backup is safe, delete the remote `branch` if it still sits at `remote_tip`, then the
+    local one if it still sits at `local_tip`. Runs under the repo lease. The reason it stopped, or None."""
     if _branch_checked_out(repo, branch):
         return f"{branch} is now checked out in a worktree"
-    saved = subprocess.run(["git", "-C", str(repo), "update-ref", rebuild["backup_ref"], rebuild["old_commit"]], capture_output=True, text=True)
-    if saved.returncode != 0:
-        return f"could not back up to {rebuild['backup_ref']}: {saved.stderr.strip()}"
-    dropped = subprocess.run(["git", "-C", str(repo), "update-ref", "-d", f"refs/heads/{branch}", rebuild["old_commit"]],
-                             capture_output=True, text=True)
-    return f"{branch} moved off {rebuild['old_commit'][:8]}: {dropped.stderr.strip()}" if dropped.returncode != 0 else None
+    has_origin = _git_out(repo, "config", "--get", "remote.origin.url") is not None
+    for ref, tip in rebuild["backup_refs"].items():
+        failure = _git_failure(repo, "update-ref", ref, tip) or (_git_failure(repo, "push", "--quiet", "origin", f"{ref}:{ref}") if has_origin else None)
+        if failure:
+            return f"could not back up to {ref}: {failure}"
+    local_tip, remote_tip = rebuild["local_tip"], rebuild["remote_tip"]
+    if local_tip and _git_out(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") != local_tip:
+        return f"{branch} moved off {local_tip[:8]}"
+    if remote_tip:
+        gone = _git_failure(repo, "push", "--quiet", f"--force-with-lease=refs/heads/{branch}:{remote_tip}", "origin", f":refs/heads/{branch}")
+        if gone:
+            return f"could not delete origin/{branch} at {remote_tip[:8]}: {gone}"
+    dropped = _git_failure(repo, "update-ref", "-d", f"refs/heads/{branch}", local_tip) if local_tip else None
+    return f"{branch} moved off {local_tip[:8]}: {dropped}" if dropped else None
 
 
 def _land_enrich(steps: list[dict], *, path: str, worktree_root: str, task_paths: dict[str, str] | None = None,
@@ -2543,7 +2563,7 @@ def _runs_land(a: argparse.Namespace) -> int:
         # An existing pr/<task> is not necessarily stale or foreign: a retried
         # push can leave a same-tree branch behind, and the rerun should reuse it.
         decision = _land_leftover(repo, cherry_pick, _land_resume(repo, cherry_pick, forge_module), forge_module)
-        rebuild = decision if "backup_ref" in decision else None
+        rebuild = decision if "backup_refs" in decision else None
         if decision["kind"] == "refuse":
             print(f"land: refusing, branch {cherry_pick['onto']} already exists in {repo}: {decision['reason']}")
             return 2
@@ -2561,7 +2581,8 @@ def _runs_land(a: argparse.Namespace) -> int:
             print(f"land: not rebuilt: {failed}")
             return 2, [], ""
         if rebuild:
-            print(f"land: backed up {rebuild['old_commit'][:8]} to {rebuild['backup_ref']}, rebuilding {cherry_pick['onto']}")
+            saved = " and ".join(f"{tip[:8]} to {ref}" for ref, tip in rebuild["backup_refs"].items())
+            print(f"land: backed up {saved}, rebuilding {cherry_pick['onto']}")
         return _land_execute(repo, steps, planned, record, item_path, level, a.no_merge, forge_module, by=_holder_label(a),
                              mode=land_mode, guard=guard)
 
