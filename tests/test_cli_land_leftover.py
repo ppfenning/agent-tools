@@ -37,6 +37,9 @@ def repo(tmp_path):
     sp.run(["git", "init", "-q", "--bare", str(origin)], check=True)
     root.mkdir()
     sp.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    # The land edge commits (cherry-pick) without _ENV, so CI runners with no global identity need a local one.
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "user.email", "t@e")
     (root / "f").write_text("x")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "init")
