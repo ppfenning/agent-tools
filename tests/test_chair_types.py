@@ -48,6 +48,21 @@ def test_a_tune_lanes_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
     assert (is_fenced(tune_lanes, 3), is_fenced(tune_lanes, 4)) == (False, True)
 
 
+def test_a_widen_ticket_action_stamped_at_epoch_3_is_fenced_only_at_epoch_4():
+    widen_ticket = stamp(
+        {
+            "kind": "widen_ticket",
+            "initiative": "i",
+            "task_id": "t1",
+            "paths": ["src/a.rs"],
+            "additions": ["add the foo helper"],
+            "reason": "stopped on a file outside surfaces",
+        },
+        3,
+    )
+    assert (is_fenced(widen_ticket, 3), is_fenced(widen_ticket, 4)) == (False, True)
+
+
 def test_stamp_applied_to_a_land_phase_action_returns_a_new_dict_carrying_the_epoch():
     action: Action = {"kind": "land_phase", "initiative": "i", "phase": "p1", "repo": "r", "run": "run1"}
     stamped = stamp(action, 5)

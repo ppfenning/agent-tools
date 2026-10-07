@@ -218,6 +218,17 @@ class StaleCandidate(TypedDict):
     quarantine_non_harness_count: int  # count of non-harness quarantine causes recorded for the task
 
 
+class HandoffStop(TypedDict):
+    """One ticket whose newest attempt stopped on a handoff; the widen planner reads it."""
+
+    initiative: str
+    task_id: str
+    state: str
+    reason: str  # the newest attempt's reason on the ticket's current body
+    surfaces: list[str]  # the ticket's surfaces
+    widenings: int  # how many widening notes the ticket's body already carries
+
+
 class LastCall(TypedDict):
     role: str
     task: str
@@ -357,6 +368,8 @@ class Facts(TypedDict):
     landed_main: NotRequired[list[LandedMain]]  # lands whose main commit is being watched; absent means none
     # Keyed by initiative, oldest first, each entry "reverted" or "held"; absent means {}.
     land_outcomes: NotRequired[dict[str, list[str]]]
+    # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.
+    handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
 
 
 ActionKind = Literal[
@@ -387,6 +400,7 @@ ActionKind = Literal[
     "tune_lanes",
     "propose_tiers",
     "revert_land",
+    "widen_ticket",
 ]
 
 
@@ -402,7 +416,8 @@ class Action(TypedDict, total=False):
     carry_phase carries initiative, phase, pr_branch and picks; rebase_phase carries initiative, phase, branch,
     tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
     proposals and body and is propose-only: no action kind applies a tier or model change.
-    revert_land carries initiative, phase, repo, pr, commit and reason."""
+    revert_land carries initiative, phase, repo, pr, commit and reason.
+    widen_ticket carries initiative, task_id, paths, additions and reason."""
 
     kind: ActionKind
     epoch: int
@@ -416,7 +431,7 @@ class Action(TypedDict, total=False):
     holder: str
     host: str
     until: str  # a standby names when the holder's takeover window ends
-    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair carries the trimmed reason, at most 600 characters
+    reason: str  # a take_lease over an expired takeover says so; a stale_to_draft carries its stale_reason string; a quarantine needs_chair or a widen_ticket carries the trimmed reason, at most 600 characters
     remedy: str  # a quarantine needs_chair names the remedy kind choose_remedy picks for its cause
     command: list[str]  # a quarantine needs_chair carries the argv remedy_for returns for that remedy
     stale_tasks: list[str]  # a stale_to_draft names the task ids found stale
@@ -425,7 +440,7 @@ class Action(TypedDict, total=False):
     url: str  # a review_landed names the review PR
     merged_at: str | None  # a review_landed names when that PR merged
     other: str  # a steer_clear names the running initiative it steers clear of
-    paths: list[str]  # a steer_clear names the shared paths
+    paths: list[str]  # a steer_clear names the shared paths; a widen_ticket names the repo-relative files to add to surfaces
     pr_branch: str  # a carry_phase names the branch its pull request is opened from
     picks: list[CarryTask]  # a carry_phase lists the commits to cherry-pick, in order
     branch: str  # a rebase_phase names the phase branch it rebases
@@ -438,6 +453,7 @@ class Action(TypedDict, total=False):
     body: str  # a propose_tiers carries the rendered inbox text
     pr: int  # a revert_land names the pull request whose land turned main red
     commit: str  # a revert_land names the new main commit of that land
+    additions: list[str]  # a widen_ticket names the addition for each path, same order and length as paths
 
 
 class PlanLands(Protocol):
