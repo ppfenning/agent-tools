@@ -134,6 +134,7 @@ land_repo_lease = _LazyModule("agent_tools.land_repo_lease")
 lane_hosts = _LazyModule("agent_tools.lane_hosts")
 leader_chat = _LazyModule("agent_tools.leader_chat")
 notify = _LazyModule("agent_tools.notify")
+notify_core = _LazyModule("agent_tools.notify_core")
 pacing = _LazyModule("agent_tools.pacing")
 plan = _LazyModule("agent_tools.plan")
 provenance = _LazyModule("agent_tools.provenance")
@@ -7541,6 +7542,7 @@ def _chair_run_deps(
             tickets=lambda: chair_facts.read_ticket_items(ws, mode),
         ),
         export_rows=(lambda ids: _chair_export_hook(runs_dir, ids)) if mode == "store" and not dry_run else None,
+        notify_config=notify_core.config_from_profile(profile), workspace=ws,
     )
 
 

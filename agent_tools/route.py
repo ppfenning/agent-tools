@@ -111,6 +111,18 @@ class ProfileError(Exception):
     """A profile file line is nested, unknown, or otherwise unparsable."""
 
 
+_NOTIFY_URL = re.compile(r"https?://\S+")
+
+
+def _notify_mapping(value: str) -> dict | None:
+    """`{ntfy: <url>}` as `{"ntfy": url}`; None for any other shape. The URL holds colons, so split on the first only."""
+    if not (value.startswith("{") and value.endswith("}")):
+        return None
+    name, _, url = value[1:-1].partition(":")
+    url = url.strip().strip("\"'")
+    return {"ntfy": url} if name.strip() == "ntfy" and _NOTIFY_URL.fullmatch(url) and "," not in url else None
+
+
 def _stripped_content(line: str) -> str:
     # An inline `#` (preceded by whitespace, per spec §1's own sample
     # `assume: a          # gate answer ...`) starts a trailing comment;
@@ -127,7 +139,7 @@ def parse_profile(text: str) -> dict:
     and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
-    these).
+    these). A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
     A nested key outside a `spend:` or `chair:` block, an unrecognized key inside one,
     or a key outside the known set raises ProfileError naming the offending
@@ -202,6 +214,12 @@ def parse_profile(text: str) -> dict:
             if value:
                 raise ProfileError(f"line {lineno}: {raw_line}")
             in_hosts = True
+            continue
+        if key == "notify":
+            mapping = _notify_mapping(value)
+            if mapping is None:
+                raise ProfileError(f"line {lineno}: {raw_line}")
+            result["notify"] = mapping
             continue
         if key not in _KNOWN_KEYS:
             raise ProfileError(f"line {lineno}: {raw_line}")
