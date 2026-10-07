@@ -6438,6 +6438,25 @@ def _dev_moved(a: argparse.Namespace) -> int:
     return 2
 
 
+def version_line(version: str) -> str:
+    return f"cox {version}"
+
+
+class _VersionAction(argparse.Action):
+    """The metadata lookup runs here, at parse time, so ordinary commands never pay for it."""
+
+    def __init__(
+        self, option_strings: Sequence[str], dest: str = argparse.SUPPRESS, default: object = argparse.SUPPRESS, help: str | None = None
+    ) -> None:
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(
+        self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: object, option_string: str | None = None
+    ) -> None:
+        print(version_line(importlib.metadata.version("coxswain-tools")))
+        parser.exit(0)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cox",
@@ -6458,6 +6477,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", dest="launcher_profile", help="bare cox: the profile to launch claude against")
     p.add_argument("--no-plugin", action="store_true", help="bare cox: start claude without --plugin-dir")
     p.add_argument("--print-argv", action="store_true", help="bare cox: print the claude argv and cwd instead of exec'ing it")
+    p.add_argument("--version", "-V", action=_VersionAction, help="print the cox version and exit")
     sub = p.add_subparsers(dest="group", required=False)
 
     group, rows = _table_entry("runs")
