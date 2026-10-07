@@ -11,14 +11,24 @@ from pathlib import Path
 from agent_tools import land
 from agent_tools.forge import ForgeError
 
+READ_TIMEOUT_S = 30  # read-only gh and git calls: pr view and list, checks and api reads, rev-parse, symbolic-ref
+WRITE_TIMEOUT_S = 120  # every other gh and git call: push, pr create, merge, update-branch, rerun, pull, fetch
+
+
+def _run(argv: list[str], *, timeout: int, cwd: Path | str | None = None) -> subprocess.CompletedProcess:
+    """`argv` run with a bound; ForgeError naming the command and the bound when it overruns. A hung gh or git never returns, so no subprocess here goes without `timeout`."""
+    try:
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise ForgeError(f"{' '.join(argv)} timed out after {timeout}s") from exc
+
 
 def find_open_prs(repo: Path, branch: str) -> list[int] | str:
     """Numbers of the open PRs whose head is `branch`, or the reason they
     could not be listed."""
     try:
-        r = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"],
-                           cwd=repo, capture_output=True, text=True)
-    except OSError as exc:
+        r = _run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"], timeout=READ_TIMEOUT_S, cwd=repo)
+    except (OSError, ForgeError) as exc:
         return f"could not list open pull requests for {branch}: {exc}"
     if r.returncode != 0:
         return f"could not list open pull requests for {branch}: {(r.stderr or r.stdout).strip()}"
@@ -48,8 +58,8 @@ def parse_pr_state(stdout: str) -> dict:
 
 def pr_state(url: str) -> dict:
     try:
-        r = subprocess.run(["gh", "pr", "view", url, "--json", "state,mergedAt"], capture_output=True, text=True)
-    except OSError:
+        r = _run(["gh", "pr", "view", url, "--json", "state,mergedAt"], timeout=READ_TIMEOUT_S)
+    except (OSError, ForgeError):
         return dict(UNKNOWN_PR_STATE)
     return parse_pr_state(r.stdout) if r.returncode == 0 else dict(UNKNOWN_PR_STATE)
 
@@ -61,22 +71,31 @@ def push_argv(repo: Path, branch: str, expected_tip: str | None = None) -> list[
 
 
 def push(repo: Path, branch: str, expected_tip: str | None = None) -> tuple[bool, str]:
-    r = subprocess.run(push_argv(repo, branch, expected_tip), capture_output=True, text=True)
+    try:
+        r = _run(push_argv(repo, branch, expected_tip), timeout=WRITE_TIMEOUT_S)
+    except ForgeError as exc:
+        return False, str(exc)
     return r.returncode == 0, (branch if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
 
 
 def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base: str | None = None) -> tuple[bool, str]:
     refs = [*(["--head", head] if head else []), *(["--base", base] if base else [])]
-    r = subprocess.run(["gh", "pr", "create", "--title", title, "--body", body, *refs], cwd=repo, capture_output=True, text=True)
+    try:
+        r = _run(["gh", "pr", "create", "--title", title, "--body", body, *refs], timeout=WRITE_TIMEOUT_S, cwd=repo)
+    except ForgeError as exc:
+        return False, str(exc)
     return r.returncode == 0, (r.stdout.strip() or r.stderr.strip())
 
 
 def _update_local_default(repo: Path, default: str) -> str:
     """Bring the local `default` branch up to `origin` without a checkout; git's output, or the failure."""
-    current = subprocess.run(["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"], capture_output=True, text=True)
-    on_default = current.returncode == 0 and current.stdout.strip() == default
-    argv = ["pull", "--ff-only", "origin", default] if on_default else ["fetch", "origin", f"{default}:{default}"]
-    r = subprocess.run(["git", "-C", str(repo), *argv], capture_output=True, text=True)
+    try:
+        current = _run(["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"], timeout=READ_TIMEOUT_S)
+        on_default = current.returncode == 0 and current.stdout.strip() == default
+        argv = ["pull", "--ff-only", "origin", default] if on_default else ["fetch", "origin", f"{default}:{default}"]
+        r = _run(["git", "-C", str(repo), *argv], timeout=WRITE_TIMEOUT_S)
+    except ForgeError as exc:
+        return f"local {default} not updated: {exc}"
     out = r.stdout.strip() or r.stderr.strip()
     return out if r.returncode == 0 else f"local {default} not updated: {out}"
 
@@ -87,7 +106,10 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
     Once gh succeeds the PR has merged, so a failed local update is reported in
     the detail and the result stays ok.
     """
-    r = subprocess.run(["gh", "pr", "merge", step["branch"], "--squash", "--delete-branch"], cwd=repo, capture_output=True, text=True)
+    try:
+        r = _run(["gh", "pr", "merge", step["branch"], "--squash", "--delete-branch"], timeout=WRITE_TIMEOUT_S, cwd=repo)
+    except ForgeError as exc:
+        return False, str(exc)
     merged = r.stdout.strip() or r.stderr.strip()
     if r.returncode != 0:
         return False, merged
@@ -111,11 +133,11 @@ def update_branch_argv(pr: int) -> list[str]:
     return ["gh", "pr", "update-branch", str(pr)]
 
 
-def _gh_run(argv: list[str], cwd: Path | str | None = None) -> subprocess.CompletedProcess:
+def _gh_run(argv: list[str], cwd: Path | str | None = None, *, timeout: int) -> subprocess.CompletedProcess:
     """`argv` run through gh in `cwd` (the repository, so gh finds its GitHub remote); ForgeError with gh's stderr
-    when it cannot run or exits nonzero."""
+    when it cannot run, overruns `timeout`, or exits nonzero."""
     try:
-        r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        r = _run(argv, timeout=timeout, cwd=cwd)
     except OSError as exc:
         raise ForgeError(f"{' '.join(argv)}: {exc}") from exc
     if r.returncode != 0:
@@ -124,22 +146,28 @@ def _gh_run(argv: list[str], cwd: Path | str | None = None) -> subprocess.Comple
 
 
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
-    return parse_merge_state(_gh_run(merge_state_argv(pr), repo).stdout or "")
+    return parse_merge_state(_gh_run(merge_state_argv(pr), repo, timeout=READ_TIMEOUT_S).stdout or "")
 
 
 def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
-    _gh_run(update_branch_argv(pr), repo)
+    _gh_run(update_branch_argv(pr), repo, timeout=WRITE_TIMEOUT_S)
 
 
 def _read_checks(repo: Path, ref: str = "HEAD"):
     """`(True, (check_runs, status))` for `ref`'s REST check bodies, or `(False, detail)` on a failed or unparseable call."""
-    head = subprocess.run(["git", "-C", str(repo), "rev-parse", ref], capture_output=True, text=True)
+    try:
+        head = _run(["git", "-C", str(repo), "rev-parse", ref], timeout=READ_TIMEOUT_S)
+    except ForgeError as exc:
+        return False, str(exc)
     if head.returncode != 0:
         return False, head.stderr.strip() or f"git rev-parse {ref} failed"
     argvs = land.rest_checks_argvs(head.stdout.strip())
     bodies = []
     for argv, key in zip(argvs, ("check_runs", "statuses")):
-        r = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
+        try:
+            r = _run(argv, timeout=READ_TIMEOUT_S, cwd=repo)
+        except ForgeError as exc:
+            return False, str(exc)
         body = land.merge_pages(r.stdout or "", key) if r.returncode == 0 else None
         if body is None:
             return False, (r.stderr or r.stdout or "").strip() or f"unreadable output from {argv[-1]}"
@@ -204,25 +232,26 @@ def base_ref_argv(ref: str) -> list[str]:
     return ["gh", "pr", "view", *([] if ref == "HEAD" else [ref]), "--json", "baseRefName"]
 
 
-def _gh_text(argv: list[str], repo: Path) -> str | None:
-    """Stdout of `argv`, or None when it cannot run or exits nonzero."""
+def _gh_text(argv: list[str], repo: Path, *, timeout: int) -> str | None:
+    """Stdout of `argv`, or None when it cannot run, overruns `timeout`, or exits nonzero."""
     try:
-        r = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
-    except OSError:
+        r = _run(argv, timeout=timeout, cwd=repo)
+    except (OSError, ForgeError):
         return None
     return r.stdout or "" if r.returncode == 0 else None
 
 
 def _read_required(repo: Path, ref: str) -> tuple[str, ...] | None:
     """Required check names for the base of `ref`'s PR: the rulesets', else classic branch protection's. () means both were read and require nothing; None means a call failed or a body was unreadable."""
-    base = parse_base_ref(_gh_text(base_ref_argv(ref), repo) or "")
+    base = parse_base_ref(_gh_text(base_ref_argv(ref), repo, timeout=READ_TIMEOUT_S) or "")
     if base is None:
         return None
     root = "repos/{owner}/{repo}"
-    ruleset = parse_ruleset_contexts(_gh_text(["gh", "api", f"{root}/rules/branches/{base}"], repo) or "")
+    ruleset = parse_ruleset_contexts(_gh_text(["gh", "api", f"{root}/rules/branches/{base}"], repo, timeout=READ_TIMEOUT_S) or "")
     if ruleset != ():  # names, or None for an unreadable ruleset: its contexts are unknown, so protection alone must not stand in
         return ruleset
-    return parse_protection_contexts(_gh_text(["gh", "api", f"{root}/branches/{base}/protection/required_status_checks"], repo) or "")
+    protection_argv = ["gh", "api", f"{root}/branches/{base}/protection/required_status_checks"]
+    return parse_protection_contexts(_gh_text(protection_argv, repo, timeout=READ_TIMEOUT_S) or "")
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
@@ -240,7 +269,7 @@ def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monoton
     def rerun(ids: tuple[str, ...], failed: frozenset) -> tuple[int, str]:
         nonlocal rerun_of, rerun_tries, accepted
         todo = [i for i in ids if i not in accepted]
-        refused = [i for i in todo if _gh_text(["gh", "run", "rerun", i, "--failed"], repo) is None]
+        refused = [i for i in todo if _gh_text(["gh", "run", "rerun", i, "--failed"], repo, timeout=WRITE_TIMEOUT_S) is None]
         accepted = accepted | frozenset(todo) - frozenset(refused)
         rerun_tries += bool(refused)
         rerun_of = None if refused else failed

@@ -1203,7 +1203,7 @@ def test_a_hung_lane_host_child_is_cut_off_at_the_bound_not_awaited(monkeypatch)
     assert time.monotonic() - started < 3
 
 
-def test_the_real_run_door_bounds_an_ssh_argv_and_leaves_any_other_unbounded(monkeypatch, tmp_path) -> None:
+def test_the_real_run_door_bounds_an_ssh_argv_by_the_lane_bound_and_any_other_by_the_local_default(monkeypatch, tmp_path) -> None:
     seen: list = []
     monkeypatch.setattr(chair_exec.subprocess, "run", lambda argv, **kw: seen.append((argv[0], kw["timeout"])) or subprocess.CompletedProcess(argv, 0, "", ""))
     deps = chair_exec.edge_deps(
@@ -1213,7 +1213,7 @@ def test_the_real_run_door_bounds_an_ssh_argv_and_leaves_any_other_unbounded(mon
     deps.run(["ssh", "h", "true"])
     deps.run(["git", "-C", "/r", "push", "u@h:/r", "refs/heads/b:refs/heads/b"])
     deps.run(["git", "status"])
-    assert seen == [("ssh", 30), ("git", 30), ("git", None)]
+    assert seen == [("ssh", 30), ("git", 30), ("git", chair_exec.LOCAL_ARGV_TIMEOUT_S)]
 
 
 def test_a_timed_out_branch_check_on_the_host_is_a_failure_not_an_absent_branch() -> None:

@@ -7360,8 +7360,7 @@ def _chair_run_deps(
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
 
-    def runner(argv: list[str]) -> tuple[int, str]:
-        return chair_exec.run_argv(argv)
+    runner = chair_revert_ports.bounded(chair_exec.run_argv)  # gh and git of the revert path never wait past the bound
 
     main_ci = _main_ci_reader(runner)  # edge state: `beat` clears its cache, one gh read per land per tick
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
