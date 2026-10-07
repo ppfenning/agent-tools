@@ -99,6 +99,52 @@ def test_a_fetch_exit_that_exits_nonzero_applies_nothing_and_fails(tmp_path, mon
     assert "run" not in results[0] and "host" not in results[0]
 
 
+WIDEN = {
+    "kind": "widen_ticket", "initiative": "i", "task_id": "t1",
+    "paths": ["src/app.rs"], "additions": ["accessor"], "reason": "handoff", "epoch": 1,
+}
+
+
+def _widen_ticket_file(tmp_path: Path) -> Path:
+    ticket = tmp_path / "work" / "i" / "p1" / "t1.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text("---\nid: t1\nstate: blocked\nsurfaces: [agent_tools/a.py]\n---\nBody.\n", encoding="utf-8")
+    return ticket
+
+
+def test_a_widen_ticket_widens_in_process_mirrors_ready_to_the_store_and_records_the_task_and_path(tmp_path, monkeypatch) -> None:
+    ticket = _widen_ticket_file(tmp_path)
+    mirrored: list = []
+    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: mirrored.append(a) or None)
+    calls: list = []
+    rows: list = []
+    deps = replace(_deps(calls), runs_dir=tmp_path / "runs", work_dir=tmp_path, record=rows.append)
+    results = perform([WIDEN], deps, lambda: 1, False)
+    assert argv_for(WIDEN) is None
+    assert _touched(calls) == []
+    assert mirrored == [(tmp_path / "runs", "i", "t1", "ready", "chair")]
+    assert (results[0]["status"], results[0]["reason"]) == ("done", "widened t1: src/app.rs")
+    assert "state: ready" in ticket.read_text(encoding="utf-8")
+    assert [(r["status"], r["reason"]) for r in rows] == [("done", "widened t1: src/app.rs")]
+
+
+def test_a_widen_ticket_carries_a_store_mirror_warning_in_its_reason(tmp_path, monkeypatch) -> None:
+    _widen_ticket_file(tmp_path)
+    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: "warning: store did not record i/t1 as ready")
+    results = perform([WIDEN], replace(_deps([]), work_dir=tmp_path), lambda: 1, False)
+    assert (results[0]["status"], results[0]["reason"]) == (
+        "done", "widened t1: src/app.rs; warning: store did not record i/t1 as ready"
+    )
+
+
+def test_a_widen_ticket_with_no_ticket_fails_and_mirrors_nothing(tmp_path, monkeypatch) -> None:
+    mirrored: list = []
+    monkeypatch.setattr(chair_exec.store_cli, "mirror_state", lambda *a: mirrored.append(a) or None)
+    results = perform([WIDEN], replace(_deps([]), work_dir=tmp_path), lambda: 1, False)
+    assert (results[0]["status"], results[0]["reason"]) == ("failed", "ticket not found")
+    assert mirrored == []
+
+
 def _land(task: str, repo: str) -> dict:
     return {"kind": "land", "task_id": task, "repo": repo, "run": "run-1", "epoch": 1}
 

@@ -23,6 +23,7 @@ from agent_tools import (
     chair,
     chair_apply_fetch,
     chair_apply_review,
+    chair_apply_widen,
     chair_housekeeping,
     chair_login_check,
     chair_login_watch,
@@ -612,6 +613,15 @@ def _fetch_exit(action: Action, deps: Deps) -> Result:
     return {"action": action, "status": "done", "reason": reason, "run": run, "host": _fetched_host(deps.runs_dir, run)}
 
 
+def _widen_ticket(action: Action, deps: Deps) -> Result:
+    """In-process, with no argv; a widened ticket's `ready` is mirrored to the store so file and store stay one record."""
+    ok, reason = chair_apply_widen.apply_widen(deps.work_dir, action, deps.now()[:10])
+    if not ok:
+        return _result(action, "failed", reason)
+    warning = store_cli.mirror_state(deps.runs_dir, action.get("initiative", ""), action.get("task_id", ""), "ready", "chair")
+    return _result(action, "done", reason if warning is None else f"{reason}; {warning}")
+
+
 def _prune_available(run: Run, harness_python: str) -> bool:
     """Edge. True only when `<harness_python> -m harness.store_backfill_traces prune --help` exits 0."""
     code, _ = run([harness_python, "-m", "harness.store_backfill_traces", "prune", "--help"])
@@ -852,6 +862,8 @@ def _execute(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "recorded", _steer_reason(action))
     if kind == "fetch_exit":
         return _fetch_exit(action, deps)
+    if kind == "widen_ticket":
+        return _widen_ticket(action, deps)
     if kind in LAUNCH_KINDS or kind in ("pull", "fetch"):
         return _launch(action, deps)
     if kind == "housekeeping":
