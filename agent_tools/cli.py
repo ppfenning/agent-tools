@@ -7591,6 +7591,7 @@ def _chair_run_deps(
             chair_facts.resolve_idle_stall_minutes((profile.get("chair") or {}).get("idle_stall_minutes")),
         )
 
+    sources_configured, profile_stale = chair_read_intake.sources_configured_keeping_last_good(profile_path)
     facts_deps = chair_facts.FactsDeps(
         lease=lambda: chair_read_lease.read_lease(runs_dir, now()),
         window=window,
@@ -7610,7 +7611,8 @@ def _chair_run_deps(
         live_initiatives=live_initiatives,
         intake=lambda: chair_read_intake.read_intake(ws, chair_read_quarantined.initiative_files(ws, work_files())),
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
-        sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
+        sources_configured=sources_configured,
+        profile_stale=profile_stale,
         session=session, pid=pid, host=host, dispatch=dispatch,
         drafts=lambda: draft_list.count_drafts(
             draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))

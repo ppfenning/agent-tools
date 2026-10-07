@@ -11,6 +11,7 @@ from agent_tools import chair_exec, chair_report
 from agent_tools.chair_plan import TickPlan, plan_tick
 from agent_tools.chair_run import (
     DEFAULT_INTERVAL,
+    PROFILE_STALE_NOTE,
     RunDeps,
     as_holder,
     error_line,
@@ -467,6 +468,19 @@ def test_a_missing_or_stale_meter_reading_records_no_meter_action(reading):
 def test_a_dry_run_status_line_says_remote_lanes_were_not_probed_and_a_live_one_does_not():
     assert tick(Rig().deps(), True, NOW).endswith(f" | {chair_exec.NOT_PROBED}")
     assert chair_exec.NOT_PROBED not in tick(Rig().deps(), False, NOW)
+
+
+def test_a_stale_profile_fact_adds_the_note_to_the_status_line_and_its_absence_does_not():
+    rig = Rig()
+    stale = replace(rig.deps(), gather=lambda d, n: {**_facts(MINE), "profile_stale": True})
+    assert tick(stale, False, NOW).endswith(f" | {PROFILE_STALE_NOTE}")
+    assert PROFILE_STALE_NOTE not in tick(Rig().deps(), False, NOW)
+
+
+def test_the_written_status_line_carries_the_stale_profile_note():
+    rig = Rig()
+    run(True, 60, False, replace(rig.deps(), gather=lambda d, n: {**_facts(MINE), "profile_stale": True}))
+    assert "profile re-read failed; keeping the last good profile" in rig.lines[-1]
 
 
 def test_a_dry_run_records_no_meter_action_even_when_fresh():
