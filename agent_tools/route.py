@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -67,6 +68,7 @@ __all__ = [
     "status_entries",
     "status_rows",
     "surface_candidates",
+    "unknown_keys",
     "work_item",
     "write_filed_item",
 ]
@@ -108,7 +110,7 @@ _CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch
 
 
 class ProfileError(Exception):
-    """A profile file line is nested, unknown, or otherwise unparsable."""
+    """A profile file line is nested, malformed, or has a bad value. An unknown top-level key is not an error."""
 
 
 _NOTIFY_URL = re.compile(r"https?://\S+")
@@ -131,7 +133,7 @@ def _stripped_content(line: str) -> str:
     return line[: comment.start()].rstrip() if comment else line
 
 
-def parse_profile(text: str) -> dict:
+def _parse_profile(text: str) -> tuple[dict, list[tuple[str, int]]]:
     """Parse the flat `key: scalar` / `key: [a, b]` YAML subset in spec §1,
     plus two nested blocks: a bare `spend:` line followed by indented
     `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
@@ -141,21 +143,24 @@ def parse_profile(text: str) -> dict:
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
     these). A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.
 
-    A nested key outside a `spend:` or `chair:` block, an unrecognized key inside one,
-    or a key outside the known set raises ProfileError naming the offending
-    line (number + text). `assume` defaults to 'a' when absent.
+    A nested key outside a `spend:` or `chair:` block, or an unrecognized key inside one,
+    raises ProfileError naming the offending line (number + text). A top-level key
+    outside the known set is dropped with any indented block under it, and returned as a
+    (key, line number) pair beside the profile. `assume` defaults to 'a' when absent.
     """
     result: dict = {}
+    unknown: list[tuple[str, int]] = []
     in_spend = False
     in_chair = False
     in_hosts = False  # `lane_hosts:` is a list of mappings that cli reads from the YAML text; its lines are skipped here
+    in_unknown = False  # an unknown top-level key's indented block is dropped with the key, not read as a stray nested line
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.rstrip("\n")
         if not line.strip():
             continue
         if line.lstrip().startswith("#"):
             continue
-        if in_hosts and line != line.lstrip():
+        if (in_hosts or in_unknown) and line != line.lstrip():
             continue
         if line != line.lstrip():
             if in_chair:
@@ -194,6 +199,7 @@ def parse_profile(text: str) -> dict:
         in_spend = False
         in_chair = False
         in_hosts = False
+        in_unknown = False
         content = _stripped_content(line)
         if ":" not in content:
             raise ProfileError(f"line {lineno}: {raw_line}")
@@ -222,7 +228,9 @@ def parse_profile(text: str) -> dict:
             result["notify"] = mapping
             continue
         if key not in _KNOWN_KEYS:
-            raise ProfileError(f"line {lineno}: {raw_line}")
+            unknown.append((key, lineno))
+            in_unknown = True
+            continue
         if key in _JSON_KEYS:
             try:
                 result[key] = json.loads(value)
@@ -239,7 +247,29 @@ def parse_profile(text: str) -> dict:
     if result.get("assume") == "":
         result.pop("assume")
     result.setdefault("assume", "a")
-    return result
+    return result, unknown
+
+
+def unknown_keys(text: str) -> list[tuple[str, int]]:
+    """Top-level keys `parse_profile` drops, as (key, 1-based line number) in file order."""
+    # Breadcrumb: an unknown key no longer raises ProfileError, so a caller that
+    # treated ProfileError as "profile has an unknown key" (doctor.py, settings_plan)
+    # now sees a clean parse. Such a caller must read this function instead.
+    return _parse_profile(text)[1]
+
+
+# Keyed by key name only: the same key at another line or in another file stays silent.
+_WARNED_KEYS: set[str] = set()  # only `parse_profile` touches this
+
+
+def parse_profile(text: str) -> dict:
+    """The profile dict from `_parse_profile`; warns on stderr once per process per unknown key."""
+    profile, unknown = _parse_profile(text)
+    for key, lineno in unknown:
+        if key not in _WARNED_KEYS:
+            _WARNED_KEYS.add(key)
+            print(f"profile: ignoring unknown key {key} at line {lineno}", file=sys.stderr)
+    return profile
 
 
 _SLUG_STOPWORDS = {"the", "a", "an", "cox", "fix", "loop", "initiative"}

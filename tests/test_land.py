@@ -1838,7 +1838,7 @@ def test_a_dry_run_land_refuses_an_unreadable_profile_because_the_plan_reads_its
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     profile = tmp_path / "profile.yaml"
-    profile.write_text("no_such_key: x\n", encoding="utf-8")
+    profile.write_text("not a key value line\n", encoding="utf-8")
     argv = ["runs", "land", "epic-x-5", "--repo", str(repo), "--profile", str(profile), "--runs-dir", str(tmp_path / "runs")]
     assert cli.main(argv) == 2
     assert capsys.readouterr().out.startswith("land: profile unreadable:")

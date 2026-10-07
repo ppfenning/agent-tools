@@ -215,6 +215,7 @@ class FactsDeps:
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
     landing: Callable[[], Sequence[Row]] | None = None  # WorkerLands.landing; absent means []
     tuning: Callable[[datetime], tuple[Sequence[Row], str | None]] = lambda now: ([], None)  # chair_read_tuning.read_tuning bound to its db, runs dir and current tiers; absent means no rows and no last tune
+    profile_stale: Callable[[], bool] = lambda: False  # read after sources_configured: this tick's profile re-read failed and the last good value was kept
     lane_bounds: Callable[[], Mapping[str, tuple[int, int]]] = lambda: {}  # host ("" local) to the cartridge's (min, max) lanes; absent means {}
     land_watches: Callable[[], Sequence[LandWatch]] = lambda: []  # unresolved lands; absent means landed_main is []
     read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)
@@ -838,6 +839,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "intake": intake,
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
+        "profile_stale": deps.profile_stale(),
         "drafts": deps.drafts() if deps.drafts is not None else 0,
         "missing_repos": new_missing_repos(
             deps.missing_repos() if deps.missing_repos is not None else [],
