@@ -25,6 +25,7 @@ def test_defaults_follow_the_set_rows_in_each_section():
     ]
     assert _keys(by_section["housekeeping"]) == [
         ("profile", "chair.stale_days"), ("profile", "chair.housekeeping_hours"),
+        ("profile", "analytics.snapshot_max_age_s"),
     ]
     assert _keys(by_section["models and tiers"]) == [("cartridge", "policy.review_tier")]
 
@@ -35,7 +36,9 @@ def test_set_rows_keep_their_source_and_defaults_say_built_in():
     assert by_section["builds and budgets"][0]["value"] == 5
     assert by_section["housekeeping"][0]["source_file"] == "profile.yaml"
     defaults = [r for s in SECTIONS for r in by_section[s] if r["source_file"] == "built-in"]
-    assert [r["key"] for r in defaults] == ["epic_threshold", "chair.housekeeping_hours", "policy.review_tier"]
+    assert [r["key"] for r in defaults] == [
+        "epic_threshold", "chair.housekeeping_hours", "analytics.snapshot_max_age_s", "policy.review_tier",
+    ]
 
 
 def test_a_set_key_never_also_appears_as_a_default():

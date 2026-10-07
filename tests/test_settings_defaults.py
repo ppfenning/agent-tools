@@ -26,6 +26,7 @@ def test_missing_keys_yield_exactly_those_built_in_rows():
         "policy.build_budget_usd_max",
         "policy.review_tier",
         "chair.housekeeping_hours",
+        "analytics.snapshot_max_age_s",
     ]
     assert {r["source_file"] for r in rows} == {"built-in"}
     assert {r["tracked"] for r in rows} == {False}

@@ -28,7 +28,7 @@ Keys by section, in section order:
   `policy.pacing.effort_ladder`.
 - crew seats: cartridge `crew.<seat>.enabled`, `crew.<seat>.skills`.
 - housekeeping: profile `log_retention_days`, `chair.housekeeping_hours`,
-  `chair.stale_days`.
+  `chair.stale_days`, `analytics.snapshot_max_age_s`.
 - profile files: profile `team`, `cartridges_dir`, `skills_roots`,
   `provider_profile`, `harness_dir`, `workspace_dir`, `assume`, `router`,
   `forge`, `tracker`, `umbrella_dir`, `ids`.
@@ -95,7 +95,7 @@ REGISTRY: tuple[Setting, ...] = (
          ("policy.review_tier", "policy.plan_competition.min_tier",
           "policy.pacing.tier_ladder", "policy.pacing.effort_ladder"), pat_only=True),
     *_in("housekeeping", "profile", PROFILE_FILE,
-         ("log_retention_days", "chair.housekeeping_hours", "chair.stale_days")),
+         ("log_retention_days", "chair.housekeeping_hours", "chair.stale_days", "analytics.snapshot_max_age_s")),
     *_in("profile files", "profile", PROFILE_FILE,
          ("team", "cartridges_dir", "skills_roots", "provider_profile", "harness_dir",
           "workspace_dir", "assume", "router", "forge", "tracker", "umbrella_dir", "ids")),
