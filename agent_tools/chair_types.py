@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 from agent_tools.chair_decompose_streak import DecomposeStreak
+from agent_tools.chair_land_backoff import LandRefusal
 
 EASTERN = ZoneInfo("America/New_York")  # every time the chair prints for an operator is shown in this zone
 REVIEW_CLOSED_CAUSE = "review_closed"  # the needs_chair cause for a task whose review PR was closed without merging
@@ -398,6 +399,8 @@ class Facts(TypedDict):
     max_launches_per_hour: NotRequired[int]
     # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
     relaunch_loop_reported: NotRequired[list[str]]
+    # Land refusals still counted: refused or failed land_phase rows since the key's last landed row. Absent means [].
+    land_refusals: NotRequired[list[LandRefusal]]
 
 
 ActionKind = Literal[

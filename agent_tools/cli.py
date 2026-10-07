@@ -7635,6 +7635,7 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
+        max_launches_per_hour=lambda: (profile.get("chair") or {}).get("max_launches_per_hour"),
         stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,

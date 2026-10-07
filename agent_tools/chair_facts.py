@@ -16,6 +16,8 @@ from agent_tools import chair_read_docket, chair_smoke, forge, pacing, route
 from agent_tools.chair import lease_holder
 from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
+from agent_tools.chair_land_backoff import LandRefusal, aligned
+from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, WINDOW
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
 from agent_tools.chair_read_docket import docket_from_rows
@@ -37,6 +39,7 @@ from agent_tools.chair_types import (
     LandedMain,
     LandWait,
     LandWatch,
+    LaunchHistory,
     LeaseFacts,
     LimitsFacts,
     PhaseBranch,
@@ -44,6 +47,7 @@ from agent_tools.chair_types import (
     QuarantineFacts,
     ReviewPr,
     RunningInitiative,
+    RunRecord,
     StrandedPhase,
 )
 
@@ -102,6 +106,8 @@ class FactsDeps:
         Optional, and absent means no history, i.e. housekeeping is due.
     housekeeping_hours: the raw profile value at `chair.housekeeping_hours`, resolved by `resolve_housekeeping_hours`.
         Optional, and absent means 24 hours.
+    max_launches_per_hour: the raw profile value at `chair.max_launches_per_hour`, resolved by
+        `resolve_max_launches_per_hour`. Optional, and absent means the default.
     stale_days: the raw profile value at `chair.stale_days`, resolved by `resolve_stale_days`. Optional, and
         absent means 7 days.
     stale_candidates: `stale_candidates(now) -> list[dict]`, bound in production to
@@ -135,7 +141,8 @@ class FactsDeps:
     repos: initiative id to the `repo:` of its `initiative.md` (`read_initiative_repos`). Optional, and absent
         means no initiative has a known repo.
     actions: the `chair_actions` rows, keys kind, ts, and action_json or the action's own keys
-        (`chair_read_stale.read_chair_actions`). `steer_streaks` and `decompose_stalled_reported` derive from them.
+        (`chair_read_stale.read_chair_actions`). `steer_streaks`, `decompose_stalled_reported`, `land_refusals`,
+        `launch_history` and `relaunch_loop_reported` derive from them.
         Build it with `windowed_actions` so one gather reads the table once and every caller shares the rows.
         Optional, and absent means {}.
     run_commits: one row per approved commit a run holds, oldest first, keys task, initiative, phase, run, host,
@@ -190,6 +197,7 @@ class FactsDeps:
     history: Callable[[], str | None] | None = None  # chair_read_housekeeping.read_last_housekeeping; absent means no history
     housekeeping_hours: Callable[[], object] | None = None  # raw profile chair.housekeeping_hours; absent means 24 hours
     stale_days: Callable[[], object] | None = None  # raw profile chair.stale_days; absent means 7 days
+    max_launches_per_hour: Callable[[], object] | None = None  # raw profile chair.max_launches_per_hour; absent means the default
     stale_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stale.read_stale_candidates; absent means no candidates
     stall_candidates: Callable[[datetime], Sequence[Row]] | None = None  # chair_read_stall.read_stall_candidates; absent means no candidates
     hosts: Callable[[], list[dict]] = lambda: []  # run_store.hosts(runs_dir) rows, stored verbatim under login_hosts
@@ -433,6 +441,85 @@ def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
     ]
 
 
+_LOOP_RUNS = re.compile(r"runs (\S+) and (\S+) were both quarantined")
+
+
+def relaunch_loop_keys(actions: Sequence[Row]) -> list[str]:
+    """`<run1>|<run2>` of each relaunch_loop needs_chair row, in row order; the row names both runs only in its reason."""
+    docs = [_action_doc(row) for row in actions]
+    matches = [
+        _LOOP_RUNS.search(str(d.get("reason") or ""))
+        for d in docs
+        if d.get("kind") == "needs_chair" and d.get("cause") == "relaunch_loop"
+    ]
+    return [f"{m.group(1)}|{m.group(2)}" for m in matches if m is not None]
+
+
+def land_refusals_from_actions(actions: Sequence[Row]) -> list[LandRefusal]:
+    """Per (initiative, phase, run), the refused or failed land_phase rows after its last landed row; a key with none is left out."""
+    docs = sorted((_action_doc(row) for row in actions), key=lambda d: str(d.get("ts") or ""))
+    lands = [d for d in docs if d.get("kind") == "land_phase" and d.get("initiative") and d.get("phase") and d.get("run")]
+    keys = dict.fromkeys((d["initiative"], d["phase"], d["run"]) for d in lands)
+
+    def refusal(key: tuple[str, str, str]) -> LandRefusal | None:
+        rows = [d for d in lands if (d["initiative"], d["phase"], d["run"]) == key]
+        last_landed = max((n for n, d in enumerate(rows) if d.get("status") == "landed"), default=-1)
+        failed = [d for d in rows[last_landed + 1 :] if d.get("status") in ("refused", "failed")]
+        if not failed:
+            return None
+        return {
+            "initiative": key[0], "phase": key[1], "run": key[2],
+            "attempts": len(failed), "last_refused_at": str(failed[-1]["ts"]),
+        }
+
+    return [r for r in map(refusal, keys) if r is not None]
+
+
+def _launched_within_window(ts: object, now: datetime) -> bool:
+    """True for an ISO `ts` in the launch budget's window, (now - WINDOW, now]; an unparseable `ts` is outside it."""
+    try:
+        at = aligned(str(ts), now)
+    except ValueError:
+        return False
+    return now - WINDOW < at <= now
+
+
+def _run_number(run: str) -> int:
+    match = re.search(r"-(\d+)$", run)
+    return int(match.group(1)) if match else -1
+
+
+def launch_history_from_actions(
+    actions: Sequence[Row], quarantines: Sequence[QuarantineFacts], now: datetime
+) -> dict[str, LaunchHistory]:
+    """Per initiative, its done launch_epic and relaunch rows in the last hour and its quarantined runs, newest first.
+
+    A run's `body` and `main_head` are "": no gathered fact carries a ticket body hash or the default-branch head."""
+    docs = [_action_doc(row) for row in actions]
+    launches = [
+        {"at": str(d["ts"]), "kind": d["kind"], "initiative": d.get("initiative") or d.get("target")}
+        for d in docs
+        if d.get("kind") in ("launch_epic", "relaunch")
+        and d.get("status") == "done"
+        and (d.get("initiative") or d.get("target"))
+        and _launched_within_window(d.get("ts"), now)
+    ]
+    quarantined = {(q["initiative"], q["run"]): q for q in reversed(quarantines) if q.get("run")}
+    initiatives = sorted({x["initiative"] for x in launches} | {i for i, _ in quarantined})
+
+    def runs_of(initiative: str) -> list[RunRecord]:
+        own = sorted((r for i, r in quarantined if i == initiative), key=_run_number, reverse=True)
+        return [
+            {"run_id": r, "quarantined": True, "reason": quarantined[(initiative, r)].get("reason", ""), "body": "", "main_head": ""}
+            for r in own
+        ]
+
+    return {
+        i: {"launches": [{"at": x["at"], "kind": x["kind"]} for x in launches if x["initiative"] == i], "runs": runs_of(i)}
+        for i in initiatives
+    }
+
+
 def decompose_streak_facts(
     paths: Sequence[str], runs_for: Callable[[str], Sequence[DecomposeRun]]
 ) -> dict[str, DecomposeStreak]:
@@ -642,6 +729,15 @@ def resolve_stale_days(value: object) -> int:
         return DEFAULT_STALE_DAYS
 
 
+def resolve_max_launches_per_hour(value: object) -> int:
+    """The profile's raw `chair.max_launches_per_hour`, or the default when it is missing, non-integer, or not positive."""
+    try:
+        limit = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_LAUNCHES_PER_HOUR
+    return limit if limit > 0 and not isinstance(value, bool) else DEFAULT_MAX_LAUNCHES_PER_HOUR
+
+
 def resolve_idle_stall_minutes(value: object) -> int:
     """The profile's raw `chair.idle_stall_minutes`, or 15 when it is missing, non-numeric, or not positive."""
     try:
@@ -726,6 +822,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
     intake = intake_paths_from_rows(rows) if rows else list(deps.intake())
+    quarantine = quarantine_facts(quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives))
+    action_rows = list(deps.actions()) if deps.actions is not None else []
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -736,9 +834,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "approved": approved,
         "home": initiative_homes(newest_run_host, unfinished, deps.host),
         "initiatives": initiatives,
-        "quarantines": quarantine_facts(
-            quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
-        ),
+        "quarantines": quarantine,
         "intake": intake,
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
@@ -758,7 +854,13 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             dict(deps.item_counts()) if deps.item_counts is not None else {},
         ),
         "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
-        "decompose_stalled_reported": decompose_stalled_keys(list(deps.actions())) if deps.actions is not None else [],
+        "decompose_stalled_reported": decompose_stalled_keys(action_rows),
+        "relaunch_loop_reported": relaunch_loop_keys(action_rows),
+        "land_refusals": land_refusals_from_actions(action_rows),
+        "launch_history": launch_history_from_actions(action_rows, quarantine, now),
+        "max_launches_per_hour": resolve_max_launches_per_hour(
+            deps.max_launches_per_hour() if deps.max_launches_per_hour is not None else None
+        ),
         "newest_run_host": newest_run_host,
         "run_hosts": run_host_facts(deps.run_hosts()),
         "login_hosts": deps.hosts(),
@@ -771,7 +873,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "stale_days": resolve_stale_days(deps.stale_days()) if deps.stale_days is not None else DEFAULT_STALE_DAYS,
         "review_prs": list(deps.review_prs()),
         "running": running_initiatives(live, items, repos) if deps.tickets is not None else [],
-        "steer_streaks": steer_streaks_from_actions(list(deps.actions())) if deps.actions is not None else {},
+        "steer_streaks": steer_streaks_from_actions(action_rows),
         "stranded": stranded_facts(approved, list(deps.run_commits()), list(deps.phase_state())),
         "phase_branches": phase_branch_facts(list(deps.branch_counts())),
         "landing": list(deps.landing()) if deps.landing is not None else [],
