@@ -104,7 +104,7 @@ _JSON_KEYS = {"sources", "repo_map"}
 _SPEND_KEYS = {"window_ceiling_usd", "weekly_ceiling_usd", "node_cap_usd"}
 _SPEND_TEXT_KEYS = {"weekly_reset"}  # `Sun 04:00 America/New_York`, parsed by usage_window.parse_weekly_reset
 
-_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
+_CHAIR_KEYS = {"housekeeping_hours", "stale_days", "idle_stall_minutes", "launch_stagger_s"}  # every key `cli._chair_run_deps` reads off `profile["chair"]`
 
 
 class ProfileError(Exception):
@@ -136,7 +136,7 @@ def parse_profile(text: str) -> dict:
     plus two nested blocks: a bare `spend:` line followed by indented
     `window_ceiling_usd:`/`weekly_ceiling_usd:`/`node_cap_usd:` lines, all optional, parsed as
     floats onto the flat result, and a `weekly_reset:` line kept as text, quotes stripped;
-    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:` lines,
+    and a bare `chair:` line followed by indented `housekeeping_hours:`/`stale_days:`/`idle_stall_minutes:`/`launch_stagger_s:` lines,
     all optional, parsed as floats into `result["chair"]` (every key `cli._chair_run_deps`
     reads off `profile["chair"]`; `log_retention_days` stays a flat top-level key, not one of
     these). A `notify: {ntfy: <url>}` line is the one inline mapping, kept as `result["notify"]`.

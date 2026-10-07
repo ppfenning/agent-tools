@@ -7654,6 +7654,7 @@ def _chair_run_deps(
             holder,
         ),
         resolve_land=_resolve_land_with(actions, record),
+        launch_stagger_s=chair_exec.stagger_seconds((profile.get("chair") or {}).get("launch_stagger_s")),
     )
     def held() -> None:
         """Resolves each pending watch whose commit is green on main and that the smoke hold does not name."""

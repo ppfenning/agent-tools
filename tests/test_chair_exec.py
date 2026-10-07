@@ -1742,3 +1742,65 @@ def test_a_dry_run_of_tune_lanes_and_propose_tiers_performs_nothing(tmp_path) ->
     assert [r["status"] for r in results] == ["dry_run", "dry_run"]
     assert calls == []
     assert not (tmp_path / "courier.jsonl").exists()
+
+
+def _epic(initiative: str, host: str = "", epoch: int = 1) -> dict:
+    return {"kind": "launch_epic", "initiative": initiative, "epoch": epoch, **({"host": host} if host else {})}
+
+
+def _staggered(calls: list, tmp_path: Path, actions: list, **fields) -> list:
+    """Runs `actions` with a sleep that records into `calls` beside the launches; no real waiting."""
+    deps = replace(_deps(calls), work_dir=tmp_path, **fields)
+    return perform(actions, deps, lambda: 1, False, sleep=lambda s: calls.append(("sleep", s)))
+
+
+def _sleeps(calls: list) -> list:
+    return [c for c in calls if c[0] == "sleep"]
+
+
+def test_two_same_host_launches_sleep_once_between_them(tmp_path: Path) -> None:
+    calls: list = []
+    _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "jarvis")])
+    assert [c[0] for c in _touched(calls)] == ["run", "sleep", "run"]
+    assert _sleeps(calls) == [("sleep", 20.0)]
+
+
+def test_launches_with_no_host_share_the_local_machine(tmp_path: Path) -> None:
+    calls: list = []
+    _staggered(calls, tmp_path, [_epic("a"), _epic("b")])
+    assert _sleeps(calls) == [("sleep", 20.0)]
+
+
+def test_two_different_host_launches_never_sleep(tmp_path: Path) -> None:
+    calls: list = []
+    _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "friday")])
+    assert _sleeps(calls) == []
+
+
+def test_a_third_launch_on_the_first_host_waits_and_order_is_kept(tmp_path: Path) -> None:
+    calls: list = []
+    results = _staggered(calls, tmp_path, [_epic("a", "jarvis"), _epic("b", "friday"), _epic("c", "jarvis")])
+    assert _sleeps(calls) == [("sleep", 20.0)]
+    assert [c[0] for c in _touched(calls)] == ["run", "run", "sleep", "run"]
+    assert [r["action"]["initiative"] for r in results] == ["a", "b", "c"]
+
+
+def test_launch_stagger_s_overrides_the_default_and_zero_skips_the_sleep(tmp_path: Path) -> None:
+    actions = [_epic("a", "jarvis"), _epic("b", "jarvis")]
+    five: list = []
+    _staggered(five, tmp_path, actions, launch_stagger_s=5.0)
+    zero: list = []
+    _staggered(zero, tmp_path, actions, launch_stagger_s=0.0)
+    assert _sleeps(five) == [("sleep", 5.0)]
+    assert _sleeps(zero) == []
+
+
+def test_a_fenced_launch_does_not_start_a_stagger(tmp_path: Path) -> None:
+    calls: list = []
+    _staggered(calls, tmp_path, [_epic("a", "jarvis", epoch=0), _epic("b", "jarvis")])
+    assert _sleeps(calls) == []
+
+
+def test_stagger_seconds_reads_the_profile_value() -> None:
+    values = [None, "x", "5", 0, -1, 7.5, True, float("inf")]
+    assert [chair_exec.stagger_seconds(v) for v in values] == [20.0, 20.0, 5.0, 0.0, 20.0, 7.5, 20.0, 20.0]
