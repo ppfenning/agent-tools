@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from agent_tools import chair_read_intake as cri
 from agent_tools import route
 
@@ -141,3 +143,39 @@ def test_the_edge_reads_sources_from_the_profile(tmp_path):
     assert cri.read_sources_configured(profile) is True
     profile.write_text("sources: {}\n", encoding="utf-8")
     assert cri.read_sources_configured(profile) is False
+
+
+_BAD = route.ProfileError("line 3: unknown key")
+
+
+def test_a_failed_reread_keeps_the_previous_value_and_marks_it_stale():
+    assert cri.keep_last_good(True, _BAD) == (True, True)
+    assert cri.keep_last_good(False, _BAD) == (False, True)
+
+
+def test_a_good_reread_replaces_the_previous_value_and_clears_the_mark():
+    assert cri.keep_last_good(True, False) == (False, False)
+
+
+def test_a_failed_first_load_stays_the_error():
+    assert cri.keep_last_good(None, _BAD) == (_BAD, False)
+
+
+def test_the_edge_keeps_the_last_good_profile_until_a_read_succeeds_again(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text('sources: {"github": {"repos": ["a/b"]}}\n', encoding="utf-8")
+    sources, stale = cri.sources_configured_keeping_last_good(profile)
+    assert (sources(), stale()) == (True, False)
+    profile.write_text("bogus_key: 1\n", encoding="utf-8")
+    assert isinstance(cri.read_sources_configured(profile), route.ProfileError)
+    assert (sources(), stale()) == (True, True)
+    profile.write_text("sources: {}\n", encoding="utf-8")
+    assert (sources(), stale()) == (False, False)
+
+
+def test_the_edge_raises_when_the_very_first_load_fails(tmp_path):
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("bogus_key: 1\n", encoding="utf-8")
+    sources, _stale = cri.sources_configured_keeping_last_good(profile)
+    with pytest.raises(route.ProfileError):
+        sources()

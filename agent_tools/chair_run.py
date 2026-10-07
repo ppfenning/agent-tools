@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 DEFAULT_INTERVAL = 60.0
+PROFILE_STALE_NOTE = "profile re-read failed; keeping the last good profile"  # a segment of the one status line
 LAND_BEAT_INTERVAL = 30.0  # half a minute, so the chair lease is beaten at least once a minute while a land runs
 
 Gather = Callable[[FactsDeps, datetime], Facts]
@@ -365,6 +366,7 @@ def tick_timed(
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     line = f"{line} | {note}" if note else line
+    line = f"{line} | {PROFILE_STALE_NOTE}" if facts.get("profile_stale") else line
     pushed = _notify_step(deps, dry_run, facts, actions, now)
     stages = {"facts": facts_s, "plan": plan_s, "perform": perform_s, "export": export_s}
     return (f"{line} | {pushed}" if pushed else line), stages, sources

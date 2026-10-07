@@ -354,6 +354,7 @@ class Facts(TypedDict):
     intake: list[str]  # oldest first
     work_store_ready: bool
     sources_configured: bool
+    profile_stale: NotRequired[bool]  # this tick's profile re-read failed and the last good value was kept; absent means False
     drafts: int  # initiatives waiting for approval
     # An initiative's newest run is remote and unfetched: a `<run>.remote.json` beside the runs
     # directory with no local run directory or log for that run id. Maps the initiative id to
