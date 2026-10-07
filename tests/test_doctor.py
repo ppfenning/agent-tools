@@ -103,6 +103,34 @@ def test_unparseable_profile_carries_the_parsers_message():
     assert "line 1" in rows["profile"]["detail"]
 
 
+def test_unknown_profile_key_is_a_warning_row_not_a_failure():
+    facts = _good_facts()
+    facts["profile_text"] += "colour: blue\n"
+    rows = doctor.checks(facts)
+    warned = [r for r in rows if r.get("warn")]
+    assert warned == [{"check": "profile", "ok": True, "warn": True, "detail": "unknown key colour at line 7"}]
+    assert all(r["ok"] for r in rows)
+    assert doctor.exit_code(rows) == 0
+    rendered = doctor.render(rows)
+    assert re.search(r"profile\s+warn\s+unknown key colour at line 7", rendered)
+    assert "1 warning" in rendered
+
+
+def test_a_profile_with_no_unknown_key_has_no_warning_row():
+    rows = doctor.checks(_good_facts())
+    assert not any(r.get("warn") for r in rows)
+    assert "warning" not in doctor.render(rows)
+
+
+def test_malformed_known_key_still_fails_with_an_unknown_key_present():
+    facts = _good_facts()
+    facts["profile_text"] += "colour: blue\nspend: 5\n"
+    rows = doctor.checks(facts)
+    assert _rows_for(rows, "profile")[0]["ok"] is False
+    assert not any(r.get("warn") for r in rows)
+    assert doctor.exit_code(rows) == 1
+
+
 def test_one_missing_path_is_named_in_a_failing_profile_paths_row():
     facts = _good_facts()
     facts["paths_exist"]["/s1"] = False
