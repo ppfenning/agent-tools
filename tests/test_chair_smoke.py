@@ -71,7 +71,7 @@ def test_clear_hold_then_read_hold_is_none(tmp_path) -> None:
 
 def test_smoke_result_clean_exit_is_ok() -> None:
     result = smoke_result(["cox", "route", "context"], 0, "all good", timed_out=False)
-    assert result == {"command": ["cox", "route", "context"], "ok": True, "tail": "all good"}
+    assert result == {"command": ["cox", "route", "context"], "ok": True, "tail": "all good", "timed_out": False}
 
 
 def test_smoke_result_nonzero_exit_is_not_ok() -> None:
@@ -87,6 +87,24 @@ def test_smoke_result_traceback_in_output_is_not_ok_even_on_exit_0() -> None:
 def test_smoke_result_timed_out_is_not_ok_even_on_exit_0_clean_output() -> None:
     result = smoke_result(["cox", "route", "context"], 0, "still running", timed_out=True)
     assert result["ok"] is False
+    assert result["timed_out"] is True
+
+
+def test_smoke_verdict_timeout_is_inconclusive_not_a_failure() -> None:
+    timed_out = smoke_result(["cox", "chair", "run", "--once", "--dry-run"], 124, "timed out", timed_out=True)
+    assert smoke_verdict([_OK, timed_out]) == (True, None)
+
+
+def test_smoke_verdict_failure_after_a_timeout_still_fails() -> None:
+    timed_out = smoke_result(["cox", "route", "context"], 124, "timed out", timed_out=True)
+    failing = smoke_result(["cox", "runs", "top", "--once"], 1, "boom", timed_out=False)
+    assert smoke_verdict([timed_out, failing]) == (False, failing)
+
+
+def test_revert_pr_create_runs_in_the_checkout_without_a_repo_flag() -> None:
+    argv = revert_pr_argv({"repo": "/home/me/repos/tools", "pr": 7, "commit": "abc"}, "boom")
+    assert "--repo" not in argv["pr_create"]
+    assert argv["cwd"] == "/home/me/repos/tools"
 
 
 def test_revert_pr_argv_carries_commit_and_pr() -> None:
@@ -104,7 +122,7 @@ def test_revert_pr_body_ends_with_footer() -> None:
 
 
 def _fake_run(calls: list[list[str]], fail_on: str | None) -> Callable[..., None]:
-    def run(argv: list[str], check: bool) -> None:
+    def run(argv: list[str], check: bool, cwd: str | None = None) -> None:
         calls.append(argv)
         if fail_on is not None and fail_on in argv:
             raise subprocess.CalledProcessError(1, argv)

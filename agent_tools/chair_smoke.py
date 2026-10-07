@@ -33,9 +33,12 @@ _REVERT_STEPS = ("checkout", "revert", "push", "pr_create")
 
 
 def smoke_verdict(results: list[SmokeCommandResult]) -> tuple[bool, SmokeCommandResult | None]:
-    """True with None when every result is ok; else False with the first not-ok result."""
+    """True with None when every result is ok or timed out; else False with the first failed result.
+
+    A timeout is inconclusive: a slow tick under load says nothing about whether the land broke the
+    command, and reverting a green land on it is worse than missing one smoke."""
     for result in results:
-        if not result["ok"]:
+        if not result["ok"] and not result.get("timed_out", False):
             return False, result
     return True, None
 
@@ -54,7 +57,7 @@ def hold_record(land: LandTrigger, failing: SmokeCommandResult) -> HoldRecord:
 def smoke_result(command: list[str], returncode: int, output: str, timed_out: bool) -> SmokeCommandResult:
     """Pure. ok is True only when the process exited 0, 'Traceback' is absent from output, and it did not time out."""
     ok = not timed_out and returncode == 0 and "Traceback" not in output
-    return {"command": command, "ok": ok, "tail": output}
+    return {"command": command, "ok": ok, "tail": output, "timed_out": timed_out}
 
 
 def _run_argv(argv: list[str], cwd: str, timeout: float) -> SmokeCommandResult:
@@ -101,7 +104,8 @@ def clear_hold(runs_dir: str) -> None:
 
 
 def revert_pr_argv(land: LandTrigger, failing_tail: str, run: str | None = None) -> dict:
-    """Pure. The argv for the four commands the caller runs in order to open a revert PR."""
+    """Pure. The argv for the four commands the caller runs in order to open a revert PR, plus the
+    checkout `cwd` they run in: `land["repo"]` is a checkout path, which `gh --repo` cannot take."""
     repo = land["repo"]
     branch = f"revert/{land['pr']}"
     return {
@@ -109,11 +113,12 @@ def revert_pr_argv(land: LandTrigger, failing_tail: str, run: str | None = None)
         "revert": ["git", "-C", repo, "revert", "--no-edit", land["commit"]],
         "push": ["git", "-C", repo, "push", "origin", branch],
         "pr_create": [
-            "gh", "pr", "create", "--repo", repo,
+            "gh", "pr", "create",
             "--title", f"Revert #{land['pr']}: post-land smoke failed",
             "--body", f"{failing_tail}\n\n{pr_footer(run)}",
             "--head", branch,
         ],
+        "cwd": repo,
     }
 
 
@@ -121,4 +126,4 @@ def run_revert_pr(argv: dict) -> None:
     """Edge. Runs the four commands in order and raises CalledProcessError at the first failure, so a
     failed checkout never lets revert commit onto whatever branch is checked out. Never merges the PR."""
     for key in _REVERT_STEPS:
-        subprocess.run(argv[key], check=True)
+        subprocess.run(argv[key], check=True, cwd=argv.get("cwd"))
