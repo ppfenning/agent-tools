@@ -53,13 +53,14 @@ def _first_cause(q: QuarantineFacts) -> str:
 def _quarantine_action(q: QuarantineFacts, kind: Recovery) -> Action:
     if kind == "needs_chair" and "reason" not in q:
         # A fact that carries no row reason keeps the old shape: there is nothing to record beyond the cause.
-        return {"kind": "needs_chair", "initiative": q["initiative"], "cause": q["cause"]}
+        return {"kind": "needs_chair", "initiative": q["initiative"], "task_id": q["task_id"], "cause": q["cause"]}
     if kind == "needs_chair":
         cause = _first_cause(q)
         remedy = remedy_for(cause, q.get("run", ""), q["task_id"], q.get("repo", ""))
         return {
             "kind": "needs_chair",
             "initiative": q["initiative"],
+            "task_id": q["task_id"],
             "cause": cause,
             "reason": trim_reason(q.get("reason")),
             "remedy": remedy["kind"],
