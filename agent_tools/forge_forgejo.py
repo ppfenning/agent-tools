@@ -1,12 +1,13 @@
 """The forgejo forge: the Forgejo REST API through `agent_tools.forgejo_api`, and `git push`. The protocol is in `agent_tools.forge`.
 
-The protocol functions take only `repo`, so the server and the project come from the repo's `origin`, which must be an
-http(s) URL, and the token from the `FORGEJO_TOKEN` variable. The profile's `forgejo_*` keys do not reach this module.
+The protocol functions take only `repo`, so the project comes from the repo's `origin`, an http(s) or ssh URL, and the token
+from the `FORGEJO_TOKEN` variable. The server comes from an http(s) origin, or from `FORGEJO_BASE_URL` for an ssh one. The profile's `forgejo_*` keys do not reach this module.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from collections.abc import Mapping
@@ -29,6 +30,10 @@ from agent_tools.forgejo_api import (
 __all__ = ["find_open_prs", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 DEFAULT_TOKEN_ENV = "FORGEJO_TOKEN"
+# Where an ssh origin finds its API address: the origin names a host, not an http(s) server.
+BASE_URL_ENV = "FORGEJO_BASE_URL"
+# The scp-like ssh form, `git@host:owner/name.git`; a `scheme://` URL never matches because `:` ends the host.
+_SCP_REMOTE = re.compile(r"^(?P<user>[^@/:\s]+)@(?P<host>[^:/\s]+):(?P<path>.+)$")
 # What forge_github's merge_state says for a PR that can and cannot merge; Forgejo has no finer status.
 MERGEABLE, CONFLICTED, UNSETTLED = "CLEAN", "DIRTY", "UNKNOWN"
 PAGE_SIZE = 50
@@ -52,18 +57,41 @@ def _message(status: int, body: object) -> str:
 
 
 def parse_remote(url: str) -> tuple[str, str, str] | None:
-    """`(base_url, owner, name)` of an http(s) remote URL, or None for any other kind. A path prefix stays in the base."""
+    """`(base_url, owner, name)` of an http(s) or ssh remote URL, or None for any other kind.
+
+    An http(s) path prefix stays in the base. An ssh origin names no API address, so its base is `ssh://host`, without user or port.
+    """
+    url = url.strip()
+    scp = _SCP_REMOTE.match(url)
+    if scp:
+        return parse_remote(f"ssh://{scp['user']}@{scp['host']}/{scp['path']}")
     try:
-        parts = urlsplit(url.strip())
+        parts = urlsplit(url)
         port = parts.port
     except ValueError:
         return None
     segments = [s for s in parts.path.split("/") if s]
-    if parts.scheme not in ("http", "https") or not parts.hostname or len(segments) < 2:
+    if parts.scheme not in ("http", "https", "ssh") or not parts.hostname or len(segments) < 2:
         return None
     host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
     prefix, owner, name = segments[:-2], segments[-2], segments[-1].removesuffix(".git")
+    if parts.scheme == "ssh":
+        return f"ssh://{host}", owner, name
     return f"{parts.scheme}://{host}{f':{port}' if port else ''}" + "".join(f"/{s}" for s in prefix), owner, name
+
+
+def url_host(url: str) -> str | None:
+    """The lowercased host of `url`, port and credentials excluded; None when it has none or cannot be parsed."""
+    try:
+        return urlsplit(url.strip()).hostname
+    except ValueError:
+        return None
+
+
+def origin_host(url: str) -> str | None:
+    """The host of an origin `parse_remote` accepts, else None."""
+    parsed = parse_remote(url)
+    return url_host(parsed[0]) if parsed else None
 
 
 def parse_open_prs(status: int, body: object, branch: str) -> list[int] | str:
@@ -191,13 +219,25 @@ def _git(repo: Path | str, *argv: str) -> str:
     return r.stdout.strip()
 
 
-def _target(repo: Path | str) -> Target:
-    """The Forgejo project `repo`'s `origin` names; ForgeError when it has no origin or origin is not an http(s) URL."""
+def _ssh_api_base(host: str | None, env: Mapping[str, str]) -> str:
+    """`FORGEJO_BASE_URL` for an ssh origin on `host`; ForgeError when it is unset or names another host."""
+    configured = env.get(BASE_URL_ENV, "").strip()
+    if not configured:
+        raise ForgeError(f"origin {host} is an ssh remote, so its API address must come from {BASE_URL_ENV}, which is unset")
+    if url_host(configured) != host:
+        raise ForgeError(f"{BASE_URL_ENV} {configured!r} is not on the origin's host {host}")
+    return configured
+
+
+def _target(repo: Path | str, env: Mapping[str, str]) -> Target:
+    """The Forgejo project `repo`'s `origin` names; ForgeError when it has no origin, is not an http(s) or ssh URL, or is ssh without a matching `FORGEJO_BASE_URL`."""
     url = _git(repo, "remote", "get-url", "origin")
     parsed = parse_remote(url)
     if parsed is None:
-        raise ForgeError(f"origin {url!r} is not an http(s) Forgejo URL")
+        raise ForgeError(f"origin {url!r} is not an http(s) or ssh Forgejo URL")
     base, owner, name = parsed
+    if base.startswith("ssh://"):
+        base = _ssh_api_base(url_host(base), env)
     try:
         return Target(read_settings({URL_KEY: base, TOKEN_ENV_KEY: DEFAULT_TOKEN_ENV}), owner, name)
     except ForgejoError as exc:
@@ -207,7 +247,7 @@ def _target(repo: Path | str) -> Target:
 def find_open_prs(repo: Path, branch: str) -> list[int] | str:
     """Numbers of the open PRs whose head is `branch`, or the reason they could not be listed."""
     try:
-        return list_open_prs(_target(repo), os.environ, branch)
+        return list_open_prs(_target(repo, os.environ), os.environ, branch)
     except ForgeError as exc:
         return f"could not list open pull requests for {branch}: {exc}"
 
@@ -217,7 +257,7 @@ def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base:
     try:
         source = head or _git(repo, "symbolic-ref", "--short", "HEAD")
         into = base or _git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/")
-        return create_pr(_target(repo), os.environ, title, body, source, into)
+        return create_pr(_target(repo, os.environ), os.environ, title, body, source, into)
     except ForgeError as exc:
         return False, str(exc)
 
@@ -225,7 +265,7 @@ def open_pr(repo: Path, title: str, body: str, *, head: str | None = None, base:
 def merge_state(pr: int, *, repo: Path | str | None = None) -> str:
     if repo is None:
         raise ForgeError("forgejo: a PR number alone does not name a repository")
-    return read_merge_state(_target(repo), os.environ, pr)
+    return read_merge_state(_target(repo, os.environ), os.environ, pr)
 
 
 def merge(repo: Path, step: dict) -> tuple[bool, str]:
@@ -234,7 +274,7 @@ def merge(repo: Path, step: dict) -> tuple[bool, str]:
     Once Forgejo merges, the PR has merged, so a failed delete or local update is reported in the detail and the result stays ok.
     """
     try:
-        target = _target(repo)
+        target = _target(repo, os.environ)
         found = list_open_prs(target, os.environ, step["branch"])
         if isinstance(found, str):
             return False, found
@@ -274,14 +314,14 @@ def update_branch(pr: int, *, repo: Path | str | None = None) -> None:
     """Merge the base branch into PR `pr`'s head; ForgeError with Forgejo's message on failure."""
     if repo is None:
         raise ForgeError("forgejo: a PR number alone does not name a repository")
-    status, body = _call(_target(repo), os.environ, "POST", f"/pulls/{pr}/update")
+    status, body = _call(_target(repo, os.environ), os.environ, "POST", f"/pulls/{pr}/update")
     if not 200 <= status < 300:
         raise ForgeError(f"could not update pull request {pr}: {_message(status, body)}")
 
 
 def wait_checks(repo: Path, timeout_s: float, sleep=time.sleep, now=time.monotonic, *, ref: str = "HEAD") -> tuple[bool, str]:
     try:
-        target, sha = _target(repo), _git(repo, "rev-parse", ref)
+        target, sha = _target(repo, os.environ), _git(repo, "rev-parse", ref)
     except ForgeError as exc:
         return False, str(exc)
     # Edge bend (A2): a count of consecutive unreadable polls, reset by any readable one.

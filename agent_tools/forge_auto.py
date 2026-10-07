@@ -1,29 +1,39 @@
 """The auto forge: each repository's own forge, from its `origin`.
 
 A repository whose `origin` is on github.com lands through `forge_github`, with a
-pull request and its checks. Any other repository, including one with no remote
+pull request and its checks. One whose `origin` is on the host of `FORGEJO_BASE_URL` lands through
+`forge_forgejo`. Any other repository, including one with no remote
 at all, lands through `forge_local`: its own checks are the gate and the default
 branch moves by a fast-forward. One profile can then hold both kinds of project.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_tools import forge_github, forge_local
+from agent_tools import forge_forgejo, forge_github, forge_local
 from agent_tools.forge import ForgeNotSupported
 
 __all__ = ["find_open_prs", "forge_of", "merge", "merge_state", "open_pr", "push", "update_branch", "wait_checks"]
 
 
+def _forge_for_url(url: str, env: Mapping[str, str]):
+    """`forge_forgejo` when `url` is on the host of `FORGEJO_BASE_URL`, `forge_github` for github.com, else `forge_local`."""
+    host = forge_forgejo.origin_host(url)
+    if host is not None and host == forge_forgejo.url_host(env.get(forge_forgejo.BASE_URL_ENV, "")):
+        return forge_forgejo
+    return forge_github if "github.com" in url else forge_local
+
+
 def forge_of(repo: Path | str):
-    """`forge_github` when `origin` names github.com, else `forge_local` (no origin included)."""
+    """The forge of `origin`: forgejo on the `FORGEJO_BASE_URL` host, github on github.com, else local (no origin included)."""
     done = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output=True, text=True)
     url = done.stdout.strip() if done.returncode == 0 else ""
-    return forge_github if "github.com" in url else forge_local
+    return _forge_for_url(url, os.environ)
 
 
 def find_open_prs(repo: Path | str, branch: str) -> list[int] | str:
