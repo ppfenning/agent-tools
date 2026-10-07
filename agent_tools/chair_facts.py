@@ -14,6 +14,7 @@ from typing import Any
 
 from agent_tools import chair_read_docket, chair_smoke, forge, pacing, route
 from agent_tools.chair import lease_holder
+from agent_tools.chair_decompose_streak import DecomposeRun, DecomposeStreak, at_limit, streak
 from agent_tools.chair_idle_stall import IDLE_STALL_MINUTES
 from agent_tools.chair_plan import initiative_homes
 from agent_tools.chair_plan_land import planned_tasks
@@ -196,6 +197,7 @@ class FactsDeps:
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
     actions: Callable[[], Sequence[Row]] | None = None  # chair_actions rows; absent means no steer streaks
+    decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
     branch_counts: Callable[[], Sequence[Row]] = lambda: []  # per phase branch: ahead, behind, tip against main; absent means []
@@ -402,6 +404,24 @@ def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
     """`<initiative>|<other>` to its steer_clear count since that initiative's last launch; no record, no key."""
     ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
     return reduce(_streak_step, map(_action_doc, ordered), {})
+
+
+def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
+    """`<initiative>|<run>` of each decompose_stalled needs_chair row, in row order."""
+    docs = [_action_doc(row) for row in actions]
+    return [
+        f"{d['initiative']}|{d['run']}"
+        for d in docs
+        if d.get("kind") == "needs_chair" and d.get("cause") == "decompose_stalled" and d.get("initiative") and d.get("run")
+    ]
+
+
+def decompose_streak_facts(
+    paths: Sequence[str], runs_for: Callable[[str], Sequence[DecomposeRun]]
+) -> dict[str, DecomposeStreak]:
+    """Intake path to its streak, for only the paths whose trailing empty runs reach the limit."""
+    streaks = {path: streak(runs_for(path)) for path in paths}
+    return {path: s for path, s in streaks.items() if at_limit(s)}
 
 
 def read_ticket_items(ws: Path, mode: str) -> list[dict]:
@@ -688,6 +708,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
     quarantined = quarantined_from_rows(rows) if rows else list(deps.quarantined())
     stranded_records = deps.stranded_records() if deps.stranded_records is not None else None
     stranded = stranded_from_rows(rows, list(stranded_records)) if rows and stranded_records is not None else list(deps.stranded())
+    intake = intake_paths_from_rows(rows) if rows else list(deps.intake())
     return {
         "lease": lease_facts(deps.lease(), deps.session, deps.pid, deps.host),
         "limits": limits_facts(
@@ -701,7 +722,7 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         "quarantines": quarantine_facts(
             quarantined, stranded, deps.attempts(), live, deps.has_patch, planned_tasks(approved, initiatives)
         ),
-        "intake": intake_paths_from_rows(rows) if rows else list(deps.intake()),
+        "intake": intake,
         "work_store_ready": deps.work_store_ready(),
         "sources_configured": deps.sources_configured(),
         "drafts": deps.drafts() if deps.drafts is not None else 0,
@@ -719,6 +740,8 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
             live,
             dict(deps.item_counts()) if deps.item_counts is not None else {},
         ),
+        "decompose_streaks": decompose_streak_facts(intake, deps.decompose_runs) if deps.decompose_runs is not None else {},
+        "decompose_stalled_reported": decompose_stalled_keys(list(deps.actions())) if deps.actions is not None else [],
         "newest_run_host": newest_run_host,
         "run_hosts": run_host_facts(deps.run_hosts()),
         "login_hosts": deps.hosts(),
