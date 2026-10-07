@@ -1390,7 +1390,8 @@ def test_cli_apply_refuses_on_a_dirty_checkout(repo, tmp_path, capsys):
     assert "dirty" in capsys.readouterr().out
 
 
-def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, capsys):
+def test_cli_apply_refuses_when_the_pr_branch_already_exists(repo, tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_remote_branch_exists", lambda _repo, _branch: True)  # a local-only leftover is rebuilt instead
     task_dir = tmp_path / "runs/epic-x-5/tasks/seams"; task_dir.mkdir(parents=True)
     (task_dir / "seams-task.json").write_text(json.dumps(_record()), encoding="utf-8")
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task"], check=True, capture_output=True)
@@ -1566,7 +1567,7 @@ def test_cli_apply_refuses_a_matching_pr_branch_that_has_an_open_pr(repo, tmp_pa
 
 def test_cli_apply_refuses_a_differing_pr_branch_naming_the_diff(repo, tmp_path, capsys, monkeypatch):
     sp.run(["git", "-C", str(repo), "branch", "pr/seams-task", "main"], check=True, env=_ENV)
-    rc, ran = _apply_resume(repo, tmp_path, monkeypatch)
+    rc, ran = _apply_resume(repo, tmp_path, monkeypatch, prs=[7])  # a local-only leftover is backed up instead: test_cli_land_leftover.py
     out = capsys.readouterr().out
     assert (rc, ran) == (2, [])
     assert "already exists" in out and "local tree" in out and "files differing: f" in out
