@@ -28,11 +28,13 @@ class LeaseFacts(TypedDict):
 
 class SmokeCommandResult(TypedDict):
     """One post-land smoke command's outcome. ok is True when the process exited 0 and 'Traceback'
-    does not appear in its combined output; a 120-second timeout counts as not ok."""
+    does not appear in its combined output; a 120-second timeout counts as not ok, and timed_out marks
+    it so the verdict can treat it as inconclusive rather than as evidence the land broke anything."""
 
     command: list[str]
     ok: bool
     tail: str  # the last lines of the command's combined output
+    timed_out: bool
 
 
 class LandTrigger(TypedDict):
