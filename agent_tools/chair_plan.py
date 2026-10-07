@@ -309,6 +309,13 @@ def _without_carried_lands(lands: list[Action], carries: list[Action]) -> list[A
     return [a for a in lands if not (a["kind"] == "land_phase" and (a["initiative"], a["phase"]) in carried)]
 
 
+def _landing_initiatives(facts: Facts, lands: list[Action]) -> frozenset[str]:
+    """Initiatives whose repo has a land in flight, plus those with a land_phase planned this tick."""
+    repos = frozenset(landing["repo"] for landing in facts.get("landing", []))
+    in_repo = frozenset(i["id"] for i in facts["initiatives"] if i.get("repo") in repos)
+    return in_repo | frozenset(a["initiative"] for a in lands if a["kind"] == "land_phase")
+
+
 def _is_launch(action: Action) -> bool:
     return action["kind"] in _LAUNCHES or action["kind"] == "launch_epic"
 
@@ -672,6 +679,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     # Recover already owns a relaunched or quarantined initiative this tick; fill must not launch it a second time.
     # Withheld initiatives stay in the facts so their ready tasks still block a pull.
     # A steer deferral already reports its initiative; fill would find the same overlap and report it twice.
+    # An initiative whose repo is landing, or whose phase lands this tick, must not launch until the land settles.
     withheld = (
         frozenset({a["initiative"] for a in capped if a["kind"] == "relaunch" or a["kind"] == "steer_clear" or _steer_deferred(a)})
         | frozenset(q["initiative"] for q in facts["quarantines"])
@@ -680,6 +688,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         | lost
         | frozenset(facts.get("schema_deaths", {}))
         | _unmet_needs_ids(facts["initiatives"])
+        | _landing_initiatives(facts, lands)
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(

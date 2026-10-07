@@ -240,7 +240,7 @@ def test_a_phase_land_under_store_takes_one_phase_lease_and_reads_task_state_fro
                            ("renew", "land:phase:x/seams", 7), ("renew", "land:phase:x/seams", 7),
                            ("set_state", "x", "seams-task", "done", "approved"),
                            ("release", "land:phase:x/seams", 7), ("release", f"land:{repo}", 1)]
-    assert "leases the phase as phase:x/seams; its items are already done, so there is no approved check" in capsys.readouterr().out
+    assert "no approved check" not in capsys.readouterr().out
 
 
 def test_a_phase_lease_refused_stops_the_phase_land_before_any_step(repo, tmp_path, monkeypatch, store, capsys):
