@@ -1,5 +1,5 @@
-"""The land edge backs up and rebuilds a local-only leftover pr branch under the repo lease, and still refuses one the
-remote, a PR or a worktree holds."""
+"""The land edge backs up, pushes the backups of, and rebuilds a leftover pr branch (local, remote or both) under the
+repo lease, and still refuses one a PR or a worktree holds."""
 
 import json
 import os
@@ -144,3 +144,103 @@ def test_a_branch_moved_since_the_decision_is_not_deleted(repo):
     _git(repo, "branch", "-f", _PR, _TASK)
     assert cli._land_rebuild(repo, _PR, rebuild).startswith(f"{_PR} moved off ")
     assert _git(repo, "rev-parse", _PR) == _git(repo, "rev-parse", _TASK)
+
+
+_REMOTE_BACKUP = f"refs/backup/origin/{_PR}"
+
+
+def _remote_tip(repo, ref):
+    return _git(repo, "ls-remote", "origin", ref).split("\t")[0]
+
+
+def _push_pr(repo, *, keep_local):
+    """Publish `pr/seams-task` at main, leaving the local branch only when `keep_local`."""
+    _git(repo, "push", "-q", "origin", f"main:refs/heads/{_PR}")
+    if not keep_local:
+        _git(repo, "branch", "-D", _PR)
+    return _git(repo, "rev-parse", "main")
+
+
+def _reject_backups(repo):
+    hook = repo.parent / "origin.git/hooks/pre-receive"
+    hook.write_text('#!/bin/sh\nwhile read old new ref; do case "$ref" in refs/backup/*) echo no backups >&2; exit 1;; esac; done\n')
+    hook.chmod(0o755)
+
+
+def test_a_remote_only_leftover_is_backed_up_deleted_and_rebuilt(repo, tmp_path, monkeypatch, capsys):
+    old = _push_pr(repo, keep_local=False)
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert f"land: backed up {old[:8]} to {_REMOTE_BACKUP}, rebuilding {_PR}\n" in out
+    assert _git(repo, "rev-parse", _REMOTE_BACKUP) == _remote_tip(repo, _REMOTE_BACKUP) == old
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == ""
+    assert not _has_ref(repo, _BACKUP)
+
+
+def test_a_remote_only_leftover_is_rebuilt_on_the_cherry_picked_tree(repo):
+    _push_pr(repo, keep_local=False)
+    rebuild = cli._land_leftover(repo, _STEP, cli._land_resume(repo, _STEP, None), None)
+    assert rebuild["kind"] == "fresh" and rebuild["local_tip"] is None
+    assert cli._land_rebuild(repo, _PR, rebuild) is None
+    ok, detail = cli._execute_land_step(repo, _STEP)
+    assert ok, detail
+    assert _git(repo, "rev-parse", f"{_PR}^{{tree}}") == _git(repo, "rev-parse", f"{_TASK}^{{tree}}")
+
+
+def test_a_local_and_remote_leftover_with_no_pr_backs_up_both_tips(repo, tmp_path, monkeypatch, capsys):
+    old = _push_pr(repo, keep_local=True)
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert f"land: backed up {old[:8]} to {_BACKUP} and {old[:8]} to {_REMOTE_BACKUP}, rebuilding {_PR}\n" in out
+    assert _remote_tip(repo, _BACKUP) == _remote_tip(repo, _REMOTE_BACKUP) == old
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == "" and not _has_ref(repo, f"refs/heads/{_PR}")
+
+
+def test_a_branch_pushed_before_main_moved_is_rebuilt(repo, tmp_path, monkeypatch, capsys):
+    _git(repo, "branch", "-D", _PR)
+    ok, detail = cli._execute_land_step(repo, _STEP)
+    assert ok, detail
+    cli._remove_land_worktree(repo, _PR)  # the step leaves the branch checked out in its land worktree
+    _git(repo, "push", "-q", "origin", _PR)
+    pushed = _git(repo, "rev-parse", _PR)
+    (repo / "g").write_text("z")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main moves")
+    _git(repo, "push", "-q", "origin", "main")
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert f"{pushed[:8]} to {_BACKUP}" in out and f"{pushed[:8]} to {_REMOTE_BACKUP}" in out
+    assert _remote_tip(repo, _REMOTE_BACKUP) == pushed
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == ""
+
+
+def test_a_failed_backup_push_leaves_both_branches_untouched(repo, tmp_path, monkeypatch, capsys):
+    old = _push_pr(repo, keep_local=True)
+    _reject_backups(repo)
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
+    out = capsys.readouterr().out
+    assert (rc, ran) == (2, [])
+    assert f"land: not rebuilt: could not back up to {_BACKUP}: " in out and "backed up" not in out
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == old
+    assert _git(repo, "rev-parse", _PR) == old
+
+
+def test_a_rerun_finds_the_backup_already_on_origin_and_carries_on(repo, tmp_path, monkeypatch, capsys):
+    old = _push_pr(repo, keep_local=False)
+    _git(repo, "push", "-q", "origin", f"{old}:{_REMOTE_BACKUP}")
+    _git(repo, "update-ref", _REMOTE_BACKUP, old)
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
+    assert rc == 0, capsys.readouterr().out
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == "" and _remote_tip(repo, _REMOTE_BACKUP) == old
+
+
+def test_a_remote_only_leftover_with_an_open_pull_request_still_refuses(repo, tmp_path, monkeypatch, capsys):
+    old = _push_pr(repo, keep_local=False)
+    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"), prs=[7])
+    out = capsys.readouterr().out
+    assert (rc, ran) == (2, [])
+    assert f"land: refusing, branch {_PR} already exists in {repo}: remote tree " in out and "backed up" not in out
+    assert _remote_tip(repo, f"refs/heads/{_PR}") == old and not _has_ref(repo, _REMOTE_BACKUP)
