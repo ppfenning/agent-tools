@@ -28,6 +28,10 @@ from agent_tools.chair_report import EASTERN, format_status, write_status
 from agent_tools.chair_types import Action, Facts, PlanTick
 from agent_tools.ci_gate import DEFAULT_QUEUED_BOUND_SECONDS, CiGate, evaluate_gate
 from agent_tools.forge_status import StatusReader
+from agent_tools.notify_cards import card_events, pending_cards
+from agent_tools.notify_core import NotifyConfig
+from agent_tools.notify_dispatch import dispatch
+from agent_tools.notify_events import events_from_tick
 
 __all__ = [
     "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
@@ -122,6 +126,10 @@ class RunDeps:
     set_gate: Callable[[CiGate], object] = no_gate_change
     plan_held: PlanHeld = plan_tick_held
     gate_state: GateState = field(default_factory=GateState)
+    # Notifier: `notify` is `dispatch`'s call shape; `notify_config` None is the off state; no `workspace` skips the step.
+    notify: Callable[[list, NotifyConfig | None, Path, float], list[str]] = dispatch
+    notify_config: NotifyConfig | None = None
+    workspace: Path | None = None
     # The lease-only renewal run from the loop's own thread; it returns a refusal line or "" and touches no tick state. None starts no thread.
     lease_beat: Callable[[], object] | None = None
     lease_beat_interval: float = LAND_BEAT_INTERVAL
@@ -296,6 +304,18 @@ def _evaluate_gate(deps: RunDeps, now: datetime) -> CiGate:
     return evaluate_gate(deps.status_reader.read(), deps.queued_since(), now.timestamp(), DEFAULT_QUEUED_BOUND_SECONDS)
 
 
+def _notify_step(deps: RunDeps, dry_run: bool, facts: Facts, actions: list[Action], now: datetime) -> str:
+    """Push this tick's needs-you events and pending cards; "" when skipped or sent, a status note on any failure."""
+    if dry_run or deps.workspace is None:
+        return ""
+    try:
+        events = [*events_from_tick(facts, actions), *card_events(pending_cards(deps.workspace))]
+        deps.notify(events, deps.notify_config, deps.workspace / "notify-sent.json", now.timestamp())
+        return ""
+    except Exception as exc:  # a failed push must not cost the tick its status line or stop the loop
+        return f"notify failed: {type(exc).__name__}: {exc}"
+
+
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
@@ -326,7 +346,9 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     except Exception as exc:  # the actions already ran; report them rather than drop them
         line = error_line(exc, now, results)
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
-    return f"{line} | {note}" if note else line
+    line = f"{line} | {note}" if note else line
+    pushed = _notify_step(deps, dry_run, facts, actions, now)
+    return f"{line} | {pushed}" if pushed else line
 
 
 def _attempt(deps: RunDeps, dry_run: bool) -> None:

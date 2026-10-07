@@ -22,6 +22,8 @@ from agent_tools.chair_run import (
 )
 from agent_tools.ci_gate import CiGate
 from agent_tools.forge_status import StatusReader
+from agent_tools.notify_core import NotifyConfig
+from agent_tools.notify_dispatch import dispatch
 
 NOW = datetime(2026, 9, 26, 18, 5, tzinfo=UTC)  # 14:05 EDT
 MINE = {"holder": "me", "host": "box", "epoch": 3, "mine": True, "released": False, "stale": False}
@@ -506,3 +508,55 @@ def test_a_failing_meter_read_or_record_cannot_break_the_tick():
 
     tick(replace(rig.deps(), meter_doc=read_fails), False, NOW)
     assert rig.log == ["beat", "gather"]
+
+
+STRANDED = {"kind": "needs_chair", "initiative": "ind", "cause": "stranded", "reason": "no live run"}
+PUSH = NotifyConfig("https://ntfy.sh/t")
+
+
+def _notify_deps(rig, tmp_path, notify, config=PUSH):
+    return replace(
+        rig.deps(), gather=lambda d, n: _facts(MINE), plan=lambda f, n: [STRANDED], perform=lambda a, d, e, dry: [],
+        notify=notify, notify_config=config, workspace=tmp_path,
+    )
+
+
+def test_a_tick_hands_its_needs_chair_event_to_notify_with_the_config_state_path_and_now(tmp_path):
+    calls = []
+    deps = _notify_deps(Rig(), tmp_path, lambda *args: calls.append(args) or [])
+    tick(deps, False, NOW)
+    [(events, config, state_path, stamp)] = calls
+    assert [e.key for e in events] == ["needs_chair:ind:stranded"]
+    assert config == NotifyConfig("https://ntfy.sh/t")
+    assert state_path == tmp_path / "notify-sent.json" and stamp == NOW.timestamp()
+
+
+def test_a_notify_that_raises_is_written_as_a_status_line_and_the_next_tick_still_runs(tmp_path):
+    calls = []
+
+    def boom(*args):
+        calls.append(args)
+        raise OSError("ntfy down")
+
+    rig = Rig(sleeps_before_interrupt=2)
+    run(False, 60, False, _notify_deps(rig, tmp_path, boom))
+    assert len(calls) == 2 and len(rig.lines) == 2
+    assert all("notify failed: OSError: ntfy down" in line for line in rig.lines)
+
+
+def test_a_dry_run_never_calls_notify(tmp_path):
+    calls = []
+    tick(_notify_deps(Rig(), tmp_path, lambda *args: calls.append(args) or []), True, NOW)
+    assert calls == []
+
+
+def test_a_profile_with_no_notify_config_dispatches_none_and_sends_nothing(tmp_path):
+    seen, posts = [], []
+
+    def through_dispatch(events, config, path, now):
+        seen.append(config)
+        return dispatch(events, config, path, now, post=lambda *a, **k: posts.append(a) or True)
+
+    tick(_notify_deps(Rig(), tmp_path, through_dispatch, config=None), False, NOW)
+    assert seen == [None] and posts == []
+    assert not (tmp_path / "notify-sent.json").exists()
