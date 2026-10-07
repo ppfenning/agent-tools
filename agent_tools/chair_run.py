@@ -325,6 +325,7 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
         line = format_status(facts, actions, results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
         line = error_line(exc, now, results)
+    line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     return f"{line} | {note}" if note else line
 
 
