@@ -48,13 +48,33 @@ def test_parse_profile_strips_the_spec_sample_inline_comment():
     assert profile["assume"] == "a"
 
 
-def test_parse_profile_unknown_key_names_the_line():
-    text = "team: acme\nbogus_key: nope\n"
+def test_parse_profile_unknown_key_warns_once_and_keeps_the_rest(capsys, monkeypatch):
+    monkeypatch.setattr(route, "_WARNED_KEYS", set())
+    text = "team: acme\nbogus_key: nope\nassume: y\n"
+    first = route.parse_profile(text)
+    second = route.parse_profile(text)
+    third = route.parse_profile("other_key: 1\nteam: acme\n")
+    assert first == second == {"team": "acme", "assume": "y"}
+    assert third == {"team": "acme", "assume": "a"}
+    assert capsys.readouterr().err == (
+        "profile: ignoring unknown key bogus_key at line 2\n"
+        "profile: ignoring unknown key other_key at line 1\n"
+    )
+    assert route.unknown_keys(text) == [("bogus_key", 2)]
+
+
+def test_parse_profile_drops_an_unknown_key_with_an_indented_block(capsys, monkeypatch):
+    monkeypatch.setattr(route, "_WARNED_KEYS", set())
+    text = "team: acme\nfuture:\n  child: 1\n  other: x\nassume: y\n"
+    assert route.parse_profile(text) == {"team": "acme", "assume": "y"}
+    assert capsys.readouterr().err == "profile: ignoring unknown key future at line 2\n"
+    assert route.unknown_keys(text) == [("future", 2)]
+
+
+def test_parse_profile_malformed_known_key_still_raises():
     with pytest.raises(route.ProfileError) as exc_info:
-        route.parse_profile(text)
-    message = str(exc_info.value)
-    assert message.startswith("line 2:")
-    assert "bogus_key: nope" in message
+        route.parse_profile("team: acme\nsources: not-json\n")
+    assert str(exc_info.value).startswith("line 2:")
 
 
 def test_parse_profile_nested_key_names_the_line():

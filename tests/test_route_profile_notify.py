@@ -30,7 +30,6 @@ def test_a_profile_without_notify_parses_as_before():
         "notify: {ntfy: not-a-url}\n",
         "notify: {ntfy: https://ntfy.sh/a, other: b}\n",
         "  notify: {ntfy: https://ntfy.sh/topic}\n",
-        "bogus: 1\n",
         "spend:\n  bogus: 1\n",
     ],
 )
