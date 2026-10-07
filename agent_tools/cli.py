@@ -98,6 +98,8 @@ chair_read_stale = _LazyModule("agent_tools.chair_read_stale")
 chair_read_stall = _LazyModule("agent_tools.chair_read_stall")
 chair_read_stranded = _LazyModule("agent_tools.chair_read_stranded")
 chair_report = _LazyModule("agent_tools.chair_report")
+chair_revert_ports = _LazyModule("agent_tools.chair_revert_ports")
+chair_revert_watch = _LazyModule("agent_tools.chair_revert_watch")
 chair_run = _LazyModule("agent_tools.chair_run")
 chair_service = _LazyModule("agent_tools.chair_service")
 chair_service_host = _LazyModule("agent_tools.chair_service_host")
@@ -7130,6 +7132,79 @@ def _chair_perform_with_smoke(runs_dir: Path, perform: chair_run.Perform) -> cha
     return wrapped
 
 
+def _gh_repo(repo: str) -> str:
+    """`gh --repo` needs owner/name; a land watch carries a checkout path. An unresolvable value passes through."""
+    return route_sync_gh._repo_of(repo)
+
+
+def _main_ci_reader(runner: Callable[[list[str]], tuple[int, str]]) -> Callable[[str, str], tuple[str, str]]:
+    """`read(repo, commit)` is `main_ci` that never raises: a gh failure reads as pending with the error text.
+    Results cache per (repo, commit) in `read.cache`, which the caller clears each tick."""
+    cache: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def read(repo: str, commit: str) -> tuple[str, str]:
+        key = (repo, commit)
+        if key not in cache:
+            try:
+                cache[key] = chair_revert_ports.main_ci(runner, _gh_repo(repo), commit)
+            except Exception as exc:  # any gh or parse failure must not escape gather_facts
+                cache[key] = ("pending", f"{type(exc).__name__}: {exc}")
+        return cache[key]
+
+    read.cache = cache  # type: ignore[attr-defined]
+    return read
+
+
+class _SlugForge:
+    """A `GhForgePort` whose `open_pr` takes the watch's checkout path and hands gh its owner/name."""
+
+    def __init__(self, inner: chair_revert_ports.GhForgePort) -> None:
+        self._inner = inner
+
+    def open_pr(self, repo: str, branch: str, title: str, body: str) -> str:
+        return self._inner.open_pr(_gh_repo(repo), branch, title, body)
+
+    def wait_checks(self, pr: str) -> list[str]:
+        return self._inner.wait_checks(pr)
+
+    def merge(self, pr: str) -> None:
+        self._inner.merge(pr)
+
+
+def _revert_ports(
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> Callable[[chair_exec.Action], tuple[chair_revert_ports.GitRevertPort, _SlugForge]]:
+    return lambda action: (
+        chair_revert_ports.GitRevertPort(runner), _SlugForge(chair_revert_ports.GhForgePort(runner)),
+    )
+
+
+def _quarantine_phase_with(
+    items: Callable[[], list[dict]], set_state: Callable[[str, str, str, str], object], by: str,
+) -> Callable[[str, str, str, str], None]:
+    """Quarantines every task of the phase. The reason rides the needs_chair `_revert_land` raises, not the store."""
+
+    def quarantine(initiative: str, phase: str, cause: str, reason: str) -> None:
+        for item in items():
+            if item.get("initiative") == initiative and item.get("phase") == phase:
+                set_state(initiative, item["id"], "quarantined", by)
+
+    return quarantine
+
+
+def _resolve_land_with(
+    read: Callable[[], Sequence[Mapping]], write: Callable[[Mapping], None],
+) -> Callable[[str, str, str], None]:
+    """`resolve_watch` is keyed by commit; a phase's land is found through its pending watches."""
+
+    def resolve(initiative: str, phase: str, outcome: str) -> None:
+        for w in chair_revert_watch.pending_watches(read):
+            if w["initiative"] == initiative and w["phase"] == phase:
+                chair_revert_watch.resolve_watch(write, w["commit"], outcome)
+
+    return resolve
+
+
 def _chair_run_deps(
     runs_dir: Path, profile: dict, session: str, pid: int, host: str, dry_run: bool, echo: Callable[[str], None],
     profile_path: Path, mode: str,
@@ -7147,6 +7222,12 @@ def _chair_run_deps(
         return now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
+    actions = lambda: chair_read_stale.read_chair_actions(runs_dir)  # noqa: E731 -- the reader `FactsDeps.actions` uses
+
+    def runner(argv: list[str]) -> tuple[int, str]:
+        return chair_exec.run_argv(argv)
+
+    main_ci = _main_ci_reader(runner)  # edge state: `beat` clears its cache, one gh read per land per tick
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
@@ -7157,6 +7238,7 @@ def _chair_run_deps(
 
     def beat() -> object:
         snapshot.clear()
+        main_ci.cache.clear()
         meter_snapshot.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
         if _record_beat_wanted(dry_run, lost):
@@ -7205,6 +7287,8 @@ def _chair_run_deps(
     def epoch() -> int:
         lease = chair._read_lease(runs_dir, holder)
         return lease["epoch"] if lease is not None else -1  # no lease matches no action's epoch, so all are fenced
+
+    record = chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder)
 
     def has_patch(initiative: str, task: str) -> bool:
         """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
@@ -7360,7 +7444,11 @@ def _chair_run_deps(
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
         tickets=lambda: chair_facts.read_ticket_items(ws, mode),
         repos=lambda: chair_facts.read_initiative_repos(ws),
-        actions=lambda: chair_read_stale.read_chair_actions(runs_dir),
+        actions=actions,
+        land_watches=lambda: chair_revert_watch.pending_watches(actions),
+        read_main_ci=main_ci,
+        land_hold=lambda: chair_smoke.read_hold(str(runs_dir)),
+        land_outcomes=lambda: chair_revert_watch.outcomes(actions),
         newest_run_host=lambda: run_store.newest_run_hosts(runs_dir, [row["id"] for row in docket()["initiatives"]]),
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
@@ -7376,11 +7464,21 @@ def _chair_run_deps(
     exec_deps = chair_exec.edge_deps(
         runs_dir, ws, session, pid,
         run_id=chair_read_run_id.make_run_id(runs_dir), repo_for=repo_for,
-        record=chair_read_record.recorder(runs_dir, epoch, now_text, store=store_cli.runner(runs_dir), holder=holder),
+        record=record,
         host=host,
         harness_python=harness_python,
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
+    )
+    exec_deps = dataclasses.replace(
+        exec_deps,
+        revert_ports=_revert_ports(runner),
+        quarantine_phase=_quarantine_phase_with(
+            lambda: chair_facts.read_ticket_items(ws, mode),
+            lambda i, t, s, b: store_cli.set_state(runs_dir, i, t, s, b),
+            holder,
+        ),
+        resolve_land=_resolve_land_with(actions, record),
     )
     stop_lands = chair_run.no_lands_to_stop
     if not dry_run:
