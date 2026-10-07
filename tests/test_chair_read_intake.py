@@ -145,7 +145,7 @@ def test_the_edge_reads_sources_from_the_profile(tmp_path):
     assert cri.read_sources_configured(profile) is False
 
 
-_BAD = route.ProfileError("line 3: unknown key")
+_BAD = route.ProfileError("line 3: sources: {")
 
 
 def test_a_failed_reread_keeps_the_previous_value_and_marks_it_stale():
@@ -166,7 +166,7 @@ def test_the_edge_keeps_the_last_good_profile_until_a_read_succeeds_again(tmp_pa
     profile.write_text('sources: {"github": {"repos": ["a/b"]}}\n', encoding="utf-8")
     sources, stale = cri.sources_configured_keeping_last_good(profile)
     assert (sources(), stale()) == (True, False)
-    profile.write_text("bogus_key: 1\n", encoding="utf-8")
+    profile.write_text("sources: {\n", encoding="utf-8")  # malformed: an unknown key only warns since parse-profile-drops-unknown-keys
     assert isinstance(cri.read_sources_configured(profile), route.ProfileError)
     assert (sources(), stale()) == (True, True)
     profile.write_text("sources: {}\n", encoding="utf-8")
@@ -175,7 +175,7 @@ def test_the_edge_keeps_the_last_good_profile_until_a_read_succeeds_again(tmp_pa
 
 def test_the_edge_raises_when_the_very_first_load_fails(tmp_path):
     profile = tmp_path / "profile.yaml"
-    profile.write_text("bogus_key: 1\n", encoding="utf-8")
+    profile.write_text("sources: {\n", encoding="utf-8")  # malformed: an unknown key only warns since parse-profile-drops-unknown-keys
     sources, _stale = cri.sources_configured_keeping_last_good(profile)
     with pytest.raises(route.ProfileError):
         sources()
