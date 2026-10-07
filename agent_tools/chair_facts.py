@@ -145,6 +145,8 @@ class FactsDeps:
     landing: the lands in progress on the land worker, keys initiative, phase, repo (`WorkerLands.landing`).
         Optional, and absent means an empty list.
     land_watches: the lands not yet resolved, as `LandWatch` rows. Defaults to a callable returning [].
+    handoff_stops: the ready or blocked tickets with an attempt on their current body, as `HandoffStop` rows
+        (`chair_read_handoff_stops.read_handoff_stops`). Defaults to a callable returning [].
     read_main_ci: (repo, commit) to (state, output) of main's first CI run for that commit, state pending, green
         or red. Defaults to a callable returning pending.
     land_hold: the smoke hold, `chair_smoke.read_hold`'s result. Defaults to a callable returning None.
@@ -208,6 +210,7 @@ class FactsDeps:
     read_main_ci: Callable[[str, str], tuple[str, str]] = lambda repo, commit: ("pending", "")  # (repo, commit) to (state, output)
     land_hold: Callable[[], HoldRecord | None] = lambda: None  # chair_smoke.read_hold's result; absent means no hold
     land_outcomes: Callable[[], Mapping[str, list[str]]] = lambda: {}  # initiative to resolved outcomes, oldest first; absent means {}
+    handoff_stops: Callable[[], Sequence[Row]] = lambda: []  # chair_read_handoff_stops.read_handoff_stops rows; absent means []
 
 
 def forge_review_prs(runs_dir: str, forge_name: str, resolve: Callable[[str], Any] = forge.forge_for) -> list[ReviewPr]:
@@ -767,4 +770,5 @@ def gather_facts(deps: FactsDeps, now: datetime) -> Facts:
         ),
         "landed_main": landed_main_facts(list(deps.land_watches()), deps.read_main_ci, deps.land_hold()),
         "land_outcomes": dict(deps.land_outcomes()),
+        "handoff_stops": list(deps.handoff_stops()),
     }

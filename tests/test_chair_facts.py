@@ -121,6 +121,15 @@ def test_an_absent_landing_callable_gives_an_empty_list():
     assert gather_facts(_deps(), NOW)["landing"] == []
 
 
+def test_a_handoff_stops_callables_rows_appear_under_handoff_stops():
+    rows = [{"initiative": "i", "task_id": "a", "state": "ready", "reason": "r", "surfaces": ["a.py"], "widenings": 0}]
+    assert gather_facts(replace(_deps(), handoff_stops=lambda: rows), NOW)["handoff_stops"] == rows
+
+
+def test_an_absent_handoff_stops_callable_gives_an_empty_list():
+    assert gather_facts(_deps(), NOW)["handoff_stops"] == []
+
+
 REVIEW_PR = {
     "initiative": "i", "phase": "p1", "task_id": "a", "repo": "r",
     "url": "https://example.test/pr/1", "state": "open", "merged_at": None,
@@ -455,9 +464,7 @@ def test_gather_facts_fills_every_key_from_the_fakes():
     facts = gather_facts(_deps(), NOW)
     # login_hosts is not yet declared on Facts: a later task adds it there once the login watch reads it.
     # tuning, landed_main and land_outcomes are all filled in gather_facts now.
-    # handoff_stops is declared on Facts; the facts edge fills it in a later task.
-    unfilled: set[str] = {"handoff_stops"}
-    assert set(facts) == (set(Facts.__annotations__) - unfilled) | {"login_hosts"}
+    assert set(facts) == set(Facts.__annotations__) | {"login_hosts"}
     assert facts["dispatch"] == {"max_in_flight": 2, "live_runs": 1, "hosts": []}
     assert facts["initiatives"][0]["landed"] == {"z"}
     assert facts["approved"][0]["phase_done"] is True
