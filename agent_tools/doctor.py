@@ -82,6 +82,16 @@ def _profile_row(facts: Mapping) -> tuple[dict, bool, dict | None]:
     return {"check": "profile", "ok": True, "detail": path}, False, parsed
 
 
+def _unknown_key_rows(text: str | None, parsed: dict | None) -> list[dict]:
+    """One passing row flagged `warn` per unknown top-level key. None when the profile did not parse."""
+    if parsed is None or text is None:
+        return []
+    return [
+        {"check": "profile", "ok": True, "warn": True, "detail": f"unknown key {key} at line {lineno}"}
+        for key, lineno in route.unknown_keys(text)
+    ]
+
+
 def _expected_paths(parsed: Mapping) -> set[str]:
     """The path strings the profile configures: the same keys `paths_exist`
     is meant to carry, per Facts. Used to catch a path the profile names
@@ -282,6 +292,7 @@ def checks(facts: Mapping) -> list[dict]:
         _git_row(facts),
         _forge_row(facts),
         profile_row,
+        *_unknown_key_rows(facts.get("profile_text"), parsed),
         *_paths_rows(facts, cascade, parsed),
         _flag_row("harness venv", facts, "harness_python_exists", cascade, "venv missing"),
         _none_ok_row("core importable", facts, "core_import", cascade),
@@ -322,11 +333,13 @@ def parquet_line(readable: bool, reason: str, endpoint: str | None = None) -> st
 
 
 def render(rows: list[dict]) -> str:
-    """A text table plus a one-line summary of how many rows passed."""
-    display = [{"check": r["check"], "ok": "ok" if r["ok"] else "FAIL", "detail": r["detail"]} for r in rows]
-    n_ok = sum(1 for r in rows if r["ok"])
-    n_fail = len(rows) - n_ok
+    """A text table plus a one-line summary of how many rows passed. A `warn` row passes and is counted apart."""
+    display = [{"check": r["check"], "ok": "warn" if r.get("warn") else "ok" if r["ok"] else "FAIL", "detail": r["detail"]} for r in rows]
+    n_warn = sum(1 for r in rows if r.get("warn"))
+    n_ok = sum(1 for r in rows if r["ok"]) - n_warn
+    n_fail = sum(1 for r in rows if not r["ok"])
     table = records.format_table(display, ["check", "ok", "detail"])
-    summary = f"{table}\ndoctor: {n_ok} ok, {n_fail} failing"
+    warned = f", {n_warn} warning" if n_warn else ""
+    summary = f"{table}\ndoctor: {n_ok} ok, {n_fail} failing{warned}"
     profile_missing = any(r["check"] == "profile" and not r["ok"] and r["detail"].startswith("missing:") for r in rows)
     return f"{summary}\n{_NEXT_STEP}" if profile_missing else summary
