@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up the coxswain run store
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@PYTHON@ -m agent_tools.store_backup

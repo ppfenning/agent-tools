@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup of the coxswain run store
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=coxswain-store-backup.service
+
+[Install]
+WantedBy=timers.target
