@@ -1,7 +1,9 @@
 """Plan lands for approved tasks whose phase is done: dependency order, one repository at a time."""
 import heapq
 from collections.abc import Collection
+from datetime import datetime
 
+from agent_tools.chair_land_backoff import suppressing
 from agent_tools.chair_types import Action, ApprovedTask, Facts, InitiativeFacts
 
 
@@ -82,24 +84,48 @@ def awaiting_phases(facts: Facts) -> frozenset[tuple[str, str]]:
     return frozenset((r["initiative"], r["phase"]) for r in facts.get("review_prs", []))
 
 
-def plan_lands(facts: Facts) -> list[Action]:
-    """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
-
-    A group whose resolved run is empty gets one needs_chair (cause `no_run`) instead: a land_phase with an empty
-    run has nowhere to land from, whatever moved the task to approved."""
+def _land_groups(facts: Facts) -> dict[tuple[str, str], list[ApprovedTask]]:
+    """The tasks this tick lands, grouped by (initiative, phase) in landing order."""
     # Awaiting phases leave before scheduling, so a task needing an awaiting task is deferred, not landed ahead of it.
     awaiting = awaiting_phases(facts)
     tasks = planned_tasks([t for t in facts["approved"] if (t["initiative"], t["phase"]) not in awaiting], facts["initiatives"])
     groups: dict[tuple[str, str], list[ApprovedTask]] = {}
     for t in tasks:
         groups.setdefault((t["initiative"], t["phase"]), []).append(t)
+    return groups
+
+
+def _backing_off(facts: Facts, initiative: str, phase: str, run: str, now: datetime | None) -> bool:
+    return now is not None and bool(run) and suppressing(facts.get("land_refusals", []), initiative, phase, run, now) is not None
+
+
+def backoff_held(facts: Facts, now: datetime | None = None) -> frozenset[str]:
+    """Initiatives with a land this tick would plan but its backoff suppresses; they stay held from launches."""
+    return frozenset(
+        initiative
+        for (initiative, phase), group in _land_groups(facts).items()
+        if _backing_off(facts, initiative, phase, newest_run({t["run"] for t in group}), now)
+    )
+
+
+def plan_lands(facts: Facts, now: datetime | None = None) -> list[Action]:
+    """A land_phase per completed phase, in `planned_tasks` order; the run it lands from is fetched first when it needs one.
+
+    A group whose resolved run is empty gets one needs_chair (cause `no_run`) instead: a land_phase with an empty
+    run has nowhere to land from, whatever moved the task to approved.
+
+    With `now`, a group whose (initiative, phase, run) is inside a `land_refusals` backoff window plans nothing:
+    no fetch, no land_phase, no needs_chair, since perform already escalates each failed land. `backoff_held` names
+    those initiatives, so the caller keeps holding them from launches as a planned land_phase would."""
     fetched: set[str] = set()
     actions: list[Action] = []  # type: ignore[assignment]  # plan_tick stamps the epoch on every action below
-    for (initiative, phase), group in groups.items():
+    for (initiative, phase), group in _land_groups(facts).items():
         repo = group[0]["repo"]
         run = newest_run({t["run"] for t in group})
         if not run:
             actions.append({"kind": "needs_chair", "initiative": initiative, "cause": "no_run"})
+            continue
+        if _backing_off(facts, initiative, phase, run, now):
             continue
         # The fetch follows the run the land names: fetching an older run of a carried phase leaves the land's run absent.
         if run not in fetched and any(t["needs_fetch"] and t["run"] == run for t in group):

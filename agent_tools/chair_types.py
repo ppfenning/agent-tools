@@ -318,6 +318,28 @@ class LandedMain(LandWatch):
     smoke_output: str
 
 
+class LaunchRecord(TypedDict):
+    at: str  # ISO UTC timestamp of a launch
+    kind: str  # "launch_epic" or "relaunch"
+
+
+class RunRecord(TypedDict, total=False):
+    """One run's outcome, newest first in its list; a missing key reads as "" or False."""
+
+    run_id: str
+    quarantined: bool
+    reason: str
+    body: str
+    main_head: str
+
+
+class LaunchHistory(TypedDict, total=False):
+    launches: list[LaunchRecord]
+    runs: list[RunRecord]
+    body: str  # the initiative's current body hash; absent means ""
+    main_head: str  # the current main head; absent means ""
+
+
 class Facts(TypedDict):
     lease: LeaseFacts
     limits: LimitsFacts
@@ -370,6 +392,12 @@ class Facts(TypedDict):
     land_outcomes: NotRequired[dict[str, list[str]]]
     # The facts edge fills it, the widen planner consumes it, and the widen_ticket executor consumes the action.
     handoff_stops: NotRequired[list[HandoffStop]]  # tickets stopped on a handoff; absent means none
+    # The launch budget's inputs, keyed by initiative id; absent means no history. The default limit applies when
+    # max_launches_per_hour is absent.
+    launch_history: NotRequired[dict[str, LaunchHistory]]
+    max_launches_per_hour: NotRequired[int]
+    # `<run1>|<run2>` of each relaunch_loop needs_chair already in the action log. Absent means [].
+    relaunch_loop_reported: NotRequired[list[str]]
 
 
 ActionKind = Literal[
@@ -417,7 +445,8 @@ class Action(TypedDict, total=False):
     tip and base. tune_lanes carries host, from_lanes, to_lanes, reason and evidence. propose_tiers carries
     proposals and body and is propose-only: no action kind applies a tier or model change.
     revert_land carries initiative, phase, repo, pr, commit and reason.
-    widen_ticket carries initiative, task_id, paths, additions and reason."""
+    widen_ticket carries initiative, task_id, paths, additions and reason. A relaunch_loop needs_chair carries
+    initiative, cause and a reason naming both quarantined run ids."""
 
     kind: ActionKind
     epoch: int

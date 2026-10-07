@@ -20,8 +20,14 @@ from agent_tools.chair_plan_fill import (
     host_free_slots,
     plan_fill,
 )
-from agent_tools.chair_plan_land import fetch_action, newest_run, plan_lands
-from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed_by, plan_lost_runs, plan_recover
+from agent_tools.chair_plan_land import backoff_held, fetch_action, newest_run, plan_lands
+from agent_tools.chair_plan_recover import (
+    _initiative_first_unmet_need,
+    claimed_by,
+    plan_lost_runs,
+    plan_recover,
+    refused_launches,
+)
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_plan_tune import plan_tune
@@ -628,7 +634,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
     carries = plan_carry(facts.get("stranded", []))
-    lands = _without_carried_lands(plan_lands(facts), carries)
+    lands = _without_carried_lands(plan_lands(facts, now), carries)
     fetch_exits = _fetch_exit_actions(facts)
     login_needs_chair = _login_needs_chair_actions(facts)
     empty_decompose_needs_chair = _empty_decompose_needs_chair_actions(facts)
@@ -644,12 +650,12 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     run_exited = facts.get("run_exited", {})
     widen = plan_widen(facts)
     widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
-    recover_actions = plan_recover(facts)
+    recover_actions = plan_recover(facts, now)
     ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
-    recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts)], held)
+    recovered = _hold_for_ci([*_withhold_not_exited(pre_exit_gate, not_exited), *plan_lost_runs(facts, now)], held)
     if facts["limits"]["hard_stop"]:
         return [
             *reverts,  # a revert starts no run, so a red main is healed under the hard stop too
@@ -689,10 +695,13 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         | frozenset(facts.get("schema_deaths", {}))
         | _unmet_needs_ids(facts["initiatives"])
         | _landing_initiatives(facts, lands)
+        # A relaunch the budget or the loop rule refused must not go out again as a launch_epic.
+        | refused_launches(facts, now)
+        | backoff_held(facts, now)
     )
     claimed = claimed_by(recover_actions, facts)
     filled = plan_fill(
-        facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed, stalled=stalled_intake
+        facts, _free_lanes(cap, kept, facts["dispatch"]), withheld, consumed, claimed, stalled=stalled_intake, now=now
     )
     launches = [*capped, *filled]
     # Read before the cap: a rebase starts no run, so a relaunch the cap dropped still gets its branch rebased.

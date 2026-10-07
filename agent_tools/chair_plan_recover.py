@@ -2,10 +2,12 @@
 
 Pure. Takes the facts, returns actions. No pacing, no run history, no I/O.
 """
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from datetime import UTC, datetime
 from functools import reduce
 from typing import Literal
 
+from agent_tools.chair_launch_budget import DEFAULT_MAX_LAUNCHES_PER_HOUR, Launch, RunOutcome, Verdict, launch_budget
 from agent_tools.chair_read_quarantined import RUNAWAY_CAUSE
 from agent_tools.chair_remedy import remedy_for, trim_reason
 from agent_tools.chair_revert import revert_stopped
@@ -121,13 +123,75 @@ def _landing_repos(facts: Facts) -> set[str]:
     return {landing["repo"] for landing in facts.get("landing", [])}
 
 
-def _relaunch_actions(initiatives: list[InitiativeFacts], blocked: set[str], landing_repos: set[str]) -> list[Action]:
+def _launch(record: Mapping[str, str]) -> Launch | None:
+    """None for a record whose timestamp is missing or unparseable. A naive timestamp is read as UTC, so a
+    `datetime.utcnow().isoformat()` record still counts against the budget instead of silently not counting."""
+    try:
+        at = datetime.fromisoformat(record["at"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return Launch(at if at.tzinfo is not None else at.replace(tzinfo=UTC), record.get("kind", ""))
+
+
+def budget_verdict(facts: Facts, initiative: str, kind: str, now: datetime) -> Verdict:
+    """launch_budget over the initiative's launch_history entry; every absent key reads as empty or the default."""
+    entry = facts.get("launch_history", {}).get(initiative, {})
+    launches = [launch for record in entry.get("launches", []) if (launch := _launch(record)) is not None]
+    outcomes = [
+        RunOutcome(
+            run.get("run_id", ""),
+            run.get("quarantined", False),
+            run.get("reason", ""),
+            run.get("body", ""),
+            run.get("main_head", ""),
+        )
+        for run in entry.get("runs", [])
+    ]
+    limit = facts.get("max_launches_per_hour", DEFAULT_MAX_LAUNCHES_PER_HOUR)
+    return launch_budget(now, kind, launches, outcomes, entry.get("body", ""), entry.get("main_head", ""), limit)
+
+
+def _relaunch_candidates(facts: Facts, blocked: set[str]) -> list[InitiativeFacts]:
+    landing_repos = _landing_repos(facts)
+    return [i for i in facts["initiatives"] if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos]
+
+
+def refused_relaunches(facts: Facts, now: datetime | None, blocked: set[str]) -> dict[str, Verdict]:
+    """Each initiative that would relaunch, to the verdict that refuses it; empty when now is None."""
+    if now is None:
+        return {}
+    verdicts = {i["id"]: budget_verdict(facts, i["id"], "relaunch", now) for i in _relaunch_candidates(facts, blocked)}
+    return {initiative: v for initiative, v in verdicts.items() if not v.allowed}
+
+
+def _loop_key(verdict: Verdict) -> str:
+    return "|".join(verdict.run_ids)
+
+
+def _relaunch_actions(
+    initiatives: list[InitiativeFacts],
+    blocked: set[str],
+    landing_repos: set[str],
+    refused: Mapping[str, Verdict] | None = None,
+    reported: Collection[str] = (),
+) -> list[Action]:
+    """The relaunch pair per relaunchable initiative. A refused one plans no pair; a relaunch_loop refusal plans
+    one needs_chair naming both runs, unless its `<run1>|<run2>` key is already in `reported`."""
+    refusals = {} if refused is None else refused
     return [
         action
         for i in initiatives
         if _can_relaunch(i, blocked) and i.get("repo") not in landing_repos
-        for action in relaunch_pair(i["id"])
+        for action in _relaunch_or_refusal(i["id"], refusals.get(i["id"]), reported)
     ]
+
+
+def _relaunch_or_refusal(initiative: str, refusal: Verdict | None, reported: Collection[str]) -> list[Action]:
+    if refusal is None:
+        return relaunch_pair(initiative)
+    if refusal.kind != "relaunch_loop" or _loop_key(refusal) in reported:
+        return []
+    return [{"kind": "needs_chair", "initiative": initiative, "cause": "relaunch_loop", "reason": refusal.reason}]
 
 
 def _waiting_actions(initiatives: list[InitiativeFacts], blocked: set[str]) -> list[Action]:
@@ -158,6 +222,11 @@ def _without_schema_dead_launches(actions: list[Action], deaths: dict[str, list[
 
 
 _LAUNCHES = {"relaunch", "retry", "rescue"}
+
+
+def _without_over_budget(actions: list[Action], over: Collection[str]) -> list[Action]:
+    """Drop a retry or rescue for an initiative the launch budget refuses; a needs_chair stays."""
+    return [a for a in actions if not (a["kind"] in _RETRIES and a["initiative"] in over)]
 
 
 def _entry(i: InitiativeFacts) -> RunningInitiative | None:
@@ -218,7 +287,44 @@ def claimed_by(actions: list[Action], facts: Facts) -> list[RunningInitiative]:
     return list({e["id"]: e for e in entries}.values())
 
 
-def plan_recover(facts: Facts) -> list[Action]:
+def recover_blocked(facts: Facts) -> set[str]:
+    """Initiatives whose open quarantines or schema deaths keep plan_recover from relaunching them."""
+    approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
+    outcomes = facts.get("land_outcomes", {})
+    quarantines = facts["quarantines"]
+    return {q["initiative"] for q in quarantines if _blocks(q, _recovery(q, approved, outcomes))} | set(
+        facts.get("schema_deaths", {})
+    )
+
+
+_RETRIES = {"retry", "rescue"}
+
+
+def _over_budget(facts: Facts, now: datetime | None, initiatives: Collection[str]) -> frozenset[str]:
+    """The initiatives the launch budget refuses; kind "retry" is budget-only, the loop rule is for relaunches."""
+    if now is None:
+        return frozenset()
+    return frozenset(i for i in initiatives if not budget_verdict(facts, i, "retry", now).allowed)
+
+
+def _retry_initiatives(actions: list[Action]) -> set[str]:
+    return {a["initiative"] for a in actions if a["kind"] in _RETRIES}
+
+
+def _quarantine_plan(facts: Facts) -> list[Action]:
+    approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
+    return _quarantine_actions(facts["quarantines"], approved, facts.get("land_outcomes", {}))
+
+
+def refused_launches(facts: Facts, now: datetime | None) -> frozenset[str]:
+    """Initiatives plan_recover refuses to launch on the budget (relaunch, retry or rescue) or the loop rule.
+
+    None when now is None."""
+    relaunches = frozenset(refused_relaunches(facts, now, recover_blocked(facts)))
+    return relaunches | _over_budget(facts, now, _retry_initiatives(_quarantine_plan(facts)))
+
+
+def plan_recover(facts: Facts, now: datetime | None = None) -> list[Action]:
     """Schema-death reports, then quarantine actions in input order, then relaunch pairs, then waiting-on reports.
 
     A relaunch, retry or rescue that shares a surface with a running or already-kept initiative in the same repo
@@ -239,34 +345,47 @@ def plan_recover(facts: Facts) -> list[Action]:
     `plan_lands` lands that task once its whole phase is done, approved or dropped, and recovery never lands it alone.
     A started initiative with a ready task but no ready task whose needs are all landed is not relaunched
     either; it reaches the chair instead, as `waiting on <need>`, naming the first unmet need.
+
+    With `now`, a retry or rescue the launch budget refuses is dropped too. A relaunch the budget refuses plans no pair. A relaunch_loop refusal plans no pair and
+    one needs_chair, unless facts["relaunch_loop_reported"] already holds its `<run1>|<run2>` key. Without `now`
+    the budget is skipped.
     """
     quarantines = facts["quarantines"]
     approved = {(a["initiative"], a["id"]) for a in facts["approved"]}
     deaths = facts.get("schema_deaths", {})
     outcomes = facts.get("land_outcomes", {})
-    blocked = {q["initiative"] for q in quarantines if _blocks(q, _recovery(q, approved, outcomes))} | set(deaths)
+    blocked = recover_blocked(facts)
+    refused = refused_relaunches(facts, now, blocked)
+    quarantine_actions = _quarantine_actions(quarantines, approved, outcomes)
+    over = _over_budget(facts, now, _retry_initiatives(quarantine_actions))
     return _steered(
         _schema_death_actions(deaths)
-        + _without_schema_dead_launches(_quarantine_actions(quarantines, approved, outcomes), deaths)
-        + _relaunch_actions(facts["initiatives"], blocked, _landing_repos(facts))
+        + _without_schema_dead_launches(_without_over_budget(quarantine_actions, over), deaths)
+        + _relaunch_actions(
+            facts["initiatives"], blocked, _landing_repos(facts), refused, facts.get("relaunch_loop_reported", [])
+        )
         + _waiting_actions(facts["initiatives"], blocked),
         facts,
     )
 
 
-def plan_lost_runs(facts: Facts) -> list[Action]:
+def plan_lost_runs(facts: Facts, now: datetime | None = None) -> list[Action]:
     """One mark_lost then the same clear_branches, relaunch pair, per initiative that is a key of lost_runs this tick.
+
+    With `now`, an initiative the launch budget refuses keeps its mark_lost but gets no pair; the loop rule
+    does not apply, as a lost run is not a quarantine.
 
     Does not check readiness, needs or run_exited: a host unreachable for ten minutes with no exit record is
     itself the evidence the previous process is gone.
     An initiative in `schema_deaths` keeps its mark_lost but gets no relaunch pair; `plan_recover` reports it.
     """
     deaths = facts.get("schema_deaths", {})
+    over = _over_budget(facts, now, facts.get("lost_runs", {}))
     return [
         action
         for initiative, run in facts.get("lost_runs", {}).items()
         for action in (
             {"kind": "mark_lost", "initiative": initiative, "run": run},
-            *([] if initiative in deaths else relaunch_pair(initiative)),
+            *([] if initiative in deaths or initiative in over else relaunch_pair(initiative)),
         )
     ]
