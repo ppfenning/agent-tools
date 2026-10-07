@@ -1,0 +1,7 @@
+[Unit]
+Description=Restore drill for the coxswain run store backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@PYTHON@ -m agent_tools.store_restore_drill

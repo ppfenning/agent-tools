@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly restore drill of the coxswain run store backup
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=30m
+Unit=coxswain-store-drill.service
+
+[Install]
+WantedBy=timers.target
