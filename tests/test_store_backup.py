@@ -185,7 +185,7 @@ def test_arrow_garage_over_a_local_filesystem(workroot, tmp_path):
     garage = ArrowGarage(fs.LocalFileSystem(), str(bucket))
 
     assert run_backup(garage, FakeRunner(b"PGDMP-data"), NOW, "store-db", "cox", "coxstore") == K_NOW
-    assert garage.list("store-backup/") == [K_NOW, "store-backup/notes.txt"]
+    assert garage.list("store-backup/") == sorted([K_NOW, "store-backup/notes.txt"])
     assert (garage.size(K_NOW), garage.size(old)) == (10, None)
     garage.get(K_NOW, tmp_path / "back.dump")
     assert (tmp_path / "back.dump").read_bytes() == b"PGDMP-data"
