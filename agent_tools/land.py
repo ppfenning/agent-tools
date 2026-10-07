@@ -228,7 +228,7 @@ def phase_resume(facts: dict[str, Any] | None, pr_branch: str) -> dict[str, Any]
     """What a phase land does about an existing `pr_branch`. `facts` carries
     `local_tip`, `remote_tip`, `pr` and `pr_head`, each None when absent.
     `wait` resumes at the open PR, `recreate` rebuilds a stale local branch
-    nothing else holds, `refuse` names a divergence, else `fresh`."""
+    nothing else holds, `refuse` names a divergence, else `fresh`. Any no-PR leftover local branch is recreated."""
     f = facts or {}
     local, remote, pr, head = f.get("local_tip"), f.get("remote_tip"), f.get("pr"), f.get("pr_head")
     if pr is not None:
@@ -237,7 +237,7 @@ def phase_resume(facts: dict[str, Any] | None, pr_branch: str) -> dict[str, Any]
         if local is not None and local != head:
             return {"kind": "refuse", "reason": f"local branch {pr_branch} at {local} differs from open pull request #{pr} head {head}"}
         return {"kind": "wait", "pr": pr}
-    if local is not None and remote is None:
+    if local is not None:
         return {"kind": "recreate"}
     return {"kind": "fresh"}
 
@@ -518,15 +518,32 @@ def resume_decision(expected_tree: str, local_tree: str | None, remote_tree: str
     return {"kind": "resume", "local": local_tree is not None, "remote": remote_tree is not None}
 
 
-def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, local_tree: str,
-                             expected_tree: str, *, local_commit: str) -> dict[str, Any]:
-    """What a land does about a leftover local `pr/<initiative>--<phase>`. `back_up_and_rebuild` names
-    `refs/backup/<branch>` and `local_commit`, the tip it must keep; land never deletes that ref."""
-    if local_tree == expected_tree:
+def _backup_refs(branch: str, local_tip: str | None, remote_tip: str | None) -> dict[str, str]:
+    """Backup ref to the tip it must keep: `refs/backup/<branch>` for the local tip, `refs/backup/origin/<branch>`
+    for the remote tip, each only when that tip exists."""
+    return {**({f"refs/backup/{branch}": local_tip} if local_tip else {}),
+            **({f"refs/backup/origin/{branch}": remote_tip} if remote_tip else {})}
+
+
+def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, local_tree: str | None,
+                             expected_tree: str, *, local_commit: str | None, remote_commit: str | None = None,
+                             remote_tree: str | None = None) -> dict[str, Any]:
+    """What a land does about a leftover `pr/<initiative>--<phase>`. Only an open PR refuses. Without one, a
+    local tree that differs, a pushed `remote_tree` that differs (main moved), or a remote-only branch yields
+    `back_up_and_rebuild`, carrying both tips and `backup_refs` (ref to tip); land never deletes those refs."""
+    if local_tree is None and not remote_exists:
+        return {"kind": "fresh"}
+    remote_stale = remote_tree is not None and remote_tree != expected_tree
+    if local_tree == expected_tree and not remote_stale:
         return {"kind": "reuse"}
-    if remote_exists or open_pr:
-        return {"kind": "refuse", "reason": f"local tree {local_tree} differs from the cherry-picked tree {expected_tree}"}
-    return {"kind": "back_up_and_rebuild", "backup_ref": f"refs/backup/{branch}", "old_commit": local_commit}
+    if open_pr:
+        differing = [f"{side} tree {tree} differs from the cherry-picked tree {expected_tree}"
+                     for side, tree in (("local", local_tree), ("remote", remote_tree))
+                     if tree is not None and tree != expected_tree]
+        return {"kind": "refuse", "reason": "; ".join(differing) or f"{branch} has an open pull request"}
+    refs = _backup_refs(branch, local_commit, remote_commit)
+    return {"kind": "back_up_and_rebuild", "backup_ref": f"refs/backup/{branch}" if local_commit else None,
+            "old_commit": local_commit, "local_tip": local_commit, "remote_tip": remote_commit, "backup_refs": refs}
 
 
 def resume_steps(steps: Sequence[dict[str, Any]], decision: dict[str, Any], pr_branch: str) -> list[dict[str, Any]]:
