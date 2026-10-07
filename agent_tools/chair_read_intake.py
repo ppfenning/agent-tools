@@ -2,7 +2,7 @@
 
 The core is pure. The edge lists intake with `route.intake_entries` and reads the profile with `route.parse_profile`.
 """
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from agent_tools import route
@@ -42,10 +42,41 @@ def _initiatives(ws: Path, texts: Mapping[Path, str] | None = None) -> list[dict
     return [{"id": p.parent.name, "done": False, "text": text} for p, text in held.items()]
 
 
-def read_sources_configured(profile_path: Path) -> bool:
-    """Edge. True when the profile's `sources` block names any source; an unreadable profile configures none."""
+def keep_last_good(previous: bool | None, outcome: bool | route.ProfileError) -> tuple[bool | route.ProfileError, bool]:
+    """The value to use and whether it is stale. A failed re-read keeps `previous`; with none (the first load) it stays the error."""
+    if not isinstance(outcome, route.ProfileError):
+        return outcome, False
+    return (outcome, False) if previous is None else (previous, True)
+
+
+def read_sources_configured(profile_path: Path) -> bool | route.ProfileError:
+    """Edge. True when the profile's `sources` block names any source; an unreadable profile configures none.
+
+    A profile that fails to parse comes back as the `ProfileError`, not raised, so the caller decides what it costs."""
     try:
         text = profile_path.read_text(encoding="utf-8")
     except OSError:
         return False
-    return has_sources(list(route.parse_profile(text).get("sources", {})))
+    try:
+        return has_sources(list(route.parse_profile(text).get("sources", {})))
+    except route.ProfileError as exc:
+        return exc
+
+
+def sources_configured_keeping_last_good(profile_path: Path) -> tuple[Callable[[], bool], Callable[[], bool]]:
+    """Edge. A `sources_configured` reader and a `profile_stale` reader sharing one cell of the last good read.
+
+    The first read that fails raises the `ProfileError`, as before. A later failure returns the last good value and
+    marks it stale until a read succeeds again. `profile_stale` is meant to be called after `sources_configured`."""
+    good: list[bool] = []  # edge state: empty until the first good read, then the one last good value
+    stale: list[bool] = [False]  # edge state: whether the latest read failed and the held value was used
+
+    def sources_configured() -> bool:
+        value, is_stale = keep_last_good(good[0] if good else None, read_sources_configured(profile_path))
+        if isinstance(value, route.ProfileError):
+            raise value
+        good[:] = [value]
+        stale[0] = is_stale
+        return value
+
+    return sources_configured, lambda: stale[0]
