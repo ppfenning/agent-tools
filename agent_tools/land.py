@@ -518,6 +518,17 @@ def resume_decision(expected_tree: str, local_tree: str | None, remote_tree: str
     return {"kind": "resume", "local": local_tree is not None, "remote": remote_tree is not None}
 
 
+def leftover_branch_decision(branch: str, remote_exists: bool, open_pr: bool, local_tree: str,
+                             expected_tree: str, *, local_commit: str) -> dict[str, Any]:
+    """What a land does about a leftover local `pr/<initiative>--<phase>`. `back_up_and_rebuild` names
+    `refs/backup/<branch>` and `local_commit`, the tip it must keep; land never deletes that ref."""
+    if local_tree == expected_tree:
+        return {"kind": "reuse"}
+    if remote_exists or open_pr:
+        return {"kind": "refuse", "reason": f"local tree {local_tree} differs from the cherry-picked tree {expected_tree}"}
+    return {"kind": "back_up_and_rebuild", "backup_ref": f"refs/backup/{branch}", "old_commit": local_commit}
+
+
 def resume_steps(steps: Sequence[dict[str, Any]], decision: dict[str, Any], pr_branch: str) -> list[dict[str, Any]]:
     """`steps` with the `cherry_pick` replaced by a `reuse_branch` when
     `decision` is a `resume`; every other step keeps its place. Any other
