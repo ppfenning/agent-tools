@@ -113,7 +113,7 @@ def test_a_hard_stop_returns_lands_and_needs_chair_and_no_launches():
     )
     assert plan_tick(facts) == [
         {"kind": "land_phase", "initiative": "x", "phase": "p", "repo": "r", "run": "x-1", "epoch": 7},
-        {"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7},
+        {"kind": "needs_chair", "initiative": "m", "task_id": "p", "cause": "scope", "epoch": 7},
     ]
 
 
@@ -820,7 +820,7 @@ def test_a_negative_launch_cap_launches_nothing():
 def test_a_quarantined_initiative_with_a_needs_chair_is_not_also_launched_as_an_epic():
     facts = _facts(initiatives=[_blocked("m"), _unstarted("b")], quarantines=[_SCOPE_QUARANTINE])
     assert plan_tick(facts) == [
-        {"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7},
+        {"kind": "needs_chair", "initiative": "m", "task_id": "p", "cause": "scope", "epoch": 7},
         {"kind": "launch_epic", "initiative": "b", "epoch": 7},
     ]
 
@@ -834,7 +834,7 @@ def test_a_retried_initiative_is_not_also_launched_as_an_epic():
     ]
 
 
-_NEEDS_CHAIR = [{"kind": "needs_chair", "initiative": "m", "cause": "scope", "epoch": 7}]
+_NEEDS_CHAIR = [{"kind": "needs_chair", "initiative": "m", "task_id": "p", "cause": "scope", "epoch": 7}]
 
 
 def test_needs_chair_passes_through_at_the_hard_stop():
@@ -1009,7 +1009,7 @@ def test_a_lost_run_initiative_with_an_unrelated_quarantine_still_gets_needs_cha
         quarantines=[{"task_id": "q1", "initiative": "i", "cause": "code", "harness_failures": 0}],
     )
     assert plan_tick(facts) == [
-        {"kind": "needs_chair", "initiative": "i", "cause": "code", "epoch": 7},
+        {"kind": "needs_chair", "initiative": "i", "task_id": "q1", "cause": "code", "epoch": 7},
         {"kind": "mark_lost", "initiative": "i", "run": "i-run-1", "epoch": 7},
         {"kind": "clear_branches", "initiative": "i", "epoch": 7},
         {"kind": "relaunch", "initiative": "i", "epoch": 7},
@@ -1362,3 +1362,62 @@ def test_unpaused_matches_plan_tick_and_holds_nothing():
 def test_a_tick_the_lease_gates_holds_nothing_even_when_paused():
     facts = _facts(lease=_lease(), initiatives=[_land_only("l")], approved=[_pending_land("l")])
     assert plan_tick_held(facts, None, _PAUSED).held_for_ci == ()
+
+
+def _handoff(initiative: str, task_id: str) -> dict:
+    return {
+        "initiative": initiative,
+        "task_id": task_id,
+        "state": "handoff",
+        "reason": "Needs a getter in src/app.rs for the focused frame.",
+        "surfaces": ["src/ui/regatta.rs"],
+        "widenings": 0,
+    }
+
+
+def _widen(initiative: str, task_id: str) -> dict:
+    return {
+        "kind": "widen_ticket",
+        "initiative": initiative,
+        "task_id": task_id,
+        "paths": ["src/app.rs"],
+        "additions": ["getter"],
+        "reason": "Needs a getter in src/app.rs for the focused frame.",
+        "epoch": 7,
+    }
+
+
+def test_a_widened_task_loses_its_needs_chair_and_a_sibling_task_keeps_its_own():
+    facts = _facts(
+        quarantines=[
+            {"task_id": "t1", "initiative": "m", "cause": "scope", "harness_failures": 0},
+            {"task_id": "t2", "initiative": "m", "cause": "scope", "harness_failures": 0},
+        ],
+        handoff_stops=[_handoff("m", "t1")],
+    )
+    assert plan_tick(facts) == [
+        {"kind": "needs_chair", "initiative": "m", "task_id": "t2", "cause": "scope", "epoch": 7},
+        _widen("m", "t1"),
+    ]
+
+
+def test_a_widen_ticket_is_not_counted_against_the_launch_cap_and_takes_its_tasks_retry_with_it():
+    harness = {"cause": "harness", "harness_failures": 1, "has_patch": False, "rescue_failed": False}
+    facts = _facts(
+        limits={"hard_stop": False, "weekly_fraction": 0.5, "hard_stop_fraction": 0.9, "launch_cap": 1, "go_degraded": False},
+        quarantines=[
+            {"task_id": "t1", "initiative": "b", **harness},
+            {"task_id": "t2", "initiative": "a", **harness},
+            {"task_id": "t3", "initiative": "c", **harness},
+        ],
+        handoff_stops=[_handoff("b", "t1")],
+    )
+    assert plan_tick(facts) == [{"kind": "retry", "task_id": "t2", "initiative": "a", "epoch": 7}, _widen("b", "t1")]
+
+
+def test_a_widen_ticket_is_kept_at_the_hard_stop_while_a_relaunch_is_dropped():
+    initiatives = [_initiative("a")]
+    running = _facts(initiatives=initiatives, run_exited={"a": True}, handoff_stops=[_handoff("z", "z-1")])
+    assert _kinds(plan_tick(running)) == ["clear_branches", "relaunch", "widen_ticket"]
+    stopped = {**running, "limits": {**running["limits"], "hard_stop": True}}
+    assert plan_tick(stopped) == [_widen("z", "z-1")]

@@ -25,6 +25,7 @@ from agent_tools.chair_plan_recover import _initiative_first_unmet_need, claimed
 from agent_tools.chair_plan_review import plan_review
 from agent_tools.chair_plan_stale import plan_stale
 from agent_tools.chair_plan_tune import plan_tune
+from agent_tools.chair_plan_widen import plan_widen
 from agent_tools.chair_rebase import plan_rebase
 from agent_tools.chair_revert import revert_check
 from agent_tools.chair_types import (
@@ -607,6 +608,15 @@ def _hold_for_ci(actions: list[Action], held: frozenset[str]) -> list[Action]:
     return [a for a in actions if not (a["kind"] in {"relaunch", "clear_branches"} and a.get("initiative") in held)]
 
 
+def _without_widened(actions: list[Action], widened: frozenset[tuple[str, str]]) -> list[Action]:
+    """Drop the needs_chair, retry and rescue of a task that gets a widen_ticket; an action with no task_id stays."""
+    return [
+        a
+        for a in actions
+        if not (a["kind"] in {"needs_chair", "retry", "rescue"} and (a.get("initiative"), a.get("task_id")) in widened)
+    ]
+
+
 def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str] = frozenset()) -> list[Action]:
     facts = _with_dead_pid_lost(raw_facts, now)
     reverts = revert_check(facts.get("landed_main", []))
@@ -625,8 +635,10 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
     idle_stall = plan_idle_stall(facts.get("idle_stall"), now) if now is not None else []
     remote_unfetched = frozenset(facts.get("remote_unfetched", {}))
     run_exited = facts.get("run_exited", {})
+    widen = plan_widen(facts)
+    widened = frozenset((a["initiative"], a["task_id"]) for a in widen)
     recover_actions = plan_recover(facts)
-    ordinary = _withhold_lost_runs(recover_actions, lost)
+    ordinary = _withhold_lost_runs(_without_widened(recover_actions, widened), lost)
     pre_exit_gate = _withhold_remote_unfetched(ordinary, remote_unfetched)
     would_relaunch = frozenset(a["initiative"] for a in pre_exit_gate if a["kind"] == "relaunch")
     not_exited = frozenset(i for i in would_relaunch if not run_exited.get(i, False))
@@ -642,6 +654,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
             *idle_stall,
             *carries,
             *_needs_chair_only(recovered),
+            *widen,
             *login_needs_chair,
             *empty_decompose_needs_chair,
             *decompose_stalled_needs_chair,
@@ -686,6 +699,7 @@ def _plan_as_holder(raw_facts: Facts, now: datetime | None, held: frozenset[str]
         *idle_stall,
         *carries,
         *_with_rebases(launches, rebases),
+        *widen,
         *login_needs_chair,
         *empty_decompose_needs_chair,
         *decompose_stalled_needs_chair,

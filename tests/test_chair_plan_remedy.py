@@ -48,7 +48,7 @@ def test_a_fact_with_no_causes_list_uses_its_own_cause() -> None:
 
 def test_a_fact_without_a_row_reason_plans_the_old_needs_chair() -> None:
     q = {k: v for k, v in _fact(["ticket"]).items() if k not in ("reason", "causes", "run", "repo")}
-    assert _plan(q) == {"kind": "needs_chair", "initiative": "i", "cause": "ticket"}  # type: ignore[arg-type]
+    assert _plan(q) == {"kind": "needs_chair", "initiative": "i", "task_id": "q1", "cause": "ticket"}  # type: ignore[arg-type]
 
 
 def test_a_waiting_needs_chair_is_unchanged() -> None:
