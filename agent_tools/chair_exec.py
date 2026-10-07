@@ -172,6 +172,9 @@ def stagger_seconds(value: object) -> float:
 
 _UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
 _REASON_CAP = 600
+LOCAL_ARGV_TIMEOUT_S = 900.0  # a local argv with no bound of its own; matches _CHECK_COMMAND_TIMEOUT_S
+LAND_TIMEOUT_S = 45 * 60.0  # the overall bound on one `cox runs land`; it outlives the checks it runs
+TIMED_OUT = 124  # the exit code `run_argv` reports for a child it killed on its timeout
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
 # Every `cox runs land` refusal starts "land: refusing, ": a dirty repo, a branch conflict, a forge mismatch.
 # Only the repo-lease line also says "<pid> on <host> is landing in <repo>", and only that one is worth retrying.
@@ -313,6 +316,19 @@ def _land_result(action: Action, repo: str, code: int, output: str) -> Result:
     return {**_result(action, "landed", output), "commit": land_commit(repo)}
 
 
+def _run_land(deps: Deps, argv: list[str]) -> tuple[int, str]:
+    """`deps.run`, with a `TimeoutExpired` from a door that does not catch it read as the timed-out exit."""
+    try:
+        return deps.run(argv)
+    except subprocess.TimeoutExpired:
+        return TIMED_OUT, ""
+
+
+def _land_timed_out(action: Action, argv: list[str]) -> Result:
+    """The failure a land records when `cox runs land` outlives LAND_TIMEOUT_S; the reason names the command and the bound."""
+    return _result(action, "failed", f"{' '.join(argv)}: timed out after {int(LAND_TIMEOUT_S // 60)} min")
+
+
 def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
     repo = action.get("repo", "")
     argv = argv_for(action)
@@ -320,7 +336,9 @@ def _land(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", "land needs a run id, a task_id and a repo")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
-    code, output = deps.run(argv)
+    code, output = _run_land(deps, argv)
+    if code == TIMED_OUT:
+        return _land_timed_out(action, argv)
     # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
     if _repo_busy(output):
         return _result(action, "busy", output)
@@ -467,7 +485,9 @@ def _land_phase(action: Action, deps: Deps, blocked: dict[str, str]) -> Result:
         return _result(action, "refused", "land_phase needs a run id, a phase and a repo")
     if repo in blocked:
         return _result(action, "skipped", f"an earlier land in {repo} ({blocked[repo]}) was not counted")
-    code, output = deps.run(argv)
+    code, output = _run_land(deps, argv)
+    if code == TIMED_OUT:
+        return _land_timed_out(action, argv)
     # Busy first: a repo-lease refusal exits non-zero like every other refusal, so `land_refusal` would escalate it.
     if _repo_busy(output):
         return _result(action, "busy", output)
@@ -1063,7 +1083,7 @@ def _text(captured: str | bytes | None) -> str:
     return captured.decode(errors="replace") if isinstance(captured, bytes) else captured or ""
 
 
-def run_argv(argv: list[str], cwd: Path | None = None, timeout: float | None = None) -> tuple[int, str]:
+def run_argv(argv: list[str], cwd: Path | None = None, timeout: float = LOCAL_ARGV_TIMEOUT_S) -> tuple[int, str]:
     """Edge. A missing binary is exit 127 and a timeout exit 124, each with its message, never an exception out of perform.
 
     A timeout keeps what the child printed before it was killed, after the message, so a later task can read it."""
@@ -1087,10 +1107,15 @@ def reaches_lane_host(argv: list[str]) -> bool:
     return argv[:1] == ["ssh"] or (argv[:1] == ["git"] and "push" in argv)
 
 
+def local_timeout(argv: list[str]) -> float:
+    """`LAND_TIMEOUT_S` for a `cox runs land`, `LOCAL_ARGV_TIMEOUT_S` for any other local argv."""
+    return LAND_TIMEOUT_S if argv[:3] == ["cox", "runs", "land"] else LOCAL_ARGV_TIMEOUT_S
+
+
 def _bounded_for_ssh(cwd: Path) -> Run:
-    """Edge. A door that bounds an argv reaching a lane host by `LANE_HOST_TIMEOUT_S`; local argvs stay unbounded."""
+    """Edge. A door that bounds an argv reaching a lane host by `LANE_HOST_TIMEOUT_S` and any local argv by `local_timeout`."""
     def run(argv: list[str]) -> tuple[int, str]:
-        return run_lane_host(argv, cwd) if reaches_lane_host(argv) else run_argv(argv, cwd)
+        return run_lane_host(argv, cwd) if reaches_lane_host(argv) else run_argv(argv, cwd, timeout=local_timeout(argv))
 
     return run
 

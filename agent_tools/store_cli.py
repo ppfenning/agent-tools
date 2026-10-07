@@ -44,6 +44,8 @@ from typing import Any
 
 from agent_tools.run_store import _harness_python, _store_url
 
+STORE_TIMEOUT_S = 60
+
 
 @dataclass(frozen=True)
 class Landed:
@@ -96,7 +98,7 @@ class StateRefused:
 
 @dataclass(frozen=True)
 class NotAvailable:
-    pass
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -232,19 +234,32 @@ def parse_resume(code: int, stdout: str) -> Resumed | ResumeRefused | Failed:
     return Failed(code, stdout.strip() or "no JSON object on stdout")
 
 
-def _run(build: Any, run: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> tuple[int, str] | None:
+def _run(
+    build: Any, run: Callable[..., subprocess.CompletedProcess[str]] | None = None
+) -> tuple[int, str] | NotAvailable | None:
     """Edge. Run the argv `build(python)` returns; None when the harness is missing. A failed spawn is code -1.
 
+    A command still running after `STORE_TIMEOUT_S` seconds is NotAvailable, its reason naming the argv.
     `run` defaults to `subprocess.run`, looked up at call time.
     """
     python = _harness_python()
     if python is None:
         return None
+    argv = build(str(python))
     try:
-        done = (run or subprocess.run)(build(str(python)), capture_output=True, text=True, check=False)
+        done = (run or subprocess.run)(argv, capture_output=True, text=True, check=False, timeout=STORE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return NotAvailable(f"{' '.join(argv)} timed out after {STORE_TIMEOUT_S} s")
     except OSError as exc:
         return -1, str(exc)
     return done.returncode, done.stdout or done.stderr
+
+
+def _outcome(ran: tuple[int, str] | NotAvailable | None, parse: Callable[[int, str], Any]) -> Any:
+    """Pure. NotAvailable for a missing harness or a timeout; else `parse` of the exit code and output."""
+    if ran is None:
+        return NotAvailable()
+    return ran if isinstance(ran, NotAvailable) else parse(*ran)
 
 
 def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
@@ -252,7 +267,10 @@ def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
     url = _store_url(Path(runs_dir))
 
     def run(args: list[str]) -> tuple[int, str]:
-        return _run(lambda python: [python, *_MODULE, *args, *_store(url)]) or (1, "harness not available")
+        ran = _run(lambda python: [python, *_MODULE, *args, *_store(url)])
+        if ran is None:
+            return 1, "harness not available"
+        return (1, ran.reason) if isinstance(ran, NotAvailable) else ran
 
     return run
 
@@ -260,7 +278,7 @@ def runner(runs_dir: Path) -> Callable[[list[str]], tuple[int, str]]:
 def mark_landed(runs_dir: Path, run_id: str, phase: str, task: str, pr: str, at: str) -> MarkLandedResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: mark_landed_argv(python, run_id, phase, task, pr, at, url))
-    return NotAvailable() if ran is None else parse_mark_landed(*ran)
+    return _outcome(ran, parse_mark_landed)
 
 
 def pause(
@@ -271,7 +289,7 @@ def pause(
 ) -> PauseResult:
     """Edge. `store_url` targets the run's store explicitly; omitting it risks the harness's own default store."""
     ran = _run(lambda python: [python, *_MODULE, *pause_argv(run_id, reason, store_url)], run)
-    return NotAvailable() if ran is None else parse_pause(*ran)
+    return _outcome(ran, parse_pause)
 
 
 def resume(
@@ -281,13 +299,13 @@ def resume(
 ) -> ResumeResult:
     """Edge. `store_url` targets the run's store explicitly; omitting it risks the harness's own default store."""
     ran = _run(lambda python: [python, *_MODULE, *resume_argv(run_id, store_url)], run)
-    return NotAvailable() if ran is None else parse_resume(*ran)
+    return _outcome(ran, parse_resume)
 
 
 def set_state(runs_dir: Path, initiative: str, task: str, state: str, by: str, expected: str | None = None) -> SetStateResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: set_state_argv(python, initiative, task, state, by, url, expected))
-    return NotAvailable() if ran is None else parse_set_state(*ran)
+    return _outcome(ran, parse_set_state)
 
 
 def _warning(initiative: str, task: str, state: str, reason: str) -> str:
@@ -310,15 +328,13 @@ def mirror_state(runs_dir: Path, initiative: str, task: str, state: str, by: str
 def lease_acquire(runs_dir: Path, name: str, holder: str, ttl: int, steal: bool = False) -> LeaseResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: lease_acquire_argv(python, name, holder, ttl, url, steal))
-    return NotAvailable() if ran is None else parse_lease(*ran)
+    return _outcome(ran, parse_lease)
 
 
 def lease_renew(runs_dir: Path, name: str, holder: str, epoch: int, ttl: int) -> LeaseResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: lease_renew_argv(python, name, holder, epoch, ttl, url))
-    if ran is None:
-        return NotAvailable()
-    parsed = parse_lease(*ran)
+    parsed = _outcome(ran, parse_lease)
     # graphs' harness/store_cli_lease.lease_renew answers `{"ok": true, "epoch": null, "holder": null}`, the release
     # shape, because a renew keeps the epoch. So a renew that reads as released is granted at the caller's epoch.
     return LeaseGranted(epoch, holder) if isinstance(parsed, LeaseReleased) else parsed
@@ -327,4 +343,4 @@ def lease_renew(runs_dir: Path, name: str, holder: str, epoch: int, ttl: int) ->
 def lease_release(runs_dir: Path, name: str, holder: str, epoch: int) -> LeaseResult:
     url = _store_url(Path(runs_dir))
     ran = _run(lambda python: lease_release_argv(python, name, holder, epoch, url))
-    return NotAvailable() if ran is None else parse_lease(*ran)
+    return _outcome(ran, parse_lease)

@@ -10,10 +10,12 @@ import json
 from collections.abc import Callable
 
 __all__ = [
+    "CI_WATCH_TIMEOUT_SECONDS",
     "LOG_TAIL_LINES",
     "GhForgePort",
     "GitRevertPort",
     "Runner",
+    "bounded",
     "main_ci",
     "parent_count",
 ]
@@ -21,12 +23,19 @@ __all__ = [
 Runner = Callable[[list[str]], tuple[int, str]]
 
 LOG_TAIL_LINES = 40
+# The longest a revert port waits on any one command, `gh pr checks --watch` being the slow one.
+CI_WATCH_TIMEOUT_SECONDS = 30 * 60
 _PENDING_STATUSES = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 
 
 def parent_count(rev_list_line: str) -> int:
     """Parents named on a `git rev-list --parents -n 1` line, whose first hash is the commit itself."""
     return max(len(rev_list_line.split()) - 1, 0)
+
+
+def bounded(run: Callable[..., tuple[int, str]], timeout: int = CI_WATCH_TIMEOUT_SECONDS) -> Runner:
+    """A Runner that gives every call `timeout`. `run` reports expiry as a non-zero exit whose output names the bound."""
+    return lambda argv: run(argv, timeout=timeout)
 
 
 def _lines(output: str) -> list[str]:
