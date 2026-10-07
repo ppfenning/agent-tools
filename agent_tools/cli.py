@@ -2529,8 +2529,6 @@ def _runs_land(a: argparse.Namespace) -> int:
         if stop is not None:
             print(stop)
             return 2
-    elif land_mode == "store":
-        print(f"land: work_state store leases the phase as {lease_task}; its items are already done, so there is no approved check")
     if _repo_is_dirty(repo):
         print(f"land: refusing, {repo} is dirty")
         return 2

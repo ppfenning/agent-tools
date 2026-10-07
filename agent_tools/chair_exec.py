@@ -941,7 +941,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
     A land or land_phase whose command exits nonzero is refused, escalated with the cause `land_refusal` read
     from its output, and blocks its repo's later lands and land_phases this tick, except that a land_phase naming
     an initiative blocks only that initiative's later lands, clear_branches and relaunches. A land refused before
-    its command runs blocks nothing.
+    its command runs blocks nothing. A launch_epic for an initiative whose land_phase was not counted is skipped too.
     With a land sink, a land returns `in_progress` at once and the actions after it run in the same tick. The lands
     that finished since the last tick are collected first, so their results lead this tick's.
     """
@@ -970,7 +970,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
             result = _result(action, "fenced", "planned under another lease epoch")
         elif action.get("kind") == "relaunch" and initiative in uncleared:
             result = _result(action, "skipped", f"clear_branches for {initiative} was {uncleared[initiative]} this tick")
-        elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch"):
+        elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch", "launch_epic"):
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
         else:
             result = _execute(action, deps, blocked)
