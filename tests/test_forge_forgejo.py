@@ -170,8 +170,49 @@ def test_merge_without_an_open_pr_is_a_refusal(fake, repo):
 def test_parse_remote():
     assert ff.parse_remote("http://127.0.0.1:3000/o/r.git") == ("http://127.0.0.1:3000", "o", "r")
     assert ff.parse_remote("https://u:pw@git.lan/sub/o/r") == ("https://git.lan/sub", "o", "r")
-    assert ff.parse_remote("git@git.lan:o/r.git") is None
     assert ff.parse_remote("https://git.lan/r") is None
+
+
+def test_parse_remote_accepts_both_ssh_forms_with_an_ssh_base():
+    expected = ("ssh://git.lan", "ppfenning", "workspace")
+    assert ff.parse_remote("git@git.lan:ppfenning/workspace.git") == expected
+    assert ff.parse_remote("git@git.lan:ppfenning/workspace") == expected
+    assert ff.parse_remote("ssh://git@git.lan/ppfenning/workspace.git") == expected
+    assert ff.parse_remote("ssh://git@git.lan:2222/ppfenning/workspace") == expected
+
+
+def test_parse_remote_refuses_an_ssh_origin_with_no_owner_and_other_kinds():
+    assert ff.parse_remote("git@git.lan:workspace") is None
+    assert ff.parse_remote("ssh://git@git.lan/workspace.git") is None
+    assert ff.parse_remote("/srv/git/o/r.git") is None
+    assert ff.parse_remote("file:///srv/git/o/r.git") is None
+
+
+def test_origin_host_is_the_host_of_either_kind_of_origin():
+    assert ff.origin_host("git@Git.Lan:o/r.git") == "git.lan"
+    assert ff.origin_host("http://git.lan:3000/o/r") == "git.lan"
+    assert ff.origin_host("/srv/git/o/r.git") is None
+
+
+def _ssh_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "git@git.lan:ppfenning/workspace.git"], check=True)
+    return tmp_path
+
+
+def test_an_ssh_origin_takes_its_api_base_from_forgejo_base_url(tmp_path):
+    target = ff._target(_ssh_repo(tmp_path), {"FORGEJO_BASE_URL": "http://git.lan:3000"})
+    assert (target.settings.base_url, target.owner, target.name) == ("http://git.lan:3000", "ppfenning", "workspace")
+
+
+def test_an_ssh_origin_on_another_host_than_forgejo_base_url_raises_naming_the_variable(tmp_path):
+    with pytest.raises(ForgeError, match="FORGEJO_BASE_URL"):
+        ff._target(_ssh_repo(tmp_path), {"FORGEJO_BASE_URL": "http://other.lan:3000"})
+
+
+def test_an_ssh_origin_with_no_forgejo_base_url_raises_naming_the_variable(tmp_path):
+    with pytest.raises(ForgeError, match="FORGEJO_BASE_URL"):
+        ff._target(_ssh_repo(tmp_path), {})
 
 
 def test_parse_open_prs():
