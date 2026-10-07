@@ -6,11 +6,13 @@ Argv spellings follow `cox runs land --help` and `cox route launch epic|decompos
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -140,6 +142,7 @@ class Deps:
     note_to: str = "chair"
     check_login: Callable[[str], dict] | None = None  # a check_login's host name -> the hosts row cox host beat prints
     log_retention_days: int = 7  # the profile's log_retention_days: traces and run logs kept locally, in days
+    launch_stagger_s: float = 20.0  # the profile's chair.launch_stagger_s: seconds between two launches on one host in a tick; 0 is none
     harness_python: str = "python"  # the interpreter the trace prune runs under; the harness venv's python when one is configured
     send_signal: Callable[[int, int], None] = os.kill  # a stalled_usr1/stalled_stop's (pid, signal) call; the only door to os.kill
     ids_mode: str = "slug"  # the routing profile's `ids:` key; "sequence" makes a launch_decompose carry --initiative-id/--task-ids
@@ -153,6 +156,20 @@ class Deps:
 
 
 LAUNCH_KINDS = ("relaunch", "retry", "launch_epic", "launch_decompose", "rescue")
+DEFAULT_LAUNCH_STAGGER_S = 20.0
+
+
+def stagger_seconds(value: object) -> float:
+    """The profile's `chair.launch_stagger_s`; the default for a missing, non-numeric, negative or non-finite value. 0 means no stagger."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return DEFAULT_LAUNCH_STAGGER_S
+    try:
+        seconds = float(value)
+    except ValueError:
+        return DEFAULT_LAUNCH_STAGGER_S
+    return seconds if math.isfinite(seconds) and seconds >= 0 else DEFAULT_LAUNCH_STAGGER_S
+
+
 _UNFENCED = ("standby", "take_lease", "steer_clear")  # not writes, so a stale or missing epoch does not stop them
 _REASON_CAP = 600
 _GLOB_CHARS = frozenset("*?[]{}\\ \t")
@@ -933,8 +950,14 @@ def _note_uncounted(action: Action, blocked: dict[str, str], blocked_initiatives
         blocked[action.get("repo", "")] = _land_subject(action)
 
 
-def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool) -> list[Result]:
+def perform(
+    actions: list[Action], deps: Deps, current_epoch: Callable[[], int], dry_run: bool, sleep: Callable[[float], None] = time.sleep
+) -> list[Result]:
     """Edge. One result per action, in order; each is recorded after it runs.
+
+    A launch on a host that already launched earlier this tick first calls `sleep(deps.launch_stagger_s)`, unless that is 0.
+    The wait is the full stagger, not the time left since the previous launch started. Launches with no host share one
+    key, the loop's own machine, because the plan names the local host as "". Order never changes.
 
     The epoch is re-read per action. standby and take_lease are never fenced. A dry run touches and records nothing.
     A relaunch whose initiative had a clear_branches end other than done earlier this tick is skipped.
@@ -949,6 +972,7 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
     blocked: dict[str, str] = {}  # repo -> task or phase of the uncounted land or land_phase that blocks its later lands and deletes
     blocked_initiatives: dict[str, str] = {}  # initiative -> phase of its uncounted land_phase that skips its later lands
     uncleared: dict[str, str] = {}  # initiative -> status of its clear_branches that did not finish done, this tick
+    launched_hosts: set[str] = set()  # hosts a launch was attempted on this tick; "" is the loop's own machine
     if not dry_run:
         _ack_done_land_notices(deps)
     for finished in deps.lands.collect() if deps.lands is not None and not dry_run else []:
@@ -973,6 +997,11 @@ def perform(actions: list[Action], deps: Deps, current_epoch: Callable[[], int],
         elif initiative in blocked_initiatives and action.get("kind") in ("land", "land_phase", "clear_branches", "relaunch", "launch_epic"):
             result = _result(action, "skipped", f"an earlier land in {action.get('repo', '')} ({blocked_initiatives[initiative]}) was not counted")
         else:
+            if action.get("kind") in LAUNCH_KINDS:
+                launch_host = action.get("host", "")
+                if launch_host in launched_hosts and deps.launch_stagger_s > 0:
+                    sleep(deps.launch_stagger_s)
+                launched_hosts.add(launch_host)
             result = _execute(action, deps, blocked)
         if action.get("kind") in ("land", "land_phase") and (result["status"] == "not_landed" or "needs_chair" in result):
             _note_uncounted(action, blocked, blocked_initiatives)
