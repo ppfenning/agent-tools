@@ -54,8 +54,14 @@ def pr_state(url: str) -> dict:
     return parse_pr_state(r.stdout) if r.returncode == 0 else dict(UNKNOWN_PR_STATE)
 
 
-def push(repo: Path, branch: str) -> tuple[bool, str]:
-    r = subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", branch], capture_output=True, text=True)
+def push_argv(repo: Path, branch: str, expected_tip: str | None = None) -> list[str]:
+    """The push argv; with `expected_tip` it leases the branch, so only that remote tip may be replaced."""
+    lease = [f"--force-with-lease={branch}:{expected_tip}"] if expected_tip else []
+    return ["git", "-C", str(repo), "push", *lease, "-u", "origin", branch]
+
+
+def push(repo: Path, branch: str, expected_tip: str | None = None) -> tuple[bool, str]:
+    r = subprocess.run(push_argv(repo, branch, expected_tip), capture_output=True, text=True)
     return r.returncode == 0, (branch if r.returncode == 0 else r.stderr.strip() or r.stdout.strip())
 
 

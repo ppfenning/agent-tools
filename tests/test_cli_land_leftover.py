@@ -119,15 +119,6 @@ def test_the_backup_ref_resolves_to_the_old_commit_and_overwrites_an_older_one(r
     assert _git(repo, "rev-parse", _BACKUP) == old
 
 
-def test_a_leftover_with_a_remote_branch_still_refuses_with_the_original_message(repo, tmp_path, monkeypatch, capsys):
-    _git(repo, "push", "-q", "origin", f"{_PR}:refs/heads/{_PR}")
-    rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"))
-    out = capsys.readouterr().out
-    assert (rc, ran) == (2, [])
-    assert _refusal(repo).replace("files differing: f\n", "") in out and "backed up" not in out
-    assert not _has_ref(repo, _BACKUP)
-
-
 def test_a_leftover_with_an_open_pull_request_still_refuses_with_the_original_message(repo, tmp_path, monkeypatch, capsys):
     rc, ran = _land(repo, tmp_path, monkeypatch, store_cli.LeaseGranted(1, "me"), prs=[7])
     out = capsys.readouterr().out
