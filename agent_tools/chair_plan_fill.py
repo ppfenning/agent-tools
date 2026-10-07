@@ -3,8 +3,10 @@
 Pure. free_lanes comes from the caller; this module never reads dispatch or limits.
 """
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 
 from agent_tools import chair_login_watch
+from agent_tools.chair_plan_recover import budget_verdict
 from agent_tools.chair_steer import steer_check
 from agent_tools.chair_types import Action, Facts, InitiativeFacts, RunningInitiative
 
@@ -101,20 +103,33 @@ def _walk_candidates(
     return [hosted, *launches], steers
 
 
+def budget_skips(facts: Facts, initiatives: Sequence[InitiativeFacts], now: datetime | None) -> dict[str, str]:
+    """Initiative id to the budget reason that leaves it out of this tick's launch_epic list; empty when now is None."""
+    if now is None:
+        return {}
+    verdicts = {i["id"]: budget_verdict(facts, i["id"], "launch_epic", now) for i in initiatives}
+    return {initiative: v.reason for initiative, v in verdicts.items() if not v.allowed}
+
+
 def _epic_launches(
     facts: Facts,
     free_lanes: int,
     withheld: frozenset[str],
     host_free: Sequence[HostSlot],
     claimed: Sequence[RunningInitiative] = (),
+    now: datetime | None = None,
 ) -> list[Action]:
     """Started initiatives with ready tasks, then unstarted ones, each in docket order; withheld ids never launch.
+
+    With now, an initiative the launch budget refuses is left out like a withheld one; `budget_skips` names why.
 
     The first free_lanes launch locally. The rest fill host_free in proportion to weight, capped at each
     host's free count, and only onto a host whose capabilities cover the initiative's ready-task requires.
     One that overlaps a running, claimed or launched initiative in its repo yields its lane; steer actions follow.
     """
-    open_ = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld]
+    candidates = [i for i in facts["initiatives"] if i["ready_tasks"] and i["id"] not in withheld]
+    skips = budget_skips(facts, candidates, now)
+    open_ = [i for i in candidates if i["id"] not in skips]
     ordered = [*(i for i in open_ if i["started"]), *(i for i in open_ if not i["started"])]
     running = [*facts.get("running", []), *claimed]
     launches, steers = _walk_candidates(ordered, running, facts.get("steer_streaks", {}), max(0, free_lanes), host_free)
@@ -180,8 +195,11 @@ def plan_fill(
     claimed: Sequence[RunningInitiative] = (),
     hosted_decompose: bool = False,
     stalled: frozenset[str] = frozenset(),
+    now: datetime | None = None,
 ) -> list[Action]:
-    """claimed names initiatives launched earlier this tick; they count as running for the overlap check.
+    """now enables the launch budget: an initiative it refuses gets no launch_epic. Without it the budget is skipped.
+
+    claimed names initiatives launched earlier this tick; they count as running for the overlap check.
 
     consumed_host_lanes names lane-host slots a recovery step already placed a relaunch or retry on this
     tick, so fill never places a fresh launch_epic on a lane that action just filled.
@@ -202,13 +220,13 @@ def plan_fill(
     local_lanes = max(0, free_lanes)
     reserved = facts["dispatch"].get("local_lanes") == "decompose"
     epic_lanes = 0 if reserved else free_lanes
-    first_pass = _epic_launches(facts, epic_lanes, withheld, host_free, claimed)
+    first_pass = _epic_launches(facts, epic_lanes, withheld, host_free, claimed, now)
     local_epics = [a for a in first_pass if a["kind"] == "launch_epic" and "host" not in a]
     decomposes = _decompose_launches(
         facts, local_lanes - len(local_epics), host_free if hosted_decompose else (), stalled
     )
     # Host lanes a decompose took are gone before epics are placed on hosts; the local epic count is unchanged.
-    epics = _epic_launches(facts, epic_lanes, withheld, _after_placing(host_free, decomposes), claimed)
+    epics = _epic_launches(facts, epic_lanes, withheld, _after_placing(host_free, decomposes), claimed, now)
     local_decomposes = [a for a in decomposes if "host" not in a]
     lanes_left = local_lanes - len(local_epics) - len(local_decomposes)
     pulls: list[Action] = [{"kind": "pull"}] if _wants_pull(facts, lanes_left) else []

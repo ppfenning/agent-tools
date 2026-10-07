@@ -184,7 +184,7 @@ _NEEDS_CHAIR_BARE = {"kind": "needs_chair", "initiative": "m", "cause": "scope"}
 
 
 def _recovering(monkeypatch, actions: list[dict]) -> None:
-    monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts: actions)
+    monkeypatch.setattr("agent_tools.chair_plan.plan_recover", lambda facts, now=None: actions)
 
 
 _STALE = {"kind": "stale_to_draft", "initiative": "z", "stale_tasks": ["z-1"], "reason": "no file change, run, or chair action in 26 days", "since": "2026-09-27T12:00:00+00:00"}
