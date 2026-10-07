@@ -96,21 +96,54 @@ def quarantined_from_rows(rows: Iterable[Mapping[str, object]]) -> list[Row]:
     return facts
 
 
-def read_work_items(root: Path, mode: str) -> list[tuple[Path, str, dict]]:
+WorkFiles = Mapping[Path, str]
+
+
+def read_work_files(root: Path) -> WorkFiles:
+    """Edge. Path to text for every `work/*/*/*.md` and `work/*/initiative.md` under `root`, in path order.
+
+    An unreadable file is left out, as the docket and approved readers already leave it out."""
+    paths = sorted([*root.glob("work/*/*/*.md"), *root.glob("work/*/initiative.md")])
+    texts = {}
+    for p in paths:
+        try:
+            texts[p] = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return texts
+
+
+def task_files(root: Path, files: WorkFiles) -> dict[Path, str]:
+    """The `work/<initiative>/<phase>/<task>.md` entries of `files`; `work/<initiative>/initiative.md` is not one."""
+    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 4}
+
+
+def initiative_files(root: Path, files: WorkFiles) -> dict[Path, str]:
+    """The `work/<initiative>/initiative.md` entries of `files`."""
+    return {p: t for p, t in files.items() if len(p.relative_to(root).parts) == 3}
+
+
+def read_work_items(
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> list[tuple[Path, str, dict]]:
     """Edge. Every `work/<initiative>/<phase>/<task>.md` under `root` as (path, text, work item), in path order.
 
-    The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does."""
-    texts = {p: p.read_text() for p in sorted(root.glob("work/*/*/*.md"))}
+    The store is read, and overrides file state, only under mode "store", as `cli._stored_work_items` does.
+    `files` and `store_rows` stand in for those two reads when a tick already holds them."""
+    texts = task_files(root, files) if files is not None else {p: p.read_text() for p in sorted(root.glob("work/*/*/*.md"))}
     items = [
         route.work_item(route.parse_frontmatter(text)[0], initiative=p.parts[-3], phase_dir=p.parts[-2], stem=p.stem)
         for p, text in texts.items()
     ]
-    stored = route.with_store_states(items, run_store.work_items(root / "runs") if mode == "store" else [], mode)
+    rows = store_rows if store_rows is not None else (run_store.work_items(root / "runs") if mode == "store" else [])
+    stored = route.with_store_states(items, rows, mode)
     return [(p, text, item) for (p, text), item in zip(texts.items(), stored, strict=True)]
 
 
-def read_quarantined(root: Path, mode: str) -> list[Row]:
-    """Edge. The open quarantines among `read_work_items(root, mode)`."""
+def read_quarantined(
+    root: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> list[Row]:
+    """Edge. The open quarantines among `read_work_items(root, mode, files, store_rows)`."""
     return quarantined_rows(
         (
             f"work/{item['initiative']}/{item['file']}",
@@ -118,5 +151,5 @@ def read_quarantined(root: Path, mode: str) -> list[Row]:
             item_body(text),
             frontmatter_item(text, p.stem).get("attempts"),
         )
-        for p, text, item in read_work_items(root, mode)
+        for p, text, item in read_work_items(root, mode, files, store_rows)
     )

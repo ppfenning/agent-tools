@@ -7112,11 +7112,16 @@ def _local_max_in_flight(runs_dir: Path, profile: dict, hostname: str) -> int:
     return _chair_max_in_flight(runs_dir, profile) if row is None or row.get("capacity") is None else int(row["capacity"])
 
 
-def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]:
+def _chair_stranded_inputs(
+    ws: Path, mode: str, files: Mapping[Path, str] | None = None, store_rows: list | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Edge. The inputs of `runs_stranded.stranded`. Item states come from the store under mode "store", as the docket's do.
 
     Under mode "store" a fetched run whose records stayed in the store adds its store rows too: without them an
-    approved task of that run gets no run, and `plan_lands` can only ask the chair for one."""
+    approved task of that run gets no run, and `plan_lands` can only ask the chair for one.
+
+    `files` (`chair_read_quarantined.read_work_files`) and `store_rows` (`run_store.work_items`) stand in for the
+    work-file and store reads when a tick already holds them; None reads them here."""
     task_records = []
     for path in sorted((ws / "runs").glob("*/tasks/*/*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -7124,13 +7129,31 @@ def _chair_stranded_inputs(ws: Path, mode: str) -> tuple[list[dict], list[dict]]
         record.setdefault("task", path.stem)
         record.setdefault("phase", path.parent.name)
         task_records.append(record)
-    initiative_texts = _initiative_texts(ws)
+    if files is None:
+        initiative_texts, work_items = _initiative_texts(ws), _stored_work_items(ws, mode)
+    else:
+        initiative_texts = {p.parent.name: t for p, t in chair_read_quarantined.initiative_files(ws, files).items()}
+        rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
+        work_items = route.with_store_states(
+            [
+                route.work_item(route.parse_frontmatter(text)[0], initiative=p.parent.parent.name, phase_dir=p.parent.name, stem=p.stem)
+                for p, text in chair_read_quarantined.task_files(ws, files).items()
+                if p.name != "initiative.md"
+            ],
+            rows, mode,
+        )
     items = [
         {**item, "repo": route.parse_frontmatter(initiative_texts.get(item["initiative"], ""))[0].get("repo")}
-        for item in _stored_work_items(ws, mode)
+        for item in work_items
     ]
     stored = _store_held_records(ws / "runs", items) if mode == "store" else []
     return task_records + stored, items
+
+
+def _initiative_repos(initiative_files: Mapping[Path, str]) -> dict[str, str]:
+    """Pure. Initiative id to the `repo:` in its `initiative.md` text, as `chair_facts.read_initiative_repos` reads it from disk."""
+    fields = {p.parent.name: route.parse_frontmatter(text)[0] for p, text in initiative_files.items()}
+    return {name: f["repo"] for name, f in fields.items() if isinstance(f.get("repo"), str) and f["repo"]}
 
 
 def _chair_reported_repos_path(runs_dir: Path) -> Path:
@@ -7326,13 +7349,39 @@ def _chair_run_deps(
     # edge state: `beat` empties it, so one tick's window, weekly and source readers share one meter read and verdict
     meter_snapshot: list[tuple[usage_meter.Meter | None, str]] = []
 
+    # edge state: `beat` empties it, so one tick reads each work file, the store's work rows, the attempts and the
+    # stranded inputs once and every reader that needs one shares it
+    tick_reads: dict[str, object] = {}
+
+    def once(key: str, read: Callable[[], object]) -> object:
+        if key not in tick_reads:
+            tick_reads[key] = read()
+        return tick_reads[key]
+
+    def work_files() -> Mapping[Path, str]:
+        return once("files", lambda: chair_read_quarantined.read_work_files(ws))  # type: ignore[return-value]
+
+    def store_rows() -> list:
+        return once("store_rows", lambda: run_store.work_items(runs_dir) if mode == "store" else [])  # type: ignore[return-value]
+
+    def attempts() -> list[dict]:
+        return once("attempts", lambda: chair_read_attempts.read_attempts(ws, work_files()))  # type: ignore[return-value]
+
+    def stranded_inputs() -> tuple[list[dict], list[dict]]:
+        return once("stranded", lambda: _chair_stranded_inputs(ws, mode, work_files(), store_rows()))  # type: ignore[return-value]
+
     def docket() -> dict:
         if not snapshot:
-            snapshot.append(chair_read_docket.read_docket(ws, mode, _local_max_in_flight(runs_dir, profile, host)))
+            snapshot.append(
+                chair_read_docket.read_docket(
+                    ws, mode, _local_max_in_flight(runs_dir, profile, host), files=work_files(), store_rows=store_rows(),
+                )
+            )
         return snapshot[0]
 
     def beat() -> object:
         snapshot.clear()
+        tick_reads.clear()
         main_ci.cache.clear()
         meter_snapshot.clear()
         lost = "" if dry_run else chair.renew_lease(runs_dir, session, pid, host)
@@ -7360,14 +7409,16 @@ def _chair_run_deps(
         return chair_read_live.read_live_initiatives(runs_dir, [row["id"] for row in docket()["initiatives"]], now_text())
 
     def approved() -> list:
-        stranded = chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode))
+        stranded = chair_read_stranded.read_stranded(*stranded_inputs())
         facts = chair_read_approved.read_fetch_facts(runs_dir, stranded)
-        return chair_read_approved.with_runs(chair_read_approved.read_approved(ws, mode), stranded, facts)
+        return chair_read_approved.with_runs(
+            chair_read_approved.read_approved(ws, mode, work_files(), store_rows()), stranded, facts,
+        )
 
     last_missing_repos: list[str] = []  # edge state: the current tick's `missing_repos()` result, read back by `reported_repos()`
 
     def missing_repos() -> list[str]:
-        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*_chair_stranded_inputs(ws, mode), os.path.isdir)
+        last_missing_repos[:] = chair_read_stranded.read_missing_repos(*stranded_inputs(), os.path.isdir)
         return last_missing_repos
 
     def reported_repos() -> set[str]:
@@ -7387,8 +7438,8 @@ def _chair_run_deps(
 
     def has_patch(initiative: str, task: str) -> bool:
         """`read_has_patch` needs a run id: the newest attempt on this task names it. No attempt has no record."""
-        runs = [a["run"] for a in chair_read_attempts.read_attempts(ws) if a.get("initiative") == initiative and a.get("task") == task and a.get("run")]
-        return bool(runs) and chair_read_patch.read_has_patch(runs_dir, runs[-1], task)
+        run = chair_read_patch.newest_runs(attempts()).get((initiative, task))
+        return run is not None and chair_read_patch.read_has_patch(runs_dir, str(run), task)
 
     def repo_for(action: dict) -> str:
         """The action's own repo, else `repo:` from the initiative's `initiative.md`; "" when either is missing."""
@@ -7504,7 +7555,9 @@ def _chair_run_deps(
 
     def idle_stall(n: datetime.datetime) -> chair_facts.IdleStallInputs:
         return chair_facts.idle_stall_inputs(
-            chair_read_idle_backlog.read_idle_backlog(ws, mode, _local_max_in_flight(runs_dir, profile, host), n),
+            chair_read_idle_backlog.read_idle_backlog(
+                ws, mode, _local_max_in_flight(runs_dir, profile, host), n, work_files(), store_rows(),
+            ),
             chair_read_idle_hosts.read_idle_hosts(runs_dir, startup_hosts),
             chair_read_idle_lands.read_lands_waiting(runs_dir, n),
             chair_read_idle_open.read_idle_open(ws),
@@ -7520,25 +7573,27 @@ def _chair_run_deps(
         policy=lambda: _resolved_pacing_policy(runs_dir),
         docket=docket,
         approved=approved,
-        quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode),
-        stranded=lambda: chair_read_stranded.read_stranded(*_chair_stranded_inputs(ws, mode)),
+        quarantined=lambda: chair_read_quarantined.read_quarantined(ws, mode, work_files(), store_rows()),
+        stranded=lambda: chair_read_stranded.read_stranded(*stranded_inputs()),
         missing_repos=missing_repos,
         reported_repos=reported_repos,
         run_exited=lambda: chair_read_exits.exits(runs_dir),
-        attempts=lambda: chair_read_attempts.read_attempts(ws),
+        attempts=attempts,
         has_patch=has_patch,
         live_initiatives=live_initiatives,
-        intake=lambda: chair_read_intake.read_intake(ws),
+        intake=lambda: chair_read_intake.read_intake(ws, chair_read_quarantined.initiative_files(ws, work_files())),
         work_store_ready=lambda: chair_read_docket.work_store_ready(docket()),
         sources_configured=lambda: chair_read_intake.read_sources_configured(profile_path),
         session=session, pid=pid, host=host, dispatch=dispatch,
-        drafts=lambda: draft_list.count_drafts(draft_list.read_drafts(ws / "work", now_text())),
+        drafts=lambda: draft_list.count_drafts(
+            draft_list.read_drafts(ws / "work", now_text(), chair_read_quarantined.initiative_files(ws, work_files()))
+        ),
         remote_unfetched=lambda: chair_read_remote_unfetched.read_remote_unfetched(
             runs_dir, [row["id"] for row in docket()["initiatives"]]
         ),
         lost_runs=lambda: chair_read_lost.read_lost_runs(runs_dir, now_text()),
-        tickets=lambda: chair_facts.read_ticket_items(ws, mode),
-        repos=lambda: chair_facts.read_initiative_repos(ws),
+        tickets=lambda: chair_read_docket._work_items(ws, mode, work_files(), store_rows()),
+        repos=lambda: _initiative_repos(chair_read_quarantined.initiative_files(ws, work_files())),
         actions=actions,
         land_watches=lambda: chair_revert_watch.pending_watches(actions),
         read_main_ci=main_ci,
@@ -7553,7 +7608,7 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
-        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n),
+        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),

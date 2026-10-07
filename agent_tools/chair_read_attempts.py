@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent_tools import run_store
 from agent_tools.chair_facts import RESCUE_FAILED_CAUSE, Key, run_initiative
-from agent_tools.chair_read_quarantined import attempts_on_current_body, body_sha, item_body
+from agent_tools.chair_read_quarantined import WorkFiles, attempts_on_current_body, body_sha, item_body, task_files
 from agent_tools.stats_chair import frontmatter_item
 
 
@@ -89,11 +89,16 @@ def _rescue_key(row: Mapping) -> Key:
     return str(row["initiative"]), str(row["phase"]), str(row["task"])
 
 
-def read_attempts(root: Path) -> list[dict]:
+def read_attempts(root: Path, files: WorkFiles | None = None) -> list[dict]:
     """The edge: load each `work/<initiative>/<phase>/<task>.md` under `root` and hand its attempts to the core.
 
-    The store's rescue_failed rows are added, since a failed rescue leaves no attempt in any file."""
-    texts = {path: path.read_text(encoding="utf-8") for path in sorted((root / "work").glob("*/*/*.md"))}
+    The store's rescue_failed rows are added, since a failed rescue leaves no attempt in any file.
+    `files` stands in for the work-file read when a tick already holds it. This reader never reads
+    `run_store.work_items`, so it takes no `store_rows`."""
+    texts = (
+        task_files(root, files) if files is not None
+        else {path: path.read_text(encoding="utf-8") for path in sorted((root / "work").glob("*/*/*.md"))}
+    )
     items = [
         (str(p.relative_to(root)), item_body(text), frontmatter_item(text, p.stem).get("attempts"))
         for p, text in texts.items()

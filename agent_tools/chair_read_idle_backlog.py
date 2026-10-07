@@ -10,7 +10,7 @@ from agent_tools.chair_facts import empty_decompose_facts
 from agent_tools.chair_read_docket import local_runs, read_docket
 from agent_tools.chair_read_intake import read_intake
 from agent_tools.chair_read_live import read_live_initiatives
-from agent_tools.chair_read_quarantined import read_work_items
+from agent_tools.chair_read_quarantined import WorkFiles, initiative_files, read_work_items
 from agent_tools.chair_read_stale import read_chair_actions
 from agent_tools.chair_types import BlockedReady
 from agent_tools.draft_state import _is_draft
@@ -112,16 +112,23 @@ def _safe(read: Any, default: Any) -> Any:
         return default
 
 
-def _initiative_texts(ws: Path) -> dict[str, str]:
+def _initiative_texts(ws: Path, files: WorkFiles | None = None) -> dict[str, str]:
+    if files is not None:
+        return {p.parent.name: t for p, t in initiative_files(ws, files).items()}
     return {p.parent.name: p.read_text(encoding="utf-8") for p in sorted(ws.glob("work/*/initiative.md"))}
 
 
-def read_idle_backlog(ws: Path, mode: str, max_in_flight: int, now: datetime) -> IdleBacklog:
-    """Edge. Never raises. An unreadable docket gives zero lanes, not every lane free."""
+def read_idle_backlog(
+    ws: Path, mode: str, max_in_flight: int, now: datetime,
+    files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> IdleBacklog:
+    """Edge. Never raises. An unreadable docket gives zero lanes, not every lane free.
+
+    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
     runs_dir = ws / "runs"
     now_text = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    work = [item for _, _, item in _safe(lambda: read_work_items(ws, mode), [])]
-    with_file = stub_candidates(_safe(lambda: _initiative_texts(ws), {}))
+    work = [item for _, _, item in _safe(lambda: read_work_items(ws, mode, files, store_rows), [])]
+    with_file = stub_candidates(_safe(lambda: _initiative_texts(ws, files), {}))
     # A stub has no work items, so its id comes from its file; probing only item initiatives never sees it live.
     probe = sorted({i["initiative"] for i in work} | set(with_file))
     actions = _safe(lambda: read_chair_actions(runs_dir), [])
@@ -130,9 +137,9 @@ def read_idle_backlog(ws: Path, mode: str, max_in_flight: int, now: datetime) ->
     calls = _safe(lambda: list(run_store.last_call_at(runs_dir, run_ids).values()), [])
     return idle_backlog(
         {
-            "docket": _safe(lambda: read_docket(ws, mode, max_in_flight, lambda: now), None),
+            "docket": _safe(lambda: read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows), None),
             "items": work,
-            "queued": _safe(lambda: read_intake(ws), []),
+            "queued": _safe(lambda: read_intake(ws, initiative_files(ws, files) if files is not None else None), []),
             "last_launch": _newest_action(actions, LAUNCH_KINDS),
             "last_land": _newest_action(actions, LAND_KINDS),
             "node_calls": [str(c) for c in calls],

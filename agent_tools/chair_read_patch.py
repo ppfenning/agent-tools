@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from agent_tools import run_store
 
-__all__ = ["has_patch", "read_has_patch"]
+__all__ = ["has_patch", "newest_runs", "read_has_patch"]
+
+
+def newest_runs(attempts: Iterable[Mapping[str, object]]) -> dict[tuple[object, object], object]:
+    """(initiative, task) to the run of the last attempt row naming one; attempts come oldest first, a row without a run is skipped."""
+    return {(a.get("initiative"), a.get("task")): a["run"] for a in attempts if a.get("run")}
 
 
 def has_patch(record: dict | None) -> bool:

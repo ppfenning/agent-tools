@@ -160,7 +160,7 @@ def test_the_launch_cap_is_three_lanes_unless_the_policy_file_names_a_valid_othe
 
 def test_a_beat_ends_the_docket_snapshot_so_each_tick_reads_it_once(monkeypatch, tmp_path) -> None:
     reads: list[int] = []
-    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda *_a: reads.append(1) or {"initiatives": [], "n": len(reads)})
+    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda *_a, **_kw: reads.append(1) or {"initiatives": [], "n": len(reads)})
     monkeypatch.setattr(cli.chair_read_live, "read_live_initiatives", lambda *_a: [])
     deps = cli._chair_run_deps(tmp_path / "runs", {}, "chair", 1, "h", True, print, tmp_path / "p.yaml", "files")
     facts = deps.facts_deps
@@ -172,17 +172,17 @@ def test_a_beat_ends_the_docket_snapshot_so_each_tick_reads_it_once(monkeypatch,
 def test_each_fact_reader_reaches_its_own_module_with_the_workspace_and_mode(monkeypatch, tmp_path) -> None:
     runs_dir, profile_path = tmp_path / "runs", tmp_path / "p.yaml"
     reader = cli.chair_read_approved, cli.chair_read_quarantined, cli.chair_read_attempts, cli.chair_read_intake
-    monkeypatch.setattr(reader[0], "read_approved", lambda ws, mode: ("approved", ws, mode))
+    monkeypatch.setattr(reader[0], "read_approved", lambda ws, mode, *_a: ("approved", ws, mode))
     monkeypatch.setattr(reader[0], "with_runs", lambda tasks, stranded, facts: tasks)
     monkeypatch.setattr(reader[0], "read_fetch_facts", lambda runs, stranded: {})
-    monkeypatch.setattr(reader[1], "read_quarantined", lambda ws, mode: ("quarantined", ws, mode))
-    monkeypatch.setattr(reader[2], "read_attempts", lambda ws: ("attempts", ws))
-    monkeypatch.setattr(reader[3], "read_intake", lambda ws: ("intake", ws))
+    monkeypatch.setattr(reader[1], "read_quarantined", lambda ws, mode, *_a: ("quarantined", ws, mode))
+    monkeypatch.setattr(reader[2], "read_attempts", lambda ws, *_a: ("attempts", ws))
+    monkeypatch.setattr(reader[3], "read_intake", lambda ws, *_a: ("intake", ws))
     monkeypatch.setattr(reader[3], "read_sources_configured", lambda path: ("sources_configured", path))
     monkeypatch.setattr(cli.chair_read_lease, "read_lease", lambda runs, _now: ("lease", runs))
     monkeypatch.setattr(cli.chair_read_stranded, "read_stranded", lambda *_a: "stranded")
     monkeypatch.setattr(cli, "_chair_stranded_inputs", lambda *_a: ([], []))
-    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda ws, mode, cap: {"initiatives": [{"id": "i1", "ready_tasks": [1]}], "at": (ws, mode, cap)})
+    monkeypatch.setattr(cli.chair_read_docket, "read_docket", lambda ws, mode, cap, **_kw: {"initiatives": [{"id": "i1", "ready_tasks": [1]}], "at": (ws, mode, cap)})
     monkeypatch.setattr(cli.chair_read_live, "read_live_initiatives", lambda runs, names, _now: (runs, names))
     monkeypatch.setattr(cli.chair_read_run_id, "make_run_id", lambda runs: ("run_id", runs))
     deps = cli._chair_run_deps(runs_dir, {}, "chair", 1, "h", True, print, profile_path, "store")

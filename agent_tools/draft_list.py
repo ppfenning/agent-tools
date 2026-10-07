@@ -68,16 +68,24 @@ def count_drafts(rows: Iterable[DraftRow]) -> int:
     return sum(1 for _ in rows)
 
 
-def _frontmatter_of(path: Path) -> Mapping | None:
-    """Edge. The initiative's frontmatter with `id` defaulted to its directory name; None when unreadable."""
+def _frontmatter_of(path: Path, text: str | None = None) -> Mapping | None:
+    """Edge. The initiative's frontmatter with `id` defaulted to its directory name; None when unreadable.
+
+    `text` stands in for reading `path` when the caller already holds it."""
     try:
-        fields = route.parse_frontmatter(path.read_text(encoding="utf-8"))[0]
+        fields = route.parse_frontmatter(text if text is not None else path.read_text(encoding="utf-8"))[0]
     except (OSError, UnicodeDecodeError):
         return None
     return {**fields, "id": fields.get("id") or path.parent.name}
 
 
-def read_drafts(work_dir: Path, now: str) -> list[DraftRow]:
-    """Edge. Every `<work_dir>/*/initiative.md` that can be read, handed to `list_drafts`."""
-    found = (_frontmatter_of(p) for p in sorted(work_dir.glob("*/initiative.md")))
+def read_drafts(work_dir: Path, now: str, texts: Mapping[Path, str] | None = None) -> list[DraftRow]:
+    """Edge. Every `<work_dir>/*/initiative.md` that can be read, handed to `list_drafts`.
+
+    `texts` (path to text of each `initiative.md`) stands in for reading them when a tick already holds them."""
+    found = (
+        (_frontmatter_of(p) for p in sorted(work_dir.glob("*/initiative.md")))
+        if texts is None
+        else (_frontmatter_of(p, t) for p, t in texts.items())
+    )
     return list_drafts([fm for fm in found if fm is not None], now)

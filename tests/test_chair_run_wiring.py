@@ -146,7 +146,7 @@ def test_idle_stall_calls_the_four_readers_and_reads_the_configured_minutes(tmp_
     seen: dict = {}
     backlog = {"free_lanes": 2, "ready": 1, "queued": 0, "last_progress_at": None, "empty_stubs": [], "blocked_ready": []}
 
-    def fake_backlog(ws, mode, max_in_flight, now):
+    def fake_backlog(ws, mode, max_in_flight, now, *_held):
         seen["backlog"] = (ws, mode, now)
         return backlog
 
