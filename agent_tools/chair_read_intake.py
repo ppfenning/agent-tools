@@ -25,21 +25,21 @@ def intake_from_rows(rows: Sequence[Mapping]) -> list[Mapping]:
     return [r for r in rows if r["kind"] == "intake" and r["state"] == "queued" and r["extra"].get("initiative") is None]
 
 
-def read_intake(ws: Path) -> list[str]:
-    """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent."""
+def read_intake(ws: Path, initiative_texts: Mapping[Path, str] | None = None) -> list[str]:
+    """Edge. Queued intake paths under `ws/intake`, oldest first; none when the directory is absent.
+
+    `initiative_texts` (path to text of each `work/*/initiative.md`) stands in for reading them when a tick already holds them."""
     root = ws / "intake"
     paths = sorted(root.glob("*.md")) + sorted((root / "done").glob("*.md"))
     files = {str(p.relative_to(root)): p.read_text(encoding="utf-8") for p in paths}
-    groups = route.intake_groups(route.intake_entries(files), _initiatives(ws))
+    groups = route.intake_groups(route.intake_entries(files), _initiatives(ws, initiative_texts))
     return queued_oldest_first(groups, {row["path"]: (ws / row["path"]).stat().st_mtime for row in groups["queued"]})
 
 
-def _initiatives(ws: Path) -> list[dict]:
+def _initiatives(ws: Path, texts: Mapping[Path, str] | None = None) -> list[dict]:
     """Initiative rows as `route.intake_groups` reads them. `done` is False: it never decides membership of `queued`."""
-    return [
-        {"id": p.parent.name, "done": False, "text": p.read_text(encoding="utf-8")}
-        for p in sorted((ws / "work").glob("*/initiative.md"))
-    ]
+    held = texts if texts is not None else {p: p.read_text(encoding="utf-8") for p in sorted((ws / "work").glob("*/initiative.md"))}
+    return [{"id": p.parent.name, "done": False, "text": text} for p, text in held.items()]
 
 
 def read_sources_configured(profile_path: Path) -> bool:

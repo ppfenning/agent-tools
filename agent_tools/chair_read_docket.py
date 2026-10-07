@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_tools import epic, queue_rows, route, run_store
+from agent_tools.chair_read_quarantined import WorkFiles, task_files
 
 Row = Mapping[str, Any]
 
@@ -134,14 +135,23 @@ def _text(p: Path) -> str | None:
         return None
 
 
-def _work_items(ws: Path, mode: str) -> list[dict]:
-    """Every work item under `work/<initiative>/<phase>/<task>.md`, its state from the store under mode "store"."""
+def _work_items(
+    ws: Path, mode: str, files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> list[dict]:
+    """Every work item under `work/<initiative>/<phase>/<task>.md`, its state from the store under mode "store".
+
+    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
+    texts = (
+        task_files(ws, files) if files is not None
+        else {p: t for p in sorted((ws / "work").glob("*/*/*.md")) if (t := _text(p)) is not None}
+    )
     items = [
         route.work_item(route.parse_frontmatter(text)[0], initiative=p.parent.parent.name, phase_dir=p.parent.name, stem=p.stem)
-        for p in sorted((ws / "work").glob("*/*/*.md"))
-        if p.name != "initiative.md" and (text := _text(p)) is not None
+        for p, text in texts.items()
+        if p.name != "initiative.md"
     ]
-    return route.with_store_states(items, run_store.work_items(ws / "runs") if mode == "store" else [], mode)
+    rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
+    return route.with_store_states(items, rows, mode)
 
 
 def local_runs(runs_dir: Path, now: str) -> tuple[int, set[str]]:
@@ -157,9 +167,12 @@ def _busy_lanes(runs_dir: Path, now: str) -> int:
     return live + len(run_store.remote_lanes(run_store.live_lanes(runs_dir, now), named))
 
 
-def read_docket(ws: Path, mode: str, max_in_flight: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> dict[str, Any]:
+def read_docket(
+    ws: Path, mode: str, max_in_flight: int, now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+) -> dict[str, Any]:
     """Edge: the builder over the workspace `ws` and its store. `mode` is `work_state.work_state_mode`'s answer."""
-    items = _work_items(ws, mode)
+    items = _work_items(ws, mode, files, store_rows)
     busy = _busy_lanes(ws / "runs", now().strftime("%Y-%m-%dT%H:%M:%SZ"))
     return docket_from_builder(route.initiative_summaries(items), items, busy, max_in_flight)
 

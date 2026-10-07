@@ -12,7 +12,7 @@ from pathlib import Path
 from agent_tools import run_store
 from agent_tools.chair_facts import HARNESS_CAUSE, Key, _key
 from agent_tools.chair_read_attempts import read_attempts
-from agent_tools.chair_read_quarantined import attempts_on_current_body, item_body, read_work_items
+from agent_tools.chair_read_quarantined import WorkFiles, attempts_on_current_body, item_body, read_work_items
 from agent_tools.chair_types import StaleCandidate
 
 Row = Mapping[str, object]
@@ -120,12 +120,16 @@ def _candidate(
     }
 
 
-def read_stale_candidates(workspace_dir: Path, now: datetime) -> list[StaleCandidate]:
-    """Edge. One row per board task not done, dropped or draft. `now` computes no age; `chair_stale.stale_reason` does."""
-    attempts = read_attempts(workspace_dir)
+def read_stale_candidates(
+    workspace_dir: Path, now: datetime, files: WorkFiles | None = None, attempts: list[dict] | None = None,
+) -> list[StaleCandidate]:
+    """Edge. One row per board task not done, dropped or draft. `now` computes no age; `chair_stale.stale_reason` does.
+
+    `files` and `attempts` stand in for the work-file and attempts reads when a tick already holds them."""
+    attempts = attempts if attempts is not None else read_attempts(workspace_dir, files)
     actions = read_chair_actions(workspace_dir / "runs")
     return [
         _candidate(workspace_dir, (item["initiative"], p.parts[-2], p.stem), item["state"], item_body(text), attempts, actions)
-        for p, text, item in read_work_items(workspace_dir, "files")
+        for p, text, item in read_work_items(workspace_dir, "files", files)
         if item["state"] not in _EXCLUDED_STATES
     ]

@@ -9,6 +9,7 @@ from typing import Any
 
 from agent_tools import route, run_store
 from agent_tools.chair_facts import run_initiative
+from agent_tools.chair_read_quarantined import WorkFiles, task_files
 from agent_tools.chair_types import ApprovedTask
 from agent_tools.remote_lane import fetched_record_path, land_needs_fetch, remote_record_path
 
@@ -84,26 +85,41 @@ def read_fetch_facts(runs_dir: Path, stranded: Sequence[Mapping[str, Any]]) -> d
     }
 
 
+def _repo_from_text(text: str) -> str:
+    return str(route.parse_frontmatter(text)[0].get("repo", ""))
+
+
 def _repo_of(initiative_md: Path) -> str:
     try:
         text = initiative_md.read_text(encoding="utf-8")
     except OSError:
         return ""
-    return str(route.parse_frontmatter(text)[0].get("repo", ""))
+    return _repo_from_text(text)
 
 
-def _load_items(ws: Path) -> list[dict]:
+def _load_items(ws: Path, files: WorkFiles | None = None) -> list[dict]:
     repos: dict[str, str] = {}
     items = []
-    for path in sorted((ws / "work").glob("*/*/*.md")):
+    if files is None:
+        texts = {}
+        for path in sorted((ws / "work").glob("*/*/*.md")):
+            try:
+                texts[path] = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+    else:
+        texts = task_files(ws, files)
+    for path, text in texts.items():
         if path.name == "initiative.md":
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
         initiative = path.parent.parent.name
-        repos.setdefault(initiative, _repo_of(path.parent.parent / "initiative.md"))
+        if initiative not in repos:
+            initiative_md = path.parent.parent / "initiative.md"
+            if files is None:
+                repos[initiative] = _repo_of(initiative_md)
+            else:
+                text_md = files.get(initiative_md)
+                repos[initiative] = _repo_from_text(text_md) if text_md is not None else ""
         item = route.work_item(
             route.parse_frontmatter(text)[0], initiative=initiative, phase_dir=path.parent.name, stem=path.stem
         )
@@ -111,8 +127,12 @@ def _load_items(ws: Path) -> list[dict]:
     return items
 
 
-def read_approved(ws: Path, mode: str = "files") -> list[ApprovedTask]:
-    """Edge. Approved rows for the work store under `ws`; under mode "store" each state comes from the run store."""
-    items = _load_items(ws)
-    rows = run_store.work_items(ws / "runs") if mode == "store" else []
+def read_approved(
+    ws: Path, mode: str = "files", files: WorkFiles | None = None, store_rows: Sequence[Mapping[str, Any]] | None = None,
+) -> list[ApprovedTask]:
+    """Edge. Approved rows for the work store under `ws`; under mode "store" each state comes from the run store.
+
+    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
+    items = _load_items(ws, files)
+    rows = store_rows if store_rows is not None else (run_store.work_items(ws / "runs") if mode == "store" else [])
     return approved_rows(route.with_store_states(items, rows, mode))
