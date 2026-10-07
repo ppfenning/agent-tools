@@ -16,6 +16,7 @@ from agent_tools import (
     chair_land,
     chair_report,
     chair_tick_status,
+    chair_timing,
     dash_chair_action,
     land_repo_lease,
     usage_meter,
@@ -35,7 +36,7 @@ from agent_tools.notify_events import events_from_tick
 
 __all__ = [
     "DEFAULT_INTERVAL", "LAND_BEAT_INTERVAL", "GateState", "LeaseRejected", "RunDeps", "WorkerLands", "as_holder", "error_line", "finished_land",
-    "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "run", "tick",
+    "land_sink", "next_gate_record", "no_landing", "no_lands_to_stop", "run", "tick", "tick_timed",
 ]
 
 DEFAULT_INTERVAL = 60.0
@@ -272,12 +273,16 @@ def _publish_meter(deps: RunDeps, dry_run: bool, now: datetime) -> None:
         })
 
 
-def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
-    """Record the tick's status line as a `status` action, so the feed reads it from the store on any machine."""
+def _publish_status(deps: RunDeps, dry_run: bool, line: str, now: datetime, stage_seconds: dict[str, float] | None = None) -> None:
+    """Record the tick's status line as a `status` action, so the feed reads it from the store on any machine.
+
+    `stage_seconds` rides on the record when the tick ran to the end; a dry run records nothing.
+    """
     if dry_run or not line.strip():
         return
+    timing = {"stage_seconds": stage_seconds} if stage_seconds else {}
     with contextlib.suppress(Exception):
-        deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat()})
+        deps.exec_deps.record({"kind": "status", "status": "recorded", "line": line, "at": now.isoformat(), **timing})
 
 
 def _publish_tick_status(deps: RunDeps, dry_run: bool, line: str, now: datetime) -> None:
@@ -317,30 +322,43 @@ def _notify_step(deps: RunDeps, dry_run: bool, facts: Facts, actions: list[Actio
 
 
 def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
+    """The status line of one tick; `tick_timed` holds the rules and the stage seconds."""
+    return tick_timed(deps, dry_run, now)[0]
+
+
+def tick_timed(
+    deps: RunDeps, dry_run: bool, now: datetime, clock: chair_timing.Clock = time.monotonic
+) -> tuple[str, dict[str, float | None], dict[str, float]]:
     """Beat first, then gather, plan, perform and format; a failure after perform still names what was performed.
 
+    Returns the status line, the seconds of each stage (None for one that did not run) and the seconds of each facts source.
     A dry run never takes the lease, so it plans as the holder would to show the actions a live tick would take.
     The meter is published right after the beat, so a gather, plan or perform that raises cannot skip it.
     A paused CI gate holds lands and dependent relaunches and records one needs_chair when it first pauses. The pause
     is remembered after perform, and only by a tick that acts as the holder, so a tick that fails records it again.
     A live tick that changed rows hands their ids to `export_rows`; its note or failure is appended to the line.
     """
+    sources: dict[str, float] = {}
     deps.beat()
     _publish_meter(deps, dry_run, now)
-    gathered = deps.gather(deps.facts_deps, now)
+    gathered, facts_s = chair_timing.timed(clock, deps.gather, chair_timing.wrap_callables(deps.facts_deps, clock, sources), now)
     facts = as_holder(gathered) if dry_run else gathered
     gate = _evaluate_gate(deps, now)
     if not dry_run:
         deps.set_gate(gate)
-    planned = deps.plan_held(facts, now, gate) if gate.paused else TickPlan(deps.plan(facts, now), ())
+    if gate.paused:
+        planned, plan_s = chair_timing.timed(clock, deps.plan_held, facts, now, gate)
+    else:
+        plain, plan_s = chair_timing.timed(clock, deps.plan, facts, now)
+        planned = TickPlan(plain, ())
     acting = not dry_run and all(a.get("kind") != "standby" for a in planned.actions)
     notice = next_gate_record(deps.gate_state.paused, gate, planned.held_for_ci, deps.current_epoch()) if acting and gate.paused else None
     actions = [*planned.actions, notice] if notice is not None else planned.actions
-    results = deps.perform(actions, deps.exec_deps, deps.current_epoch, dry_run)
+    results, perform_s = chair_timing.timed(clock, deps.perform, actions, deps.exec_deps, deps.current_epoch, dry_run)
     if acting and gate.paused != deps.gate_state.paused:
         deps.gate_state.paused = gate.paused
     ids = () if dry_run or deps.export_rows is None else changed_row_ids(results)
-    note = _export_note(deps.export_rows, ids) if ids and deps.export_rows is not None else ""
+    note, export_s = chair_timing.timed(clock, _export_note, deps.export_rows, ids) if ids and deps.export_rows is not None else ("", None)
     try:
         line = format_status(facts, actions, results, now)
     except Exception as exc:  # the actions already ran; report them rather than drop them
@@ -348,19 +366,26 @@ def tick(deps: RunDeps, dry_run: bool, now: datetime) -> str:
     line = f"{line} | {chair_exec.NOT_PROBED}" if dry_run else line
     line = f"{line} | {note}" if note else line
     pushed = _notify_step(deps, dry_run, facts, actions, now)
-    return f"{line} | {pushed}" if pushed else line
+    stages = {"facts": facts_s, "plan": plan_s, "perform": perform_s, "export": export_s}
+    return (f"{line} | {pushed}" if pushed else line), stages, sources
 
 
 def _attempt(deps: RunDeps, dry_run: bool) -> None:
     """One guarded tick and its write; nothing raised here leaves the loop."""
     now = deps.now()
+    timing, stage_seconds = None, None
     try:
-        line = tick(deps, dry_run, now)
+        line, stages, sources = tick_timed(deps, dry_run, now)
+        timing, stage_seconds = chair_timing.format_timing(stages, sources), chair_timing.ran(stages)
     except Exception as exc:  # one bad tick must not stop the loop
         line = error_line(exc, now)
-    _publish_status(deps, dry_run, line, now)
+    _publish_status(deps, dry_run, line, now, stage_seconds)
     _publish_tick_status(deps, dry_run, line, now)
     try:
+        if timing is not None:
+            # Before the status line: `_chair_run` takes its --once exit code from the last line echoed.
+            with contextlib.suppress(Exception):
+                deps.report_deps.echo(timing)
         write_status(line, deps.report_deps)
     except Exception as exc:  # a failed notify or echo must not stop the loop either
         # A broken echo leaves nowhere to write, so the loop goes on silent rather than dying.

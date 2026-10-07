@@ -107,6 +107,22 @@ def test_once_exits_1_on_a_tick_error_and_releases_a_held_lease(monkeypatch, tmp
     assert released == ["released"]
 
 
+def test_once_exits_1_when_a_timing_line_precedes_a_status_line_with_a_tick_error(monkeypatch, tmp_path) -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+    timing = "timing: facts=0.100s plan=0.000s perform=0.000s export=skipped | slowest: docket=0.100s"
+
+    def fake_run(once, interval, dry_run, deps) -> None:
+        deps.report_deps.echo(timing)
+        deps.report_deps.echo(chair_run.error_line(RuntimeError("x"), now))
+
+    monkeypatch.setattr(cli, "_leader_runs_dir_or_refuse", lambda _a: ({}, tmp_path, None))
+    monkeypatch.setattr(cli, "_chair_unwired_sources", lambda _f: [])
+    monkeypatch.setattr(cli.chair, "_read_lease", lambda *_a: None)
+    monkeypatch.setattr(cli.chair_run, "run", fake_run)
+    args = cli.build_parser().parse_args(["chair", "run", "--once"])
+    assert args.fn(args) == 1
+
+
 def test_once_exit_is_tied_to_the_line_chair_run_prints_for_a_tick_error() -> None:
     now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
     assert (cli._chair_once_exit(chair_run.error_line(RuntimeError("x"), now)), cli._chair_once_exit("chair 09-26 | holding")) == (1, 0)

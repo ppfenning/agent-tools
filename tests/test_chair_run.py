@@ -116,15 +116,15 @@ def test_once_runs_one_tick_that_lands_through_the_planner_and_never_sleeps():
     rig = Rig()
     assert run(True, 60, False, rig.deps()) is None
     assert rig.log == ["beat", "gather"]
-    assert len(rig.commands) == 1 and "lands 1" in rig.lines[0]
-    assert len(rig.lines) == 1 and rig.sleeps == []
+    assert len(rig.commands) == 1 and "lands 1" in rig.lines[1]
+    assert len(rig.lines) == 2 and rig.lines[0].startswith("timing: ") and rig.sleeps == []
 
 
 def test_a_renewal_lost_in_the_beat_yields_a_standby_line_and_no_land():
     rig = Rig(lease=MINE, beat_loses=True)
     run(True, 60, False, rig.deps())
-    assert "standby holder=other host=box" in rig.lines[0]
-    assert "lands 0" in rig.lines[0]
+    assert "standby holder=other host=box" in rig.lines[1]
+    assert "lands 0" in rig.lines[1]
     assert rig.commands == []
 
 
@@ -137,7 +137,7 @@ def test_the_first_tick_acquires_a_free_lease():
 def test_dry_run_passes_through_and_touches_nothing():
     rig = Rig(lease=FREE)
     run(True, 60, True, rig.deps())
-    assert " | dry-run | " in rig.lines[0]
+    assert " | dry-run | " in rig.lines[1]
     assert rig.acquired == [] and rig.commands == []
 
 
@@ -204,7 +204,7 @@ def test_an_exception_in_one_tick_does_not_stop_the_next():
 
     run(False, DEFAULT_INTERVAL, False, replace(rig.deps(), gather=flaky))
     assert rig.lines[0] == "chair 09-26 14:05 EDT | tick error: ValueError: boom"
-    assert "holding" in rig.lines[1]
+    assert "holding" in rig.lines[2]
     assert rig.log == ["beat", "beat", "gather"]
     assert rig.sleeps == [60.0, 60.0]
 
@@ -215,7 +215,7 @@ def test_a_failure_after_perform_names_what_was_performed():
     no_dispatch = {k: v for k, v in _facts(MINE).items() if k != "dispatch"}
     run(True, 60, False, replace(rig.deps(), gather=lambda d, n: no_dispatch, plan=lambda f, n: [land]))
     assert len(rig.commands) == 1
-    assert rig.lines == ["chair 09-26 14:05 EDT | tick error: KeyError: 'dispatch' | performed: land:landed"]
+    assert rig.lines[1:] == ["chair 09-26 14:05 EDT | tick error: KeyError: 'dispatch' | performed: land:landed"]
 
 
 def test_a_raising_notify_is_echoed_and_the_next_tick_still_runs():
@@ -225,9 +225,9 @@ def test_a_raising_notify_is_echoed_and_the_next_tick_still_runs():
         raise FileNotFoundError("notify-send")
 
     run(False, 60, False, rig.deps(notify=notify))
-    assert rig.lines[1] == "chair 09-26 14:05 EDT | tick error: FileNotFoundError: notify-send"
+    assert rig.lines[2] == "chair 09-26 14:05 EDT | tick error: FileNotFoundError: notify-send"
     assert rig.log == ["beat", "gather", "beat", "gather"]
-    assert len(rig.lines) == 4
+    assert len(rig.lines) == 6
 
 
 def test_a_raising_echo_does_not_stop_the_loop():
@@ -491,7 +491,7 @@ def test_a_tick_records_one_status_row_with_its_line():
     rig = Rig()
     run(True, 60, False, rig.deps())
     (row,) = [a for a in rig.recorded if a.get("kind") == "status"]
-    assert row["line"] == rig.lines[0] and row["status"] == "recorded"
+    assert row["line"] == rig.lines[1] and row["status"] == "recorded"
 
 
 def test_a_dry_run_records_no_status_row():
@@ -540,8 +540,8 @@ def test_a_notify_that_raises_is_written_as_a_status_line_and_the_next_tick_stil
 
     rig = Rig(sleeps_before_interrupt=2)
     run(False, 60, False, _notify_deps(rig, tmp_path, boom))
-    assert len(calls) == 2 and len(rig.lines) == 2
-    assert all("notify failed: OSError: ntfy down" in line for line in rig.lines)
+    assert len(calls) == 2 and len(rig.lines) == 4
+    assert all("notify failed: OSError: ntfy down" in line for line in rig.lines[1::2])
 
 
 def test_a_dry_run_never_calls_notify(tmp_path):
