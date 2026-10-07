@@ -933,7 +933,7 @@ def _held_from_deps(monkeypatch, tmp_path, rows, ci_by_commit, hold):
     reader.cache = {}
     resolved: list[tuple[str, str]] = []
     monkeypatch.setattr(cli, "_main_ci_reader", lambda runner: reader)
-    monkeypatch.setattr(cli.chair_read_stale, "read_chair_actions", lambda runs_dir: rows)
+    monkeypatch.setattr(cli.chair_read_stale, "read_chair_actions", lambda runs_dir, *_window: rows)
     monkeypatch.setattr(cli.chair_smoke, "read_hold", lambda runs_dir: hold)
     monkeypatch.setattr(cli.chair_revert_watch, "resolve_watch", lambda write, c, outcome: resolved.append((c, outcome)))
     monkeypatch.setattr(cli.chair_exec, "perform", lambda *a: [])

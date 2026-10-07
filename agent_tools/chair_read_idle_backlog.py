@@ -121,17 +121,20 @@ def _initiative_texts(ws: Path, files: WorkFiles | None = None) -> dict[str, str
 def read_idle_backlog(
     ws: Path, mode: str, max_in_flight: int, now: datetime,
     files: WorkFiles | None = None, store_rows: Sequence[Mapping] | None = None,
+    actions: Sequence[Item] | None = None,
 ) -> IdleBacklog:
     """Edge. Never raises. An unreadable docket gives zero lanes, not every lane free.
 
-    `files` and `store_rows` stand in for the work-file and store reads when a tick already holds them."""
+    `files`, `store_rows` and `actions` stand in for the work-file, store and chair_actions reads when a tick already holds them.
+    `actions` is the windowed `FactsDeps.actions()` rows: a land older than the window no longer counts as progress."""
     runs_dir = ws / "runs"
     now_text = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     work = [item for _, _, item in _safe(lambda: read_work_items(ws, mode, files, store_rows), [])]
     with_file = stub_candidates(_safe(lambda: _initiative_texts(ws, files), {}))
     # A stub has no work items, so its id comes from its file; probing only item initiatives never sees it live.
     probe = sorted({i["initiative"] for i in work} | set(with_file))
-    actions = _safe(lambda: read_chair_actions(runs_dir), [])
+    # None is the caller that has not been wired to the shared rows yet; it still reads its own.
+    rows = actions if actions is not None else _safe(lambda: read_chair_actions(runs_dir), [])
     # `last_call_at` needs run ids; the runs a local pidfile names are the ones this machine can list.
     run_ids = sorted(_safe(lambda: local_runs(runs_dir, now_text)[1], set()))
     calls = _safe(lambda: list(run_store.last_call_at(runs_dir, run_ids).values()), [])
@@ -140,8 +143,8 @@ def read_idle_backlog(
             "docket": _safe(lambda: read_docket(ws, mode, max_in_flight, lambda: now, files, store_rows), None),
             "items": work,
             "queued": _safe(lambda: read_intake(ws, initiative_files(ws, files) if files is not None else None), []),
-            "last_launch": _newest_action(actions, LAUNCH_KINDS),
-            "last_land": _newest_action(actions, LAND_KINDS),
+            "last_launch": _newest_action(rows, LAUNCH_KINDS),
+            "last_land": _newest_action(rows, LAND_KINDS),
             "node_calls": [str(c) for c in calls],
             "with_file": with_file,
             "decomposed": {},  # no caller wires `FactsDeps.decomposed_intake` yet
