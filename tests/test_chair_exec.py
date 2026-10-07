@@ -4,12 +4,12 @@ import signal
 import subprocess
 import time
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from agent_tools import chair_exec, chair_housekeeping, courier, remote_lane
+from agent_tools import chair_exec, chair_housekeeping, chair_pid_probe, cli, courier, remote_lane, run_store
 from agent_tools.chair_exec import (
     Deps,
     Refusal,
@@ -990,6 +990,70 @@ def test_the_login_edge_passes_the_provider_profile_s_runner_and_env_names(monke
     )
     deps.check_login("shed")
     assert calls == [("openai-compatible", ("MY_API_KEY",))]
+
+
+def _edge(tmp_path, **kwargs) -> Deps:
+    return chair_exec.edge_deps(
+        tmp_path, tmp_path, "chair-loop", 1, run_id=lambda a: "", repo_for=lambda a: "", record=lambda a: None,
+        host="omarchy", harness_python="python", **kwargs,
+    )
+
+
+def test_a_dry_run_edge_reaches_no_lane_host(monkeypatch, tmp_path) -> None:
+    reached: list = []
+    monkeypatch.setattr(chair_exec.subprocess, "run", lambda argv, **kw: reached.append(argv))
+    deps = _edge(tmp_path, dry_run=True)
+    ssh = ["ssh", "shed", "true"]
+    assert deps.run(ssh) == (1, chair_exec.NOT_PROBED)
+    assert deps.run(["git", "push", "shed:/repo", "main"]) == (1, chair_exec.NOT_PROBED)
+    assert deps.check_login("shed") == {}
+    results = perform([{"kind": "fetch_exit", "run": "x-1", "epoch": 1}], deps, lambda: 1, True)
+    assert [r["status"] for r in results] == ["dry_run"]
+    assert reached == []
+
+
+LANE_BEAT = "2026-10-05T11:59:00Z"
+
+
+def _remote_lane_store(monkeypatch) -> None:
+    fresh = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")  # the chair reads the real clock
+    host = {"name": "h", "beat_at": fresh, "ssh": "me@h", "state": "active", "versions_json": '{"workspace_dir": "/ws"}'}
+    lane = run_store.Lane("alpha-2", "h", "2026-10-05T10:00:00Z", LANE_BEAT)
+    monkeypatch.setattr(chair_pid_probe.run_store, "hosts", lambda runs_dir: [host])
+    monkeypatch.setattr(chair_pid_probe.run_store, "live_lanes", lambda runs_dir, now: [lane])
+    monkeypatch.setattr(chair_pid_probe, "local_runs", lambda runs_dir, now: (0, set()))
+
+
+def _chair_deps(monkeypatch, tmp_path, dry_run: bool, fetch):
+    """The real `cox chair run` bundle over a store with one remote lane, its ssh door replaced by `fetch`."""
+    _remote_lane_store(monkeypatch)
+    monkeypatch.setattr(cli, "_pid_probe_ssh", fetch)
+    return cli._chair_run_deps(tmp_path, {}, "chair", 1, "box", dry_run, print, tmp_path / "p.yaml", "files")
+
+
+def test_a_dry_run_chair_bundle_never_calls_fetch_for_a_remote_lane_and_reads_empty(monkeypatch, tmp_path) -> None:
+    def fetch_must_not_run(argv):
+        raise AssertionError(f"fetch called in a dry run: {argv}")
+
+    deps = _chair_deps(monkeypatch, tmp_path, True, fetch_must_not_run)
+    assert deps.facts_deps.pid_probe() == {}
+
+
+def test_a_live_chair_bundle_still_calls_fetch_once_for_a_remote_lane(monkeypatch, tmp_path) -> None:
+    dialled: list = []
+
+    def fetch(argv):
+        dialled.append(argv)
+        return 0, "alive\n"
+
+    deps = _chair_deps(monkeypatch, tmp_path, False, fetch)
+    assert deps.facts_deps.pid_probe() == {"alpha": {"alive": True, "last_beat_at": LANE_BEAT}}
+    assert len(dialled) == 1 and dialled[0][-2] == "me@h"
+
+
+def test_a_dry_run_chair_bundle_s_exec_door_refuses_a_lane_host(monkeypatch, tmp_path) -> None:
+    deps = _chair_deps(monkeypatch, tmp_path, True, lambda argv: None)
+    assert deps.exec_deps.run(["ssh", "shed", "true"]) == (1, chair_exec.NOT_PROBED)
 
 
 def test_a_standby_planned_at_epoch_minus_one_is_recorded_not_fenced() -> None:

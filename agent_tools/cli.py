@@ -7461,7 +7461,7 @@ def _chair_run_deps(
         idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),
         pid_probe=lambda: chair_pid_probe.read_pid_probe(
-            runs_dir, now_text(), _pid_probe_ssh, () if isinstance(parsed_hosts, lane_hosts.LaneHostError) else parsed_hosts, host
+            runs_dir, now_text(), chair_exec.fenced_fetch(_pid_probe_ssh, dry_run), () if isinstance(parsed_hosts, lane_hosts.LaneHostError) else parsed_hosts, host
         ),
     )
     exec_deps = chair_exec.edge_deps(
@@ -7472,6 +7472,7 @@ def _chair_run_deps(
         harness_python=harness_python,
         log_retention_days=run_logs.retention_days(profile),
         ids_mode=profile.get("ids", "slug"),
+        dry_run=dry_run,
     )
     exec_deps = dataclasses.replace(
         exec_deps,

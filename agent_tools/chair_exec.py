@@ -75,6 +75,8 @@ Status = Literal[
 ]
 
 Run = Callable[[list[str]], tuple[int, str]]
+Fetch = Callable[[list[str]], tuple[int, str] | None]  # None: the host was not reached, so its fact is left out
+NOT_PROBED = "remote lanes not probed (dry run)"  # the line a dry run's status should carry for its remote-lane facts
 
 
 class Result(TypedDict):
@@ -1052,6 +1054,23 @@ def _bounded_for_ssh(cwd: Path) -> Run:
     return run
 
 
+def _local_only(cwd: Path) -> Run:
+    """Edge. A dry run's door: a local argv runs as usual, one that reaches a lane host is refused unrun with exit 1."""
+    def run(argv: list[str]) -> tuple[int, str]:
+        return (1, NOT_PROBED) if reaches_lane_host(argv) else run_argv(argv, cwd)
+
+    return run
+
+
+def _not_probed(argv: list[str]) -> None:
+    return None
+
+
+def fenced_fetch(fetch: Fetch, dry_run: bool) -> Fetch:
+    """The door a remote-lane probe reaches a host by: `fetch` itself live, and one that never dials in a dry run."""
+    return _not_probed if dry_run else fetch
+
+
 def land_commit(repo_dir: str) -> str:
     """Edge. `origin/main`'s commit hash in `repo_dir`, read right after a true `landed()` result so it reflects
     the land that just happened before anything else can move origin/main; "" on any git failure."""
@@ -1308,15 +1327,19 @@ def edge_deps(
     log_retention_days: int = 7,
     ids_mode: str = "slug",
     provider_profile: Callable[[], dict] = lambda: {},
+    dry_run: bool = False,
 ) -> Deps:
     """Edge. The real bundle: subprocess for cox and git, chair.acquire_lease for the lease.
+
+    A dry run drops every door to a lane host: `run` refuses an ssh or push argv unrun and `check_login` returns no row.
 
     Every subprocess runs in `workspace`, because `cox route launch epic` reads `work/<id>/initiative.md` from its cwd.
     A take_lease action names no holder, so the lease is always taken as this loop's own session, pid and host.
     `provider_profile` is the routing profile's `provider_profile` YAML, already resolved; unset, it names no
     runner override and `check_login` keeps today's `"claude-code"` default.
     """
-    run = _bounded_for_ssh(workspace)
+    run = _local_only(workspace) if dry_run else _bounded_for_ssh(workspace)
+    live_check = partial(_check_login_edge, runs_dir, partial(run_lane_host, cwd=workspace), provider_profile)
     return Deps(
         run=run,
         delete_branches=lambda repo, pattern: delete_branches_with(run, repo, pattern),
@@ -1328,9 +1351,7 @@ def edge_deps(
         intake_id=partial(read_intake_id, workspace),
         runs_dir=runs_dir,
         work_dir=workspace,
-        check_login=partial(
-            _check_login_edge, runs_dir, partial(run_lane_host, cwd=workspace), provider_profile,
-        ),
+        check_login=(lambda name: {}) if dry_run else live_check,
         log_retention_days=log_retention_days,
         harness_python=harness_python,
         ids_mode=ids_mode,
