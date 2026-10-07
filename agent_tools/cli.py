@@ -7359,7 +7359,6 @@ def _chair_run_deps(
         return now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     snapshot: list[dict] = []  # edge state: `beat` empties it, so one tick's three docket readers share one read
-    actions = lambda: chair_read_stale.read_chair_actions(runs_dir)  # noqa: E731 -- the reader `FactsDeps.actions` uses
 
     def runner(argv: list[str]) -> tuple[int, str]:
         return chair_exec.run_argv(argv)
@@ -7376,6 +7375,15 @@ def _chair_run_deps(
         if key not in tick_reads:
             tick_reads[key] = read()
         return tick_reads[key]
+
+    # One windowed chair_actions read per tick, shared by the gather, held() and resolve_land. The window reaches back
+    # `chair.stale_days` at least; revert_watch rows are kept at any age by `_KEPT_KINDS`, so an open watch is never lost.
+    actions_window = max(
+        chair_read_stale.ACTIONS_WINDOW_DAYS, chair_facts.resolve_stale_days((profile.get("chair") or {}).get("stale_days"))
+    )
+    actions = lambda: once(  # noqa: E731 -- the one reader `FactsDeps.actions` and the watch readers share
+        "chair_actions", lambda: chair_read_stale.read_chair_actions(runs_dir, now(), actions_window)
+    )
 
     def work_files() -> Mapping[Path, str]:
         return once("files", lambda: chair_read_quarantined.read_work_files(ws))  # type: ignore[return-value]
@@ -7575,11 +7583,11 @@ def _chair_run_deps(
     def idle_stall(n: datetime.datetime) -> chair_facts.IdleStallInputs:
         return chair_facts.idle_stall_inputs(
             chair_read_idle_backlog.read_idle_backlog(
-                ws, mode, _local_max_in_flight(runs_dir, profile, host), n, work_files(), store_rows(),
+                ws, mode, _local_max_in_flight(runs_dir, profile, host), n, work_files(), store_rows(), actions(),
             ),
             chair_read_idle_hosts.read_idle_hosts(runs_dir, startup_hosts),
             chair_read_idle_lands.read_lands_waiting(runs_dir, n),
-            chair_read_idle_open.read_idle_open(ws),
+            chair_read_idle_open.read_idle_open(ws, actions()),
             chair_facts.resolve_idle_stall_minutes((profile.get("chair") or {}).get("idle_stall_minutes")),
         )
 
@@ -7627,7 +7635,7 @@ def _chair_run_deps(
         history=lambda: chair_read_housekeeping.read_last_housekeeping(runs_dir),
         housekeeping_hours=lambda: (profile.get("chair") or {}).get("housekeeping_hours"),
         stale_days=lambda: (profile.get("chair") or {}).get("stale_days"),
-        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts()),
+        stale_candidates=lambda n: chair_read_stale.read_stale_candidates(ws, n, work_files(), attempts(), actions()),
         stall_candidates=lambda n: chair_read_stall.read_stall_candidates(runs_dir, startup_hosts, n),
         idle_stall=idle_stall,
         hosts=lambda: run_store.hosts(runs_dir),

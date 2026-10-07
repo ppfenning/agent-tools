@@ -45,10 +45,13 @@ def open_idle_stall(
     return (str(newest[1]["signature"]), str(newest[1].get("reason") or "")) if newest is not None else (None, None)
 
 
-def read_idle_open(ws: Path) -> tuple[str | None, str | None]:
-    """Edge. Never raises: no store, no table, an unreadable courier file or a database error gives (None, None)."""
+def read_idle_open(ws: Path, actions: Sequence[Mapping[str, Any]] | None = None) -> tuple[str | None, str | None]:
+    """Edge. Never raises: no store, no table, an unreadable courier file or a database error gives (None, None).
+
+    `actions` is the tick's shared `FactsDeps.actions()` rows. `needs_chair` is a kept kind, so the window never drops an open row."""
     try:
-        rows = read_chair_actions(ws / "runs")
+        # None is the caller that has not been wired to the shared rows yet; it still reads its own.
+        rows = actions if actions is not None else read_chair_actions(ws / "runs")
         return open_idle_stall(rows, open_needs_chair_ids(courier.inbox(_courier_blob(ws))))
     except Exception:  # a tick must survive any unreadable source
         return (None, None)
