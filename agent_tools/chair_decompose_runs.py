@@ -1,5 +1,6 @@
 """An intake's decompose runs as DecomposeRun values, oldest first."""
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,18 @@ def select_runs(rows: Sequence[Mapping[str, Any]], intake_id: str) -> list[Mappi
     return sorted(own, key=lambda r: str(r.get("launched_at") or ""))
 
 
-def _log(runs_dir: Path, run_id: str) -> str | None:
+# Deliberate process-lifetime cache, a bend of charter A4: one parse per (run_id, log mtime_ns).
+_REFUSALS: dict[tuple[str, int], str | None] = {}
+
+
+def _refusal(runs_dir: Path, run_id: str) -> str | None:
+    """Edge. The log's refusal line, parsed once per (run_id, mtime_ns); None for a missing or unreadable log."""
+    path = runs_dir / f"{run_id}.log"
     try:
-        return (runs_dir / f"{run_id}.log").read_text(encoding="utf-8", errors="replace")
+        key = (run_id, path.stat().st_mtime_ns)
+        if key not in _REFUSALS:
+            _REFUSALS[key] = refusal_line(path.read_text(encoding="utf-8", errors="replace"))
+        return _REFUSALS[key]
     except OSError:
         return None
 
@@ -55,13 +65,8 @@ def _task_items(runs_dir: Path, initiative: str) -> int | None:
 def read_decompose_runs(runs_dir: Path, intake_id: str) -> list[DecomposeRun]:
     """Edge. A run that has not exited gets `task_items` None; the intake id is the `chair_exec.decompose_id` value."""
     items = _task_items(runs_dir, intake_id)
-    return [
-        parse_run(
-            {
-                "run_id": str(row["run_id"]),
-                "log": _log(runs_dir, str(row["run_id"])),
-                "task_items": items if row_exited(row) else None,
-            }
-        )
+    runs = [
+        parse_run({"run_id": str(row["run_id"]), "log": None, "task_items": items if row_exited(row) else None})
         for row in select_runs(exit_rows(runs_dir), intake_id)
     ]
+    return [replace(run, refusal_line=_refusal(runs_dir, run.run_id)) for run in runs]

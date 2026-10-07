@@ -135,7 +135,9 @@ class FactsDeps:
     repos: initiative id to the `repo:` of its `initiative.md` (`read_initiative_repos`). Optional, and absent
         means no initiative has a known repo.
     actions: the `chair_actions` rows, keys kind, ts, and action_json or the action's own keys
-        (`chair_read_stale.read_chair_actions`). `steer_streaks` derives from them. Optional, and absent means {}.
+        (`chair_read_stale.read_chair_actions`). `steer_streaks` and `decompose_stalled_reported` derive from them.
+        Build it with `windowed_actions` so one gather reads the table once and every caller shares the rows.
+        Optional, and absent means {}.
     run_commits: one row per approved commit a run holds, oldest first, keys task, initiative, phase, run, host,
         branch (the run's agents branch), commit, run_seq. Optional, and absent means no stranded phase is built.
     phase_state: one row per phase with approved work, keys initiative, phase, tasks (every task id of the phase),
@@ -198,7 +200,7 @@ class FactsDeps:
     pid_probe: Callable[[], Mapping[str, PidProbeFact]] = lambda: {}  # initiative to its remote pid probe; absent means {}
     tickets: Callable[[], Sequence[Row]] | None = None  # `read_ticket_items` rows; absent means no surfaces and no running initiatives
     repos: Callable[[], Mapping[str, str]] | None = None  # initiative to its initiative.md `repo:`; absent means no repo is known
-    actions: Callable[[], Sequence[Row]] | None = None  # chair_actions rows; absent means no steer streaks
+    actions: Callable[[], Sequence[Row]] | None = None  # windowed chair_actions rows, read once per gather (`windowed_actions`); absent means no steer streaks
     decompose_runs: Callable[[str], Sequence[DecomposeRun]] | None = None  # intake path to its decompose runs, oldest first; absent means no decompose streaks
     run_commits: Callable[[], Sequence[Row]] = lambda: []  # approved commits per run, oldest first; absent means []
     phase_state: Callable[[], Sequence[Row]] = lambda: []  # per phase: its task ids and whether a phase land adds over main; absent means []
@@ -407,6 +409,18 @@ def steer_streaks_from_actions(actions: Sequence[Row]) -> dict[str, int]:
     """`<initiative>|<other>` to its steer_clear count since that initiative's last launch; no record, no key."""
     ordered = sorted(actions, key=lambda r: str(r.get("ts") or ""))
     return reduce(_streak_step, map(_action_doc, ordered), {})
+
+
+def windowed_actions(load: Callable[[datetime], Sequence[Row]], now: datetime) -> Callable[[], tuple[Row, ...]]:
+    """The `FactsDeps.actions` source for one gather: `load(now)` runs on the first call, and every later call returns the same rows."""
+    cell: list[tuple[Row, ...]] = []  # the one localised mutation: filled by the first call, never changed after
+
+    def actions() -> tuple[Row, ...]:
+        if not cell:
+            cell.append(tuple(dict(row) for row in load(now)))
+        return cell[0]
+
+    return actions
 
 
 def decompose_stalled_keys(actions: Sequence[Row]) -> list[str]:
